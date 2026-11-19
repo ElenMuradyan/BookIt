@@ -18,3 +18,7 @@ ios
 android
 .vercel
 .corepack
+
+# Local dependency backups
+node_modules.backup/
+package-lock.backup.json
