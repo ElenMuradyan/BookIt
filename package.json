@@ -3,16 +3,21 @@
   "private": true,
   "version": "0.1.0",
   "description": "BookIt — multi-vendor booking and marketplace platform (frontend stage).",
-  "packageManager": "pnpm@9.15.9",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev": "pnpm --filter @bookit/web dev",
-    "dev:web": "pnpm --filter @bookit/web dev",
-    "dev:mobile": "pnpm --filter @bookit/mobile start",
-    "build": "pnpm --filter @bookit/web build",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "smoke": "pnpm --filter @bookit/api-client smoke"
-  }
+    "dev": "npm run dev --workspace=apps/web",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "dev:mobile": "npm run start --workspace=apps/mobile",
+    "build": "npm run build --workspace=apps/web",
+    "start": "npm run start --workspace=apps/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run typecheck",
+    "smoke": "npm run smoke --workspace=packages/api-client"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
 }

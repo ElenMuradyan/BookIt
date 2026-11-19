@@ -8,8 +8,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@bookit/design-system": "workspace:*",
-    "@bookit/types": "workspace:*"
+    "@bookit/design-system": "*",
+    "@bookit/types": "*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

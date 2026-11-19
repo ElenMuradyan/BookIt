@@ -8,9 +8,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@bookit/types": "workspace:*",
-    "@bookit/utils": "workspace:*",
-    "@bookit/validation": "workspace:*"
+    "@bookit/types": "*",
+    "@bookit/utils": "*",
+    "@bookit/validation": "*"
   },
   "peerDependencies": {
     "react": ">=18"

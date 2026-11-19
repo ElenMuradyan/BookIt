@@ -19,7 +19,9 @@ export function CustomerShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   if (!auth.ready || !auth.user) return <div className="app-boot">Opening BookIt…</div>;
-  const unread = state.notifications.filter((item) => item.userId === auth.user.id && !item.read).length;
+  const userId = auth.user.id;
+  const unread = state.notifications.filter((item) => item.userId === userId && !item.read).length;
+  const cartCount = state.carts.find((c) => c.userId === userId)?.items.reduce((sum, i) => sum + i.quantity, 0) ?? 0;
   const links = [...customerNav, ...customerSecondary];
   return (
     <div className="shell">
@@ -34,6 +36,11 @@ export function CustomerShell({ children }: { children: React.ReactNode }) {
             {item.href === "/notifications" && unread ? <span className="badge tone-brand">{unread}</span> : null}
           </Link>
         ))}
+        <Link href="/cart" className={`side-link ${active(pathname, "/cart") ? "active" : ""}`}>
+          <Icon name="bag" />
+          Cart
+          {cartCount ? <span className="badge tone-brand">{cartCount}</span> : null}
+        </Link>
         <div style={{ marginTop: "auto" }}>
           <WorkspaceMenu />
         </div>
@@ -51,6 +58,9 @@ export function CustomerShell({ children }: { children: React.ReactNode }) {
           >
             <input name="q" placeholder="Search businesses, services, products" aria-label="Search" />
           </form>
+          <Link href="/cart" className="btn ghost small" aria-label="Shopping cart">
+            <Icon name="bag" /> {cartCount || ""}
+          </Link>
           <Link href="/notifications" className="btn ghost small" aria-label="Notifications">
             <Icon name="bell" /> {unread || ""}
           </Link>

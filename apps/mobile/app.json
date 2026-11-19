@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "BookIt",
+    "slug": "bookit",
+    "version": "0.1.0",
+    "scheme": "bookit",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#141420"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.bookit.app"
+    },
+    "android": {
+      "package": "com.bookit.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#141420"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "33cde1ba-f4bc-41c9-b555-7f4edbc7abe3"
+      }
+    }
+  }
+}

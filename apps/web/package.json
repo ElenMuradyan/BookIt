@@ -3,18 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --port 3000",
+    "dev": "next dev -p 3000 -H 0.0.0.0",
     "build": "next build",
-    "start": "next start --port 3000",
+    "start": "next start -p 3000 -H 0.0.0.0",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@bookit/api-client": "workspace:*",
-    "@bookit/design-system": "workspace:*",
-    "@bookit/types": "workspace:*",
-    "@bookit/ui": "workspace:*",
-    "@bookit/utils": "workspace:*",
-    "@bookit/validation": "workspace:*",
+    "@bookit/api-client": "*",
+    "@bookit/design-system": "*",
+    "@bookit/types": "*",
+    "@bookit/ui": "*",
+    "@bookit/utils": "*",
+    "@bookit/validation": "*",
     "next": "15.5.6",
     "react": "19.2.0",
     "react-dom": "19.2.0"
