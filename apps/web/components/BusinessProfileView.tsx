@@ -143,15 +143,20 @@ export function BusinessProfileView({ id }: { id: string }) {
                   style={{ justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid var(--line)" }}
                 >
                   <div style={{ minWidth: 0 }}>
-                    <strong>{service.name}</strong>
+                    <Link href={`/services/${service.id}`}>
+                      <strong>{service.name}</strong>
+                    </Link>
                     <div className="tiny">
                       {service.durationMinutes} min · {service.description}
                     </div>
                   </div>
                   <div className="row" style={{ flexShrink: 0 }}>
                     <strong className="tabular">{service.price === 0 ? "Free" : formatMoney(service.price)}</strong>
+                    <Link href={`/services/${service.id}`} className="btn ghost small">
+                      Details
+                    </Link>
                     <Link href={`/book/${business.id}?service=${service.id}`} className="btn soft small">
-                      Select
+                      Book
                     </Link>
                   </div>
                 </div>

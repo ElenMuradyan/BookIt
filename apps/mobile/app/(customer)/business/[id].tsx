@@ -103,8 +103,9 @@ export default function BusinessProfileScreen() {
       <Card style={{ gap: 10 }}>
         <Text style={{ color: colors.text, fontSize: 17, fontWeight: "700" }}>Services ({services.length})</Text>
         {services.map((svc) => (
-          <View
+          <Pressable
             key={svc.id}
+            onPress={() => router.push(`/(customer)/service/${svc.id}`)}
             style={{
               flexDirection: "row",
               alignItems: "center",
@@ -130,7 +131,7 @@ export default function BusinessProfileScreen() {
                 onPress={() => router.push(`/(customer)/book/${business.id}?service=${svc.id}`)}
               />
             </View>
-          </View>
+          </Pressable>
         ))}
       </Card>
 

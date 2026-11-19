@@ -85,6 +85,7 @@ export const workspaceNav: NavItem[] = [
   { href: "/workspace/orders", label: "Orders", icon: "package", permission: "orders.manage" },
   { href: "/workspace/finance", label: "Finance", icon: "chart", permission: "finance.view" },
   { href: "/workspace/marketing", label: "Marketing", icon: "megaphone", permission: "marketing.manage" },
+  { href: "/workspace/notifications", label: "Notifications", icon: "bell" },
   { href: "/workspace/settings", label: "Settings", icon: "settings", permission: "settings.profile" },
 ];
 

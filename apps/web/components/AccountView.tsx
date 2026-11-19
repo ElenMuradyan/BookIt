@@ -3,6 +3,7 @@
 import {
   addAddress,
   resetDemoState,
+  setPersonalizationConsent,
   setSpendingVisibility,
   setTheme,
   updateNotificationPrefs,
@@ -37,6 +38,8 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
   const [phone, setPhone] = useState(user.phone);
   const [location, setLocation] = useState(user.location ?? "");
   const [language, setLanguage] = useState(user.language);
+  const [gender, setGender] = useState(user.gender ?? "");
+  const [dateOfBirth, setDateOfBirth] = useState(user.dateOfBirth ?? "");
   const [addr, setAddr] = useState({ label: "Home", line1: "", city: "Seattle", region: "WA", postalCode: "98101", country: "United States" });
 
   return (
@@ -126,7 +129,15 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
               className="stack"
               onSubmit={(e) => {
                 e.preventDefault();
-                updateProfile(user.id, { firstName, lastName, phone, location, language });
+                updateProfile(user.id, {
+                  firstName,
+                  lastName,
+                  phone,
+                  location,
+                  language,
+                  gender: gender || undefined,
+                  dateOfBirth: dateOfBirth || undefined,
+                });
                 setNotice("Profile saved.");
               }}
             >
@@ -141,8 +152,20 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                 <Field label="Phone">
                   <input value={phone} onChange={(e) => setPhone(e.target.value)} />
                 </Field>
-                <Field label="Location">
+                <Field label="Location (optional)">
                   <input value={location} onChange={(e) => setLocation(e.target.value)} />
+                </Field>
+                <Field label="Date of birth (optional)">
+                  <input type="date" value={dateOfBirth} onChange={(e) => setDateOfBirth(e.target.value)} />
+                </Field>
+                <Field label="Gender (optional)">
+                  <select value={gender} onChange={(e) => setGender(e.target.value)}>
+                    <option value="">Prefer not to say</option>
+                    <option value="Female">Female</option>
+                    <option value="Male">Male</option>
+                    <option value="Non-binary">Non-binary</option>
+                    <option value="Self-describe">Other / Self-describe</option>
+                  </select>
                 </Field>
                 <Field label="Language">
                   <select value={language} onChange={(e) => setLanguage(e.target.value)}>
@@ -152,6 +175,9 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                   </select>
                 </Field>
               </div>
+              <p className="tiny" style={{ margin: 0 }}>
+                Date of birth is only used where age verification is required; gender is optional and shared only with your chosen provider when relevant.
+              </p>
               <div>
                 <Button type="submit">Save changes</Button>
               </div>
@@ -255,6 +281,27 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
           {section === "privacy" || section === "data" ? (
             <div className="stack">
               <h2 style={{ margin: 0 }}>Privacy & Data Controls</h2>
+              <div className="select-card stack" style={{ gap: 8 }}>
+                <strong>Personalized recommendations consent</strong>
+                <p className="tiny" style={{ margin: 0 }}>
+                  When enabled, BookIt uses your saved interests and location to prioritize matching venues and services on Home and Explore. When disabled, recommendations use general top-rated listings only.
+                </p>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(profile?.personalizationConsent)}
+                    onChange={(e) => {
+                      setPersonalizationConsent(user.id, e.target.checked);
+                      setNotice(
+                        e.target.checked
+                          ? "Personalized recommendations enabled."
+                          : "Personalized recommendations disabled.",
+                      );
+                    }}
+                  />
+                  <span>Allow personalized recommendations based on my profile and interests</span>
+                </label>
+              </div>
               <p className="muted">Choose whether spending analytics include estimates or only recorded payments.</p>
               <div className="chips">
                 <button

@@ -3,9 +3,11 @@ import { passwordScore } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Switch, Text, View } from "react-native";
-import { Badge, BrandHeader, Button, Card, InputField, Screen } from "@/components/Ui";
+import { Badge, BrandHeader, Button, Card, Chip, InputField, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
 import { useAuth } from "@/services/session";
+
+const GENDER_OPTIONS = ["Prefer not to say", "Female", "Male", "Non-binary", "Other"] as const;
 
 export default function RegisterScreen() {
   const auth = useAuth();
@@ -18,9 +20,12 @@ export default function RegisterScreen() {
     email: "",
     phone: "",
     location: "Seattle, WA",
+    dateOfBirth: "",
+    gender: "",
     password: "",
     confirmPassword: "",
   });
+  const [personalizationConsent, setPersonalizationConsent] = useState(false);
   const [acceptTerms, setAcceptTerms] = useState(true);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState("");
@@ -29,6 +34,9 @@ export default function RegisterScreen() {
   const onSubmit = async () => {
     const res = registerCustomer({
       ...form,
+      gender: form.gender && form.gender !== "Prefer not to say" ? form.gender : undefined,
+      dateOfBirth: form.dateOfBirth || undefined,
+      personalizationConsent,
       language: "English",
       interests: ["Beauty", "Wellness"],
       acceptTerms: acceptTerms as true,
@@ -45,6 +53,10 @@ export default function RegisterScreen() {
   return (
     <Screen>
       <BrandHeader title="Create Account" showBack />
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <Chip label="Customer Sign Up" active onPress={() => {}} />
+        <Chip label="Register a Business" active={false} onPress={() => router.replace("/(auth)/register-business")} />
+      </View>
       <Card style={{ gap: 12 }}>
         <View style={{ flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1 }}>
@@ -87,11 +99,6 @@ export default function RegisterScreen() {
           error={errors.phone}
         />
         <InputField
-          label="City / Location"
-          value={form.location}
-          onChangeText={(location) => setForm({ ...form, location })}
-        />
-        <InputField
           label="Password"
           value={form.password}
           onChangeText={(password) => setForm({ ...form, password })}
@@ -109,9 +116,45 @@ export default function RegisterScreen() {
           secureTextEntry
           error={errors.confirmPassword}
         />
+
+        <View style={{ borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 10, gap: 8 }}>
+          <Text style={{ color: colors.text, fontWeight: "700", fontSize: 14 }}>Optional Personalization &amp; Eligibility</Text>
+          <Text style={{ color: colors.muted, fontSize: 12, lineHeight: 17 }}>
+            Location shows nearby businesses. Date of birth is only used to confirm age eligibility for restricted services. Gender is completely optional and helps service providers prepare if relevant.
+          </Text>
+          <InputField
+            label="City / Location (optional)"
+            value={form.location}
+            onChangeText={(location) => setForm({ ...form, location })}
+          />
+          <InputField
+            label="Date of birth YYYY-MM-DD (optional)"
+            value={form.dateOfBirth}
+            onChangeText={(dateOfBirth) => setForm({ ...form, dateOfBirth })}
+            placeholder="1996-04-18"
+          />
+          <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "600" }}>Gender (optional)</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {GENDER_OPTIONS.map((opt) => (
+              <Chip
+                key={opt}
+                label={opt}
+                active={(form.gender || "Prefer not to say") === opt}
+                onPress={() => setForm({ ...form, gender: opt === "Prefer not to say" ? "" : opt })}
+              />
+            ))}
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 4 }}>
+            <Switch value={personalizationConsent} onValueChange={setPersonalizationConsent} />
+            <Text style={{ color: colors.muted, fontSize: 12, flex: 1 }}>
+              Consent: Use my interests and optional details to personalize service recommendations (changeable anytime in Settings).
+            </Text>
+          </View>
+        </View>
+
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <Switch value={acceptTerms} onValueChange={setAcceptTerms} />
-          <Text style={{ color: colors.muted, fontSize: 13, flex: 1 }}>I accept BookIt Terms of Use & Privacy Notice</Text>
+          <Text style={{ color: colors.muted, fontSize: 13, flex: 1 }}>I accept BookIt Terms of Use &amp; Privacy Notice</Text>
         </View>
         {formError ? <Text style={{ color: colors.danger, fontSize: 13 }}>{formError}</Text> : null}
         <Button label="Create customer account" onPress={onSubmit} />

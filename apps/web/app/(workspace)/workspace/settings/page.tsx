@@ -1,11 +1,22 @@
 "use client";
 
-import { changePlan, updateBusiness, useBookItState } from "@bookit/api-client";
+import { changePlan, updateBusiness, updateBusinessHours, useBookItState } from "@bookit/api-client";
+import type { WeeklyHours } from "@bookit/types";
 import { businessSettingSections, roleLabels } from "@bookit/ui";
-import { can, formatDate, formatMoney, permissionsFor } from "@bookit/utils";
-import { useState } from "react";
+import { can, formatDate, formatMoney, permissionsFor, WEEKDAY_ORDER } from "@bookit/utils";
+import { useEffect, useState } from "react";
 import { Badge, Button, Field } from "@/components/ui";
 import { useAuth } from "@/lib/session";
+
+const EMPTY_HOURS: WeeklyHours = {
+  mon: { closed: false, open: "09:00", close: "18:00" },
+  tue: { closed: false, open: "09:00", close: "18:00" },
+  wed: { closed: false, open: "09:00", close: "18:00" },
+  thu: { closed: false, open: "09:00", close: "18:00" },
+  fri: { closed: false, open: "09:00", close: "18:00" },
+  sat: { closed: true, open: "09:00", close: "17:00" },
+  sun: { closed: true, open: "09:00", close: "17:00" },
+};
 
 export default function WorkspaceSettingsPage() {
   const auth = useAuth();
@@ -27,6 +38,23 @@ export default function WorkspaceSettingsPage() {
     cancellationPolicy: biz?.cancellationPolicy ?? "",
     bookingApproval: (biz?.bookingApproval ?? "automatic") as "automatic" | "manual",
   });
+  const [hours, setHours] = useState<WeeklyHours>(biz?.hours ?? EMPTY_HOURS);
+
+  useEffect(() => {
+    if (!biz) return;
+    setForm({
+      name: biz.name,
+      description: biz.description,
+      phone: biz.phone,
+      email: biz.email,
+      website: biz.website ?? "",
+      address: biz.address,
+      city: biz.city,
+      cancellationPolicy: biz.cancellationPolicy,
+      bookingApproval: biz.bookingApproval,
+    });
+    setHours(biz.hours);
+  }, [bizId, biz]);
 
   if (!auth.workspace || !biz) return null;
   const role = auth.workspace.role;
@@ -98,18 +126,77 @@ export default function WorkspaceSettingsPage() {
           ) : null}
 
           {section === "hours" ? (
-            <div className="stack">
+            <form
+              className="stack"
+              onSubmit={(e) => {
+                e.preventDefault();
+                updateBusinessHours(bizId, hours);
+                setNotice("Working hours updated.");
+              }}
+            >
               <h2 style={{ margin: 0 }}>Working Hours</h2>
-              {(["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const).map((day) => {
-                const h = biz.hours[day];
+              <p className="muted" style={{ margin: 0 }}>
+                Customer booking slots automatically respect these opening hours.
+              </p>
+              {WEEKDAY_ORDER.map(({ key, label }) => {
+                const h = hours[key];
                 return (
-                  <div key={day} className="row" style={{ justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
-                    <strong style={{ textTransform: "capitalize", width: 60 }}>{day}</strong>
-                    <span className="tabular">{h.closed ? "Closed" : `${h.open} – ${h.close}`}</span>
+                  <div
+                    key={key}
+                    className="row"
+                    style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line)" }}
+                  >
+                    <strong style={{ width: 100 }}>{label}</strong>
+                    <label className="row" style={{ gap: 6, fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={h.closed}
+                        disabled={!can(role, "settings.profile")}
+                        onChange={(e) =>
+                          setHours({
+                            ...hours,
+                            [key]: { ...h, closed: e.target.checked },
+                          })
+                        }
+                      />
+                      Closed
+                    </label>
+                    <div className="row" style={{ gap: 8 }}>
+                      <input
+                        type="time"
+                        value={h.open}
+                        disabled={h.closed || !can(role, "settings.profile")}
+                        onChange={(e) =>
+                          setHours({
+                            ...hours,
+                            [key]: { ...h, open: e.target.value },
+                          })
+                        }
+                        style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 8px" }}
+                      />
+                      <span className="muted">–</span>
+                      <input
+                        type="time"
+                        value={h.close}
+                        disabled={h.closed || !can(role, "settings.profile")}
+                        onChange={(e) =>
+                          setHours({
+                            ...hours,
+                            [key]: { ...h, close: e.target.value },
+                          })
+                        }
+                        style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 8px" }}
+                      />
+                    </div>
                   </div>
                 );
               })}
-            </div>
+              {can(role, "settings.profile") ? (
+                <div>
+                  <Button type="submit">Save working hours</Button>
+                </div>
+              ) : null}
+            </form>
           ) : null}
 
           {section === "booking" || section === "cancellation" ? (

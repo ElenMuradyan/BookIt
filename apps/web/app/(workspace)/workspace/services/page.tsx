@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  assignEmployeeToService,
   displayUser,
   saveService,
   setServiceActive,
+  toggleEmployeeToService,
   useBookItState,
 } from "@bookit/api-client";
 import type { Service } from "@bookit/types";
@@ -219,27 +219,30 @@ export default function WorkspaceServicesPage() {
         </Modal>
       ) : null}
 
-      {assignTarget ? (
-        <Modal title={`Assign Staff — ${assignTarget.name}`} onClose={() => setAssignTarget(null)}>
-          <div className="stack">
-            {employees.map((emp) => {
-              const assigned = assignTarget.employeeIds.includes(emp.id);
-              return (
-                <div key={emp.id} className="row" style={{ justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
-                  <span>{displayUser(state, emp.userId)} ({emp.title})</span>
-                  <Button
-                    tone={assigned ? "soft" : "ghost"}
-                    small
-                    onClick={() => assignEmployeeToService(bizId, assignTarget.id, emp.id)}
-                  >
-                    {assigned ? "Assigned" : "Assign"}
-                  </Button>
-                </div>
-              );
-            })}
-          </div>
-        </Modal>
-      ) : null}
+      {assignTarget ? (() => {
+        const liveTarget = state.services.find((s) => s.id === assignTarget.id) ?? assignTarget;
+        return (
+          <Modal title={`Assign Staff — ${liveTarget.name}`} onClose={() => setAssignTarget(null)}>
+            <div className="stack">
+              {employees.map((emp) => {
+                const assigned = liveTarget.employeeIds.includes(emp.id);
+                return (
+                  <div key={emp.id} className="row" style={{ justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+                    <span>{displayUser(state, emp.userId)} ({emp.title})</span>
+                    <Button
+                      tone={assigned ? "soft" : "ghost"}
+                      small
+                      onClick={() => toggleEmployeeToService(bizId, liveTarget.id, emp.id)}
+                    >
+                      {assigned ? "Assigned (Remove)" : "Assign"}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </Modal>
+        );
+      })() : null}
     </div>
   );
 }

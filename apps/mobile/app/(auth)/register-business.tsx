@@ -1,9 +1,10 @@
 import { submitBusinessApplication } from "@bookit/api-client";
 import { categoryLabels } from "@bookit/ui";
+import { passwordScore } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { BrandHeader, Button, Card, Chip, InputField, Screen } from "@/components/Ui";
+import { Badge, BrandHeader, Button, Card, Chip, InputField, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
 import { useAuth } from "@/services/session";
 
@@ -13,7 +14,7 @@ export default function RegisterBusinessScreen() {
   const auth = useAuth();
   const router = useRouter();
   const { colors } = useThemePalette();
-  const [done, setDone] = useState(false);
+  const [doneBusinessId, setDoneBusinessId] = useState("");
   const [formError, setFormError] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [form, setForm] = useState({
@@ -30,28 +31,41 @@ export default function RegisterBusinessScreen() {
     ownerName: auth.user ? `${auth.user.firstName} ${auth.user.lastName}` : "",
     ownerEmail: auth.user?.email ?? "",
     ownerPhone: auth.user?.phone ?? "",
+    ownerPassword: "",
+    ownerConfirmPassword: "",
   });
 
-  const submit = () => {
+  const strength = passwordScore(form.ownerPassword);
+
+  const submit = async () => {
     const res = submitBusinessApplication({ ...form, applicantUserId: auth.userId ?? undefined });
     if (!res.ok) {
       setFormError(res.error);
       setErrors(res.fieldErrors ?? {});
       return;
     }
-    setDone(true);
+    if (res.data.token) {
+      await auth.signInWithToken(res.data.token);
+    }
+    await auth.setWorkspaceId(res.data.businessId);
+    setDoneBusinessId(res.data.businessId);
   };
 
   return (
     <Screen>
       <BrandHeader title="Business Registration" showBack />
-      {done ? (
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <Chip label="Customer Sign Up" active={false} onPress={() => router.replace("/(auth)/register")} />
+        <Chip label="Register a Business" active onPress={() => {}} />
+      </View>
+      {doneBusinessId ? (
         <Card style={{ gap: 12 }}>
           <Text style={{ color: colors.text, fontSize: 19, fontWeight: "800" }}>Application submitted</Text>
           <Text style={{ color: colors.muted, fontSize: 13 }}>
-            Your business is pending verification review by BookIt Platform Admins before appearing in public discovery.
+            Your workspace is active so you can configure services, team members, and hours now. Public discovery activates once a Platform Admin approves verification.
           </Text>
-          <Button label="Done" onPress={() => router.replace(auth.user ? "/(customer)/account" : "/(auth)/login")} />
+          <Button label="Open Business Workspace" onPress={() => router.replace("/(workspace)")} />
+          <Button label="Business Sign In" tone="ghost" onPress={() => router.replace("/(auth)/login-business")} />
         </Card>
       ) : (
         <Card style={{ gap: 12 }}>
@@ -78,6 +92,28 @@ export default function RegisterBusinessScreen() {
           <InputField label="Owner full name" value={form.ownerName} onChangeText={(ownerName) => setForm({ ...form, ownerName })} error={errors.ownerName} />
           <InputField label="Owner email" value={form.ownerEmail} onChangeText={(ownerEmail) => setForm({ ...form, ownerEmail })} autoCapitalize="none" error={errors.ownerEmail} />
           <InputField label="Owner phone" value={form.ownerPhone} onChangeText={(ownerPhone) => setForm({ ...form, ownerPhone })} error={errors.ownerPhone} />
+          {!auth.user ? (
+            <>
+              <InputField
+                label="Create owner password"
+                value={form.ownerPassword}
+                onChangeText={(ownerPassword) => setForm({ ...form, ownerPassword })}
+                secureTextEntry
+                error={errors.ownerPassword}
+              />
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>Password strength</Text>
+                <Badge label={strength.label} tone={strength.score >= 3 ? "success" : "warning"} />
+              </View>
+              <InputField
+                label="Confirm owner password"
+                value={form.ownerConfirmPassword}
+                onChangeText={(ownerConfirmPassword) => setForm({ ...form, ownerConfirmPassword })}
+                secureTextEntry
+                error={errors.ownerConfirmPassword}
+              />
+            </>
+          ) : null}
           {formError ? <Text style={{ color: colors.danger, fontSize: 13 }}>{formError}</Text> : null}
           <Button label="Submit for verification" onPress={submit} />
         </Card>

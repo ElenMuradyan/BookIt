@@ -1,12 +1,14 @@
-import { resetDemoState, updateProfile, useBookItState } from "@bookit/api-client";
+import { resetDemoState, setPersonalizationConsent, updateProfile, useBookItState } from "@bookit/api-client";
 import { roleLabels } from "@bookit/ui";
 import { fullName } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
-import { Text, View } from "react-native";
+import { Switch, Text, View } from "react-native";
 import { Avatar, Badge, BrandHeader, Button, Card, Chip, InputField, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
 import { useAuth } from "@/services/session";
+
+const GENDER_OPTIONS = ["Prefer not to say", "Female", "Male", "Non-binary", "Other"] as const;
 
 export default function CustomerAccountScreen() {
   const auth = useAuth();
@@ -39,7 +41,10 @@ function AccountBody({
   const [lastName, setLastName] = useState(user.lastName);
   const [phone, setPhone] = useState(user.phone);
   const [location, setLocation] = useState(user.location ?? "");
+  const [gender, setGender] = useState(user.gender ?? "");
+  const [dateOfBirth, setDateOfBirth] = useState(user.dateOfBirth ?? "");
   const [notice, setNotice] = useState("");
+  const profile = state.customerProfiles.find((p) => p.userId === user.id);
   const addresses = state.addresses.filter((a) => a.userId === user.id);
 
   return (
@@ -103,15 +108,56 @@ function AccountBody({
         <InputField label="First name" value={firstName} onChangeText={setFirstName} />
         <InputField label="Last name" value={lastName} onChangeText={setLastName} />
         <InputField label="Phone" value={phone} onChangeText={setPhone} />
-        <InputField label="Location" value={location} onChangeText={setLocation} />
+        <InputField label="Location (optional)" value={location} onChangeText={setLocation} />
+        <InputField label="Date of birth YYYY-MM-DD (optional)" value={dateOfBirth} onChangeText={setDateOfBirth} placeholder="1996-04-18" />
+        <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "600" }}>Gender (optional)</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {GENDER_OPTIONS.map((opt) => (
+            <Chip
+              key={opt}
+              label={opt}
+              active={(gender || "Prefer not to say") === opt}
+              onPress={() => setGender(opt === "Prefer not to say" ? "" : opt)}
+            />
+          ))}
+        </View>
+        <Text style={{ color: colors.muted, fontSize: 11, lineHeight: 16 }}>
+          Date of birth verifies minimum-age eligibility where needed; gender is optional and shared only with providers when relevant.
+        </Text>
         {notice ? <Text style={{ color: colors.lavender, fontSize: 12 }}>{notice}</Text> : null}
         <Button
           label="Save Profile"
           onPress={() => {
-            updateProfile(user.id, { firstName, lastName, phone, location });
+            updateProfile(user.id, {
+              firstName,
+              lastName,
+              phone,
+              location,
+              gender: gender || undefined,
+              dateOfBirth: dateOfBirth || undefined,
+            });
             setNotice("Profile updated.");
           }}
         />
+      </Card>
+
+      <Card style={{ gap: 8 }}>
+        <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>Privacy &amp; Recommendations Consent</Text>
+        <Text style={{ color: colors.muted, fontSize: 12, lineHeight: 17 }}>
+          Allow BookIt to use your saved interests and location to tailor Home and Explore recommendations.
+        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <Text style={{ color: colors.text, fontSize: 13, fontWeight: "600", flex: 1 }}>
+            Personalized recommendations
+          </Text>
+          <Switch
+            value={Boolean(profile?.personalizationConsent)}
+            onValueChange={(val) => {
+              setPersonalizationConsent(user.id, val);
+              setNotice(val ? "Personalized recommendations enabled." : "Personalized recommendations paused.");
+            }}
+          />
+        </View>
       </Card>
 
       <Card style={{ gap: 8 }}>

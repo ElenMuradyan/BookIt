@@ -4,9 +4,10 @@ import {
   displayUser,
   inviteMember,
   setMemberRole,
+  updateEmployeeAvailability,
   useBookItState,
 } from "@bookit/api-client";
-import type { MembershipRole } from "@bookit/types";
+import type { Employee, MembershipRole } from "@bookit/types";
 import { roleLabels } from "@bookit/ui";
 import { can, fullName, initials } from "@bookit/utils";
 import { useState } from "react";
@@ -14,6 +15,7 @@ import { Badge, Button, Field, Modal } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
 const ROLES: MembershipRole[] = ["owner", "admin", "manager", "employee", "receptionist", "accountant"];
+const SHIFT_STATUSES: Employee["status"][] = ["available", "in_appointment", "off_shift", "on_leave"];
 
 export default function WorkspaceTeamPage() {
   const auth = useAuth();
@@ -110,8 +112,27 @@ export default function WorkspaceTeamPage() {
                   ))}
                 </div>
               </div>
-              <div className="tiny">
-                Mon – Fri: {emp.hours.mon.open} – {emp.hours.mon.close} · ★ {emp.rating.toFixed(1)}
+              <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <span className="tiny">
+                  Mon – Fri: {emp.hours.mon.open} – {emp.hours.mon.close} · ★ {emp.rating.toFixed(1)}
+                </span>
+                {canManage ? (
+                  <select
+                    aria-label={`${name} shift status`}
+                    value={emp.status}
+                    onChange={(e) => {
+                      updateEmployeeAvailability(bizId, emp.id, { status: e.target.value as Employee["status"] });
+                      setNotice(`Updated shift status for ${name}.`);
+                    }}
+                    style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 8px", fontSize: 12 }}
+                  >
+                    {SHIFT_STATUSES.map((st) => (
+                      <option key={st} value={st}>
+                        {st.replaceAll("_", " ")}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
               </div>
             </article>
           );

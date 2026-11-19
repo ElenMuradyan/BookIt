@@ -11,9 +11,9 @@ import {
 } from "@bookit/api-client";
 import type { Appointment } from "@bookit/types";
 import { appointmentStatus } from "@bookit/ui";
-import { addDays, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
+import { addDays, availableSlots, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Badge, Button, Empty, Field, Modal } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
@@ -33,6 +33,23 @@ export default function CustomerBookingsPage() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [notice, setNotice] = useState("");
+
+  const rescheduleSlots = useMemo(() => {
+    if (!rescheduleTarget) return [];
+    const biz = state.businesses.find((b) => b.id === rescheduleTarget.businessId);
+    const svc = state.services.find((s) => s.id === rescheduleTarget.serviceId);
+    if (!biz || !svc) return [];
+    return availableSlots({
+      date: newDate,
+      service: svc,
+      employees: state.employees.filter((e) => e.businessId === biz.id),
+      appointments: state.appointments.filter((a) => a.businessId === biz.id && a.id !== rescheduleTarget.id),
+      hours: biz.hours,
+      holidays: biz.holidays,
+      blocked: biz.blocked,
+      employeeId: rescheduleTarget.employeeId,
+    });
+  }, [rescheduleTarget, newDate, state.businesses, state.services, state.employees, state.appointments]);
 
   if (!auth.userId) return null;
   const userId = auth.userId;
@@ -131,26 +148,50 @@ export default function CustomerBookingsPage() {
             className="stack"
             onSubmit={(e) => {
               e.preventDefault();
-              const res = rescheduleAppointment(rescheduleTarget.id, newDate, newTime, userId);
+              const chosen = rescheduleSlots.includes(newTime) ? newTime : rescheduleSlots[0];
+              if (!chosen) return;
+              const res = rescheduleAppointment(rescheduleTarget.id, newDate, chosen, userId);
               if (res.ok) {
-                setNotice("Appointment rescheduled");
+                setNotice(`Appointment rescheduled to ${newDate} at ${chosen}`);
                 setRescheduleTarget(null);
               }
             }}
           >
             <Field label="New date">
-              <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} />
+              <input
+                type="date"
+                value={newDate}
+                onChange={(e) => {
+                  setNewDate(e.target.value);
+                  setNewTime("");
+                }}
+              />
             </Field>
-            <Field label="New time">
-              <select value={newTime} onChange={(e) => setNewTime(e.target.value)}>
-                {["09:30", "10:30", "11:00", "13:30", "15:00", "16:30"].map((slot) => (
-                  <option key={slot} value={slot}>
-                    {slot}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Button type="submit">Save new time</Button>
+            <div className="stack" style={{ gap: 6 }}>
+              <span className="tiny">Available slots</span>
+              {rescheduleSlots.length === 0 ? (
+                <p className="muted">Closed or booked out on this date. Pick another day.</p>
+              ) : (
+                <div className="chips">
+                  {rescheduleSlots.map((slot) => {
+                    const activeSlot = rescheduleSlots.includes(newTime) ? newTime : rescheduleSlots[0];
+                    return (
+                      <button
+                        key={slot}
+                        type="button"
+                        className={`slot tabular ${activeSlot === slot ? "on" : ""}`}
+                        onClick={() => setNewTime(slot)}
+                      >
+                        {slot}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <Button type="submit" disabled={rescheduleSlots.length === 0}>
+              Save new time
+            </Button>
           </form>
         </Modal>
       ) : null}

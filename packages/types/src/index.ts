@@ -115,6 +115,9 @@ export interface CustomerProfile {
   interests: string[];
   language: string;
   marketingOptIn: boolean;
+  /** Explicit consent before using profile details or interests for recommendations. */
+  personalizationConsent: boolean;
+  consentUpdatedAt?: ISODateTime;
   /** Recorded payments are ledger entries. Estimates are never mixed into them silently. */
   spendingVisibility: "recorded_only" | "include_estimates";
   theme: "dark" | "light" | "system";
@@ -300,6 +303,7 @@ export interface Appointment {
   price: number;
   currency: CurrencyCode;
   paymentStatus: "unpaid" | "paid" | "refunded" | "deposit";
+  paymentMethod?: PaymentMethod;
   confirmationMode: "automatic" | "manual";
   notes?: string;
   createdAt: ISODateTime;

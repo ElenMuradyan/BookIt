@@ -27,9 +27,11 @@ export const registerSchema = z
     password: passwordSchema,
     confirmPassword: z.string(),
     dateOfBirth: z.string().optional(),
+    gender: z.string().optional(),
     location: z.string().optional(),
     language: z.string().optional(),
     interests: z.array(z.string()).optional(),
+    personalizationConsent: z.boolean().optional(),
     acceptTerms: z.literal(true, { errorMap: () => ({ message: "Accept the terms to continue" }) }),
   })
   .refine((value) => value.password === value.confirmPassword, {
@@ -37,21 +39,43 @@ export const registerSchema = z
     message: "Passwords do not match",
   });
 
-export const businessApplicationSchema = z.object({
-  businessName: z.string().min(2, "Business name is required"),
-  legalName: z.string().min(2, "Legal name is required"),
-  category: z.string().min(2, "Choose a category"),
-  country: z.string().min(2, "Country is required"),
-  city: z.string().min(2, "City is required"),
-  address: z.string().min(4, "Address is required"),
-  phone: z.string().min(7, "Business phone is required"),
-  email: z.string().email("Enter a valid business email"),
-  website: z.string().url("Enter a valid URL").optional().or(z.literal("")),
-  description: z.string().min(20, "Add a short description (20+ characters)"),
-  ownerName: z.string().min(3, "Owner name is required"),
-  ownerEmail: z.string().email("Owner email is required"),
-  ownerPhone: z.string().min(7, "Owner phone is required"),
-});
+export const businessApplicationSchema = z
+  .object({
+    businessName: z.string().min(2, "Business name is required"),
+    legalName: z.string().min(2, "Legal name is required"),
+    category: z.string().min(2, "Choose a category"),
+    country: z.string().min(2, "Country is required"),
+    city: z.string().min(2, "City is required"),
+    address: z.string().min(4, "Address is required"),
+    phone: z.string().min(7, "Business phone is required"),
+    email: z.string().email("Enter a valid business email"),
+    website: z.string().url("Enter a valid URL").optional().or(z.literal("")),
+    description: z.string().min(20, "Add a short description (20+ characters)"),
+    ownerName: z.string().min(3, "Owner name is required"),
+    ownerEmail: z.string().email("Owner email is required"),
+    ownerPhone: z.string().min(7, "Owner phone is required"),
+    ownerPassword: z.string().optional(),
+    ownerConfirmPassword: z.string().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.ownerPassword !== undefined && value.ownerPassword !== "") {
+      const check = passwordSchema.safeParse(value.ownerPassword);
+      if (!check.success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["ownerPassword"],
+          message: check.error.issues[0]?.message ?? "Use a stronger password",
+        });
+      }
+      if (value.ownerPassword !== value.ownerConfirmPassword) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["ownerConfirmPassword"],
+          message: "Passwords do not match",
+        });
+      }
+    }
+  });
 
 export const resetRequestSchema = z.object({
   identifier: z.string().min(3, "Enter the email or phone on the account"),

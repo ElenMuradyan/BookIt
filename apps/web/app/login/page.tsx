@@ -49,7 +49,13 @@ function LoginForm() {
       </section>
       <section className="auth-panel">
         <form className="stack auth-card" onSubmit={submit}>
-          <h2 style={{ margin: 0 }}>Log in</h2>
+          <div className="tabs" style={{ marginBottom: 4 }}>
+            <span className="tab on">Customer Sign In</span>
+            <Link href="/login/business" className="tab">
+              Business Sign In
+            </Link>
+          </div>
+          <h2 style={{ margin: 0 }}>Customer login</h2>
           <label className="field">
             <span>Email or username</span>
             <input value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="username" />
@@ -74,9 +80,10 @@ function LoginForm() {
           <button type="button" className="btn ghost" onClick={() => setError("Apple sign-in connects when the BookIt API is available. Use a demo account for this preview.")}>
             Continue with Apple
           </button>
-          <div className="row" style={{ justifyContent: "space-between" }}>
+          <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
             <Link href="/forgot">Forgot password</Link>
-            <Link href="/register">Create account</Link>
+            <Link href="/register">Create customer account</Link>
+            <Link href="/register/business">Register business</Link>
           </div>
           <div className="chips">
             {demos.map(([email, label]) => (

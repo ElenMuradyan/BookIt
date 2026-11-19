@@ -178,15 +178,22 @@ function ExploreContent() {
                   )}
                   <div className="body stack" style={{ gap: 6 }}>
                     <span className="tiny">{biz?.name}</span>
-                    <h3>{svc.name}</h3>
+                    <Link href={`/services/${svc.id}`}>
+                      <h3>{svc.name}</h3>
+                    </Link>
                     <p className="tiny" style={{ margin: 0 }}>{svc.description}</p>
-                    <div className="row" style={{ justifyContent: "space-between", marginTop: 6 }}>
+                    <div className="row" style={{ justifyContent: "space-between", marginTop: 6, flexWrap: "wrap" }}>
                       <strong className="tabular">
                         {svc.price === 0 ? "Free" : formatMoney(svc.price)} · {svc.durationMinutes} min
                       </strong>
-                      <Link href={`/book/${svc.businessId}?service=${svc.id}`} className="btn small">
-                        Book
-                      </Link>
+                      <div className="row">
+                        <Link href={`/services/${svc.id}`} className="btn ghost small">
+                          Details
+                        </Link>
+                        <Link href={`/book/${svc.businessId}?service=${svc.id}`} className="btn small">
+                          Book
+                        </Link>
+                      </div>
                     </div>
                   </div>
                 </article>

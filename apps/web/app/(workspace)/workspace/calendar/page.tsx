@@ -1,11 +1,16 @@
 "use client";
 
 import {
+  addBlockedSlot,
+  addBusinessHoliday,
   businessAppointments,
   createStaffAppointment,
   displayUser,
   moveAppointment,
+  removeBlockedSlot,
+  removeBusinessHoliday,
   setAppointmentStatus,
+  updateAppointmentNotes,
   useBookItState,
 } from "@bookit/api-client";
 import type { Appointment } from "@bookit/types";
@@ -26,6 +31,7 @@ function CalendarContent() {
   const [q, setQ] = useState("");
   const [showCreate, setShowCreate] = useState(params.get("create") === "1");
   const [selectedAppt, setSelectedAppt] = useState<Appointment | null>(null);
+  const [apptNote, setApptNote] = useState("");
 
   const bizId = auth.workspace?.businessId ?? "";
   const biz = state.businesses.find((b) => b.id === bizId);
@@ -42,10 +48,18 @@ function CalendarContent() {
   });
   const [moveDate, setMoveDate] = useState(DEMO_TODAY);
   const [moveTime, setMoveTime] = useState("14:00");
+  const [holidayDate, setHolidayDate] = useState(addDays(DEMO_TODAY, 5));
+  const [holidayName, setHolidayName] = useState("");
+  const [blockDate, setBlockDate] = useState(addDays(DEMO_TODAY, 2));
+  const [blockStart, setBlockStart] = useState("12:00");
+  const [blockEnd, setBlockEnd] = useState("13:00");
+  const [blockReason, setBlockReason] = useState("");
+  const [scheduleNotice, setScheduleNotice] = useState("");
   const [error, setError] = useState("");
 
   if (!auth.workspace || !auth.userId || !biz) return null;
   const canManage = can(auth.workspace.role, "calendar.manage");
+  const canViewCustomers = can(auth.workspace.role, "customers.view");
 
   const appts = businessAppointments(state, bizId).filter((a) => {
     if (staffFilter !== "all" && a.employeeId !== staffFilter) return false;
@@ -59,6 +73,15 @@ function CalendarContent() {
 
   const weekDays = Array.from({ length: 5 }, (_, i) => addDays(anchorDate, i));
   const monthDays = Array.from({ length: 14 }, (_, i) => addDays(anchorDate, i));
+
+  function openAppt(apt: Appointment) {
+    setSelectedAppt(apt);
+    setMoveDate(apt.start.slice(0, 10));
+    setMoveTime(apt.start.slice(11, 16));
+    setApptNote(apt.notes ?? "");
+  }
+
+  const selectedCustomer = selectedAppt ? state.users.find((u) => u.id === selectedAppt.customerId) : undefined;
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -142,11 +165,7 @@ function CalendarContent() {
                         key={apt.id}
                         type="button"
                         className={`appt-block ${apt.status === "pending" ? "pending" : ""}`}
-                        onClick={() => {
-                          setSelectedAppt(apt);
-                          setMoveDate(apt.start.slice(0, 10));
-                          setMoveTime(apt.start.slice(11, 16));
-                        }}
+                        onClick={() => openAppt(apt)}
                       >
                         <Badge tone={st.tone}>{st.label}</Badge>
                         <strong style={{ fontSize: 13 }}>{displayUser(state, apt.customerId)}</strong>
@@ -178,7 +197,7 @@ function CalendarContent() {
                 const emp = state.employees.find((e) => e.id === apt.employeeId);
                 const st = appointmentStatus(apt.status);
                 return (
-                  <div key={apt.id} className="select-card row" style={{ justifyContent: "space-between" }} onClick={() => setSelectedAppt(apt)}>
+                  <div key={apt.id} className="select-card row" style={{ justifyContent: "space-between", cursor: "pointer" }} onClick={() => openAppt(apt)}>
                     <div>
                       <strong className="tabular">{formatTime(apt.start)} – {formatTime(apt.end)}</strong>
                       <div>{displayUser(state, apt.customerId)} · {svc?.name}</div>
@@ -218,12 +237,140 @@ function CalendarContent() {
         </div>
       ) : null}
 
-      <div className="panel row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+      <div className="panel stack" style={{ gap: 14 }}>
         <div>
           <strong>Holidays & Blocked Hours</strong>
-          <div className="tiny">
-            Holidays: {biz.holidays.map((h) => `${h.name} (${h.date})`).join(", ") || "None"} · Blocked:{" "}
-            {biz.blocked.map((b) => `${b.date} ${b.start}-${b.end} (${b.reason})`).join(", ") || "None"}
+          <p className="tiny" style={{ margin: "2px 0 0" }}>
+            Holidays and blocked ranges automatically remove overlapping booking slots for customers.
+          </p>
+        </div>
+        {scheduleNotice ? <div className="notice">{scheduleNotice}</div> : null}
+
+        <div className="grid-2" style={{ gap: 14 }}>
+          <div className="select-card stack" style={{ gap: 8 }}>
+            <strong style={{ fontSize: 13 }}>Business Holidays ({biz.holidays.length})</strong>
+            <div className="chips">
+              {biz.holidays.length === 0 ? (
+                <span className="tiny">No holidays set</span>
+              ) : (
+                biz.holidays.map((h) => (
+                  <span key={h.date} className="badge tone-warning row" style={{ gap: 6 }}>
+                    {h.name} ({h.date})
+                    {canManage ? (
+                      <button
+                        type="button"
+                        onClick={() => removeBusinessHoliday(bizId, h.date)}
+                        aria-label={`Remove ${h.name}`}
+                        style={{ background: "none", border: 0, color: "inherit", cursor: "pointer", padding: 0, fontWeight: 700 }}
+                      >
+                        ×
+                      </button>
+                    ) : null}
+                  </span>
+                ))
+              )}
+            </div>
+            {canManage ? (
+              <form
+                className="row"
+                style={{ flexWrap: "wrap", gap: 8 }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const res = addBusinessHoliday(bizId, holidayDate, holidayName);
+                  if (!res.ok) {
+                    setScheduleNotice(res.error);
+                    return;
+                  }
+                  setHolidayName("");
+                  setScheduleNotice("Holiday added to schedule.");
+                }}
+              >
+                <input
+                  type="date"
+                  value={holidayDate}
+                  onChange={(e) => setHolidayDate(e.target.value)}
+                  style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 8px" }}
+                />
+                <input
+                  value={holidayName}
+                  onChange={(e) => setHolidayName(e.target.value)}
+                  placeholder="Holiday name"
+                  style={{ flex: 1, minWidth: 120, background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 10px" }}
+                />
+                <Button type="submit" tone="soft" small>
+                  Add holiday
+                </Button>
+              </form>
+            ) : null}
+          </div>
+
+          <div className="select-card stack" style={{ gap: 8 }}>
+            <strong style={{ fontSize: 13 }}>Blocked Time Slots ({biz.blocked.length})</strong>
+            <div className="chips">
+              {biz.blocked.length === 0 ? (
+                <span className="tiny">No blocked hours</span>
+              ) : (
+                biz.blocked.map((b) => (
+                  <span key={b.id} className="badge tone-neutral row" style={{ gap: 6 }}>
+                    {b.date} {b.start}–{b.end} ({b.reason})
+                    {canManage ? (
+                      <button
+                        type="button"
+                        onClick={() => removeBlockedSlot(bizId, b.id)}
+                        aria-label={`Remove ${b.reason}`}
+                        style={{ background: "none", border: 0, color: "inherit", cursor: "pointer", padding: 0, fontWeight: 700 }}
+                      >
+                        ×
+                      </button>
+                    ) : null}
+                  </span>
+                ))
+              )}
+            </div>
+            {canManage ? (
+              <form
+                className="row"
+                style={{ flexWrap: "wrap", gap: 6 }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const res = addBlockedSlot(bizId, blockDate, blockStart, blockEnd, blockReason);
+                  if (!res.ok) {
+                    setScheduleNotice(res.error);
+                    return;
+                  }
+                  setBlockReason("");
+                  setScheduleNotice("Blocked time slot added.");
+                }}
+              >
+                <input
+                  type="date"
+                  value={blockDate}
+                  onChange={(e) => setBlockDate(e.target.value)}
+                  style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 8px" }}
+                />
+                <input
+                  type="time"
+                  value={blockStart}
+                  onChange={(e) => setBlockStart(e.target.value)}
+                  style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 8px" }}
+                />
+                <input
+                  type="time"
+                  value={blockEnd}
+                  onChange={(e) => setBlockEnd(e.target.value)}
+                  style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 8px" }}
+                />
+                <input
+                  value={blockReason}
+                  onChange={(e) => setBlockReason(e.target.value)}
+                  placeholder="Reason (e.g. Staff training)"
+                  style={{ flex: 1, minWidth: 120, background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 10px" }}
+                />
+                <Button type="submit" tone="soft" small>
+                  Block time
+                </Button>
+              </form>
+            ) : null}
           </div>
         </div>
       </div>
@@ -299,9 +446,36 @@ function CalendarContent() {
               <div className="tiny">
                 {state.services.find((s) => s.id === selectedAppt.serviceId)?.name} · {formatDate(selectedAppt.start)} {formatTime(selectedAppt.start)}
               </div>
+              {canViewCustomers && selectedCustomer ? (
+                <div className="tiny" style={{ marginTop: 4 }}>
+                  Contact: {selectedCustomer.phone} · {selectedCustomer.email}
+                </div>
+              ) : null}
             </div>
+            <Field label="Booking notes">
+              <textarea
+                rows={2}
+                value={apptNote}
+                readOnly={!canManage}
+                onChange={(e) => setApptNote(e.target.value)}
+                placeholder="Customer preferences, arrival info, or internal booking notes"
+              />
+            </Field>
             {canManage ? (
               <>
+                <div className="row">
+                  <Button
+                    tone="soft"
+                    small
+                    onClick={() => {
+                      updateAppointmentNotes(bizId, selectedAppt.id, apptNote);
+                      setSelectedAppt({ ...selectedAppt, notes: apptNote.trim() || undefined });
+                      setScheduleNotice("Booking notes saved.");
+                    }}
+                  >
+                    Save notes
+                  </Button>
+                </div>
                 <div className="grid-2">
                   <Field label="Move date">
                     <input type="date" value={moveDate} onChange={(e) => setMoveDate(e.target.value)} />
@@ -339,6 +513,16 @@ function CalendarContent() {
                     }}
                   >
                     Complete
+                  </Button>
+                  <Button
+                    tone="ghost"
+                    small
+                    onClick={() => {
+                      setAppointmentStatus(selectedAppt.id, "no_show", auth.userId!);
+                      setSelectedAppt(null);
+                    }}
+                  >
+                    No-show
                   </Button>
                   <Button
                     tone="danger"

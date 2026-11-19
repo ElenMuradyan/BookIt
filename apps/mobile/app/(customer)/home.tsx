@@ -5,7 +5,7 @@ import {
   cartFor,
   customerAppointments,
   displayUser,
-  publicBusinesses,
+  personalizedBusinesses,
   searchProducts,
   useBookItState,
 } from "@bookit/api-client";
@@ -42,7 +42,8 @@ export default function CustomerHomeScreen() {
   const favIds = new Set(
     state.favorites.filter((f) => f.userId === user.id && f.targetType === "business").map((f) => f.targetId),
   );
-  const businesses = publicBusinesses(state);
+  const recResult = personalizedBusinesses(state, user.id);
+  const businesses = recResult.items;
   const favorites = businesses.filter((b) => favIds.has(b.id));
   const products = searchProducts(state, {}).slice(0, 4);
   const sponsored = state.advertisements.find((ad) => ad.status === "active");
@@ -142,7 +143,7 @@ export default function CustomerHomeScreen() {
               small
               style={{ flex: 1, backgroundColor: "#FFFFFF" }}
               tone="ghost"
-              onPress={() => router.push("/(customer)/bookings")}
+              onPress={() => router.push(`/(customer)/booking/${upcoming.id}`)}
             />
             <Button
               label="Book Again"
@@ -192,7 +193,11 @@ export default function CustomerHomeScreen() {
         ))}
       </ScrollView>
 
-      <SectionHeader title="Your Favorites" actionLabel="See all" onAction={() => router.push("/(customer)/favorites")} />
+      <SectionHeader
+        title={recResult.personalized ? "Recommended & Favorites" : "Favorites & Top Venues"}
+        actionLabel="See all"
+        onAction={() => router.push("/(customer)/favorites")}
+      />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
         {(favorites.length ? favorites : businesses.slice(0, 3)).map((biz) => (
           <Card

@@ -1,12 +1,11 @@
 import {
   customerAppointments,
   displayUser,
-  rescheduleAppointment,
   setAppointmentStatus,
   useBookItState,
 } from "@bookit/api-client";
 import { appointmentStatus } from "@bookit/ui";
-import { addDays, DEMO_TODAY, demoNow, formatDateTime, formatMoney } from "@bookit/utils";
+import { demoNow, formatDateTime, formatMoney } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Text, View } from "react-native";
@@ -24,7 +23,7 @@ export default function CustomerBookingsScreen() {
   if (!auth.userId) return null;
   const now = demoNow().getTime();
   const rows = customerAppointments(state, auth.userId).filter((a) => {
-    const isPast = a.status === "completed" || a.status === "cancelled" || new Date(a.start).getTime() < now;
+    const isPast = a.status === "completed" || a.status === "cancelled" || a.status === "rejected" || new Date(a.start).getTime() < now;
     return tab === "upcoming" ? !isPast : isPast;
   });
 
@@ -45,7 +44,7 @@ export default function CustomerBookingsScreen() {
           const emp = state.employees.find((e) => e.id === apt.employeeId);
           const meta = appointmentStatus(apt.status);
           return (
-            <Card key={apt.id} style={{ gap: 8 }}>
+            <Card key={apt.id} onPress={() => router.push(`/(customer)/booking/${apt.id}`)} style={{ gap: 8 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                 <Badge label={meta.label} tone={meta.tone} />
                 <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
@@ -62,27 +61,36 @@ export default function CustomerBookingsScreen() {
               {tab === "upcoming" && (apt.status === "pending" || apt.status === "confirmed") ? (
                 <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
                   <Button
-                    label="Reschedule +1d"
+                    label="Details & Reschedule"
                     tone="soft"
                     small
                     style={{ flex: 1 }}
-                    onPress={() => rescheduleAppointment(apt.id, addDays(apt.start.slice(0, 10) || DEMO_TODAY, 1), apt.start.slice(11, 16), auth.userId!)}
+                    onPress={() => router.push(`/(customer)/booking/${apt.id}`)}
                   />
                   <Button
                     label="Cancel"
                     tone="danger"
                     small
-                    style={{ flex: 1 }}
                     onPress={() => setAppointmentStatus(apt.id, "cancelled", auth.userId!)}
                   />
                 </View>
               ) : (
-                <Button
-                  label="Book Again"
-                  tone="ghost"
-                  small
-                  onPress={() => biz && router.push(`/(customer)/book/${biz.id}`)}
-                />
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
+                  <Button
+                    label="Details"
+                    tone="ghost"
+                    small
+                    style={{ flex: 1 }}
+                    onPress={() => router.push(`/(customer)/booking/${apt.id}`)}
+                  />
+                  <Button
+                    label="Book Again"
+                    tone="soft"
+                    small
+                    style={{ flex: 1 }}
+                    onPress={() => biz && router.push(`/(customer)/book/${biz.id}?service=${apt.serviceId}`)}
+                  />
+                </View>
               )}
             </Card>
           );

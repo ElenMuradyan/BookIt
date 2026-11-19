@@ -22,6 +22,8 @@ export default function RegisterPage() {
     location: "",
     language: "English",
     dateOfBirth: "",
+    gender: "",
+    personalizationConsent: false,
     acceptTerms: false,
   });
   const [show, setShow] = useState(false);
@@ -34,6 +36,8 @@ export default function RegisterPage() {
     event.preventDefault();
     const result = registerCustomer({
       ...form,
+      gender: form.gender || undefined,
+      personalizationConsent: form.personalizationConsent,
       interests: [],
       acceptTerms: form.acceptTerms ? true : (undefined as unknown as true),
     });
@@ -50,11 +54,20 @@ export default function RegisterPage() {
     <div className="auth-layout">
       <section className="auth-art">
         <Link href="/" className="brand"><Mark /> BookIt</Link>
-        <h1>Create your personal account. Add a business later from the same login.</h1>
+        <h1>Create your customer account.</h1>
+        <p className="lede">
+          We only require basic contact info to manage your bookings. Optional details are clearly explained and never used for personalization without your consent.
+        </p>
       </section>
       <section className="auth-panel">
         <form className="stack auth-card" onSubmit={submit}>
-          <h2 style={{ margin: 0 }}>Create account</h2>
+          <div className="tabs" style={{ marginBottom: 4 }}>
+            <span className="tab on">Customer Sign Up</span>
+            <Link href="/register/business" className="tab">
+              Register a Business
+            </Link>
+          </div>
+          <h2 style={{ margin: 0 }}>Create customer account</h2>
           <div className="grid-2">
             <Field name="firstName" label="First name" form={form} set={set} errors={errors} />
             <Field name="lastName" label="Last name" form={form} set={set} errors={errors} />
@@ -67,18 +80,48 @@ export default function RegisterPage() {
           <p className="tiny">{score.label}. {score.hints[0]}</p>
           <Field name="confirmPassword" label="Confirm password" form={form} set={set} errors={errors} type={show ? "text" : "password"} />
           <button type="button" className="btn ghost small" onClick={() => setShow((value) => !value)}>{show ? "Hide passwords" : "Show passwords"}</button>
-          <Field name="location" label="Location (optional)" form={form} set={set} errors={errors} />
-          <Field name="language" label="Language" form={form} set={set} errors={errors} />
-          <Field name="dateOfBirth" label="Date of birth (optional)" form={form} set={set} errors={errors} type="date" />
+
+          <div className="panel stack" style={{ gap: 10, padding: 12 }}>
+            <strong style={{ fontSize: 13 }}>Optional details (for eligibility &amp; tailored results)</strong>
+            <p className="tiny" style={{ margin: 0 }}>
+              Location helps show nearby venues. Date of birth is only used to confirm minimum-age eligibility for spa/clinic treatments. Gender is completely optional and helps providers prepare for personal care appointments when relevant.
+            </p>
+            <div className="grid-2">
+              <Field name="location" label="City / Location (optional)" form={form} set={set} errors={errors} />
+              <Field name="language" label="Preferred language" form={form} set={set} errors={errors} />
+              <Field name="dateOfBirth" label="Date of birth (optional)" form={form} set={set} errors={errors} type="date" />
+              <label className="field">
+                <span>Gender (optional)</span>
+                <select value={form.gender} onChange={(event) => set("gender", event.target.value)}>
+                  <option value="">Prefer not to say</option>
+                  <option value="Female">Female</option>
+                  <option value="Male">Male</option>
+                  <option value="Non-binary">Non-binary</option>
+                  <option value="Self-describe">Other / Self-describe</option>
+                </select>
+              </label>
+            </div>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={form.personalizationConsent}
+                onChange={(event) => set("personalizationConsent", event.target.checked)}
+              />
+              <span>I consent to BookIt using my optional profile details and saved interests for personalized service recommendations (you can withdraw anytime in Settings).</span>
+            </label>
+          </div>
+
           <label className="check">
             <input type="checkbox" checked={form.acceptTerms} onChange={(event) => set("acceptTerms", event.target.checked)} />
             <span>I agree to the <Link href="/legal/terms">Terms</Link> and <Link href="/legal/privacy">Privacy notice</Link>.</span>
           </label>
           {errors.acceptTerms ? <small className="error">{errors.acceptTerms}</small> : null}
           {message ? <p className="error">{message}</p> : null}
-          <button className="btn" type="submit">Create account</button>
-          <Link href="/login">Already have an account</Link>
-          <Link href="/register/business">Register a business instead</Link>
+          <button className="btn" type="submit">Create customer account</button>
+          <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+            <Link href="/login">Customer sign in</Link>
+            <Link href="/login/business">Business sign in</Link>
+          </div>
         </form>
       </section>
     </div>

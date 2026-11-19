@@ -8,7 +8,7 @@ import {
   useBookItState,
 } from "@bookit/api-client";
 import type { PaymentMethod } from "@bookit/types";
-import { addDays, availableSlots, DEMO_TODAY, formatDate, formatMoney, initials } from "@bookit/utils";
+import { addDays, availableSlots, bookingTotals, DEMO_TODAY, formatDate, formatMoney, initials } from "@bookit/utils";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, use, useMemo, useState } from "react";
@@ -31,6 +31,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
   const [date, setDate] = useState(DATES[1] ?? DEMO_TODAY);
   const [time, setTime] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("in_person");
+  const [notes, setNotes] = useState("");
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [error, setError] = useState("");
   const [confirmedId, setConfirmedId] = useState("");
@@ -58,29 +59,55 @@ function BookingFlow({ businessId }: { businessId: string }) {
   if (!business) return <Empty title="Business unavailable" body="Only approved businesses accept bookings." />;
   if (!activeService) return <Empty title="No services available" body="This business has not published services yet." />;
 
+  const { subtotal, tax, total } = bookingTotals(activeService.price);
+  const confirmedApt = confirmedId ? state.appointments.find((a) => a.id === confirmedId) : undefined;
+
   if (confirmedId) {
     return (
-      <div className="panel stack" style={{ maxWidth: 640 }}>
-        <Badge tone="success">Appointment scheduled</Badge>
+      <div className="panel stack" style={{ maxWidth: 640, gap: 14 }}>
+        <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+          <Badge tone={confirmedApt?.status === "pending" ? "warning" : "success"}>
+            {confirmedApt?.status === "pending" ? "Approval requested" : "Booking confirmed"}
+          </Badge>
+          <span className="tiny tabular">Reference #{confirmedId}</span>
+        </div>
         <h1 style={{ margin: 0 }}>You&apos;re booked at {business.name}</h1>
-        <p className="muted">
-          {activeService.name} with {activeEmployee ? displayUser(state, activeEmployee.userId) : "Team member"} on{" "}
-          {formatDate(`${date}T12:00:00`)} at {time}.
+        <p className="muted" style={{ margin: 0 }}>
+          {activeService.name} ({activeService.durationMinutes} min) with{" "}
+          {activeEmployee ? displayUser(state, activeEmployee.userId) : "Team member"} on{" "}
+          {formatDate(`${date}T12:00:00`, { weekday: "long", month: "short", day: "numeric" })} at {time}.
         </p>
-        <div className="row">
+        <div className="select-card stack" style={{ gap: 6 }}>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="tiny">Service Fee</span>
+            <span className="tabular">{formatMoney(subtotal)}</span>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="tiny">Estimated Tax (8%)</span>
+            <span className="tabular">{formatMoney(tax)}</span>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", borderTop: "1px solid var(--line)", paddingTop: 6 }}>
+            <strong>Total</strong>
+            <strong className="tabular">{formatMoney(total)}</strong>
+          </div>
+          <div className="tiny">
+            Payment method: {paymentMethod.replaceAll("_", " ")} · {business.address}, {business.city}
+          </div>
+        </div>
+        <div className="row" style={{ flexWrap: "wrap" }}>
           <Link href={`/bookings/${confirmedId}`} className="btn">
             View booking details
           </Link>
           <Link href="/bookings" className="btn ghost">
             My Bookings
           </Link>
+          <Link href={`/business/${business.id}`} className="btn ghost">
+            Back to {business.name}
+          </Link>
         </div>
       </div>
     );
   }
-
-  const tax = Math.round(activeService.price * 0.08 * 100) / 100;
-  const total = activeService.price + tax;
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -214,7 +241,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
           </section>
 
           <section className="panel stack">
-            <h3>4. Payment Method</h3>
+            <h3>4. Payment &amp; Notes</h3>
             <div className="chips">
               {(
                 [
@@ -233,6 +260,14 @@ function BookingFlow({ businessId }: { businessId: string }) {
                 </button>
               ))}
             </div>
+            <label className="field">
+              <span>Notes for your provider (optional)</span>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Allergies, accessibility preferences, or styling notes..."
+              />
+            </label>
             <p className="tiny" style={{ margin: 0 }}>
               Payment card numbers are never collected in the frontend preview.
             </p>
@@ -255,7 +290,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
           </div>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <span className="muted">Service Fee</span>
-            <span className="tabular">{formatMoney(activeService.price)}</span>
+            <span className="tabular">{formatMoney(subtotal)}</span>
           </div>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <span className="muted">Estimated Tax (8%)</span>
@@ -281,6 +316,8 @@ function BookingFlow({ businessId }: { businessId: string }) {
                 employeeId: activeEmployee.id,
                 date,
                 time,
+                paymentMethod,
+                notes,
               });
               if (!res.ok) {
                 setError(res.error);

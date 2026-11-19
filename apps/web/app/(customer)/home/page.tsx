@@ -4,7 +4,7 @@ import {
   customerAppointments,
   customerOrders,
   displayUser,
-  publicBusinesses,
+  personalizedBusinesses,
   searchProducts,
   toggleFavorite,
   useBookItState,
@@ -29,7 +29,8 @@ export default function CustomerHomePage() {
   const favBizIds = state.favorites.filter((f) => f.userId === userId && f.targetType === "business").map((f) => f.targetId);
   const favBusinesses = state.businesses.filter((b) => favBizIds.includes(b.id));
   const recentOrders = customerOrders(state, userId).slice(0, 3);
-  const featuredBusinesses = publicBusinesses(state).slice(0, 3);
+  const recResult = personalizedBusinesses(state, userId);
+  const featuredBusinesses = recResult.items;
   const popularServices = state.services.filter((s) => s.active).slice(0, 3);
   const recommendedProducts = searchProducts(state, { sort: "newest" }).slice(0, 4);
   const sponsoredAd = state.advertisements.find((ad) => ad.placement === "home" && ad.status === "active");
@@ -149,7 +150,14 @@ export default function CustomerHomePage() {
 
       <section className="stack">
         <div className="section-head" style={{ marginTop: 4 }}>
-          <h2>Favorite Businesses</h2>
+          <div>
+            <h2>{recResult.personalized ? "Recommended for You" : "Featured Businesses"}</h2>
+            <span className="tiny">
+              {recResult.personalized
+                ? "Personalized from your saved interests (manage in Account Privacy)"
+                : "Top-rated venues · enable personalized recommendations in Account Privacy"}
+            </span>
+          </div>
           <Link href="/favorites" className="tiny">
             Manage favorites →
           </Link>
@@ -191,7 +199,7 @@ export default function CustomerHomePage() {
           {popularServices.map((svc) => {
             const biz = state.businesses.find((b) => b.id === svc.businessId);
             return (
-              <Link key={svc.id} href={`/book/${svc.businessId}?service=${svc.id}`} className="panel stack" style={{ gap: 6 }}>
+              <Link key={svc.id} href={`/services/${svc.id}`} className="panel stack" style={{ gap: 6 }}>
                 <strong>{svc.name}</strong>
                 <span className="tiny">{biz?.name} · {svc.durationMinutes} min</span>
                 <strong className="tabular">{svc.price === 0 ? "Free" : formatMoney(svc.price)}</strong>

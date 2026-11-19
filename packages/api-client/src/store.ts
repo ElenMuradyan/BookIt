@@ -5,6 +5,7 @@ import type {
   BusinessCategory,
   BusinessStatus,
   Campaign,
+  Employee,
   MembershipRole,
   OrderStatus,
   PaymentMethod,
@@ -12,6 +13,7 @@ import type {
   Review,
   Service,
   User,
+  WeeklyHours,
 } from "@bookit/types";
 import { addDays, createSessionToken, sessionFlags } from "@bookit/utils";
 import {
@@ -110,6 +112,16 @@ export function login(input: LoginInput): ActionResult<{ token: string; userId: 
   return { ok: true, data: { token: createSessionToken(user.id, flags, Boolean(parsed.data.remember)), userId: user.id } };
 }
 
+export function loginBusiness(input: LoginInput): ActionResult<{ token: string; userId: string; businessId: string }> {
+  const res = login(input);
+  if (!res.ok) return res;
+  const spaces = workspacesFor(state, res.data.userId);
+  if (spaces.length === 0) {
+    return fail("This account does not have a business workspace yet. Sign in as a customer or register a business.");
+  }
+  return { ok: true, data: { ...res.data, businessId: spaces[0]!.businessId } };
+}
+
 export function registerCustomer(input: RegisterInput): ActionResult<{ token: string; userId: string; code: string }> {
   const parsed = registerSchema.safeParse(input);
   if (!parsed.success) return fail("Check the form", fieldErrors(parsed.error));
@@ -128,8 +140,9 @@ export function registerCustomer(input: RegisterInput): ActionResult<{ token: st
       username: parsed.data.username,
       email,
       phone: parsed.data.phone,
-      dateOfBirth: parsed.data.dateOfBirth,
-      location: parsed.data.location,
+      dateOfBirth: parsed.data.dateOfBirth || undefined,
+      gender: parsed.data.gender || undefined,
+      location: parsed.data.location || undefined,
       language: parsed.data.language || "English",
       interests: parsed.data.interests ?? [],
       emailVerified: false,
@@ -144,6 +157,8 @@ export function registerCustomer(input: RegisterInput): ActionResult<{ token: st
       interests: parsed.data.interests ?? [],
       language: parsed.data.language || "English",
       marketingOptIn: false,
+      personalizationConsent: Boolean(parsed.data.personalizationConsent),
+      consentUpdatedAt: parsed.data.personalizationConsent ? now : undefined,
       spendingVisibility: "recorded_only",
       theme: "dark",
       notificationPreferences: { booking: true, order: true, promotion: false, message: true, security: true },
@@ -188,24 +203,35 @@ export function confirmPasswordReset(identifier: string, code: string, password:
   return { ok: true, data: undefined };
 }
 
-export function submitBusinessApplication(input: BusinessApplicationInput & { applicantUserId?: string }): ActionResult<{ businessId: string }> {
+export function submitBusinessApplication(
+  input: BusinessApplicationInput & { applicantUserId?: string },
+): ActionResult<{ businessId: string; userId: string; token?: string }> {
   const parsed = businessApplicationSchema.safeParse(input);
   if (!parsed.success) return fail("Check the form", fieldErrors(parsed.error));
   const businessId = nid("biz");
   const now = new Date().toISOString();
   let ownerId = input.applicantUserId;
+  const ownerEmail = parsed.data.ownerEmail.trim().toLowerCase();
+  let createdNewAccount = false;
+
   if (!ownerId) {
-    const existing = state.users.find((user) => user.email.toLowerCase() === parsed.data.ownerEmail.toLowerCase());
+    const existing = state.users.find((user) => user.email.toLowerCase() === ownerEmail);
+    if (!existing && !parsed.data.ownerPassword) {
+      return fail("Create an owner password to sign in to your business workspace", {
+        ownerPassword: "Create an owner password (8+ characters with upper, lower, number, symbol)",
+      });
+    }
     ownerId = existing?.id ?? nid("usr");
     if (!existing) {
-      const [firstName, ...rest] = parsed.data.ownerName.split(" ");
+      createdNewAccount = true;
+      const [firstName, ...rest] = parsed.data.ownerName.trim().split(" ");
       draft((next) => {
         next.users.push({
           id: ownerId!,
           firstName: firstName || "Owner",
           lastName: rest.join(" ") || "Account",
           username: `owner_${seq}`,
-          email: parsed.data.ownerEmail.toLowerCase(),
+          email: ownerEmail,
           phone: parsed.data.ownerPhone,
           language: "English",
           interests: [],
@@ -216,7 +242,19 @@ export function submitBusinessApplication(input: BusinessApplicationInput & { ap
           createdAt: now,
           updatedAt: now,
         });
+        next.customerProfiles.push({
+          userId: ownerId!,
+          interests: [],
+          language: "English",
+          marketingOptIn: false,
+          personalizationConsent: false,
+          spendingVisibility: "recorded_only",
+          theme: "dark",
+          notificationPreferences: { booking: true, order: true, promotion: false, message: true, security: true },
+        });
+        next.carts.push({ id: nid("cart"), userId: ownerId!, items: [], updatedAt: now });
       });
+      passwords.set(ownerEmail, parsed.data.ownerPassword!);
     }
   }
   draft((next) => {
@@ -285,11 +323,30 @@ export function submitBusinessApplication(input: BusinessApplicationInput & { ap
       title: "Owner",
       createdAt: now,
     });
+    next.notifications.unshift({
+      id: nid("ntf"),
+      userId: ownerId!,
+      businessId,
+      category: "message",
+      title: "Business application submitted",
+      body: `${parsed.data.businessName} is queued for platform review. You can configure services and hours now.`,
+      read: false,
+      createdAt: now,
+      href: "/workspace/settings",
+    });
   });
-  return { ok: true, data: { businessId } };
+  const owner = state.users.find((u) => u.id === ownerId);
+  const token =
+    createdNewAccount || input.applicantUserId
+      ? createSessionToken(ownerId!, sessionFlags(Boolean(owner?.isPlatformAdmin), true), true)
+      : undefined;
+  return { ok: true, data: { businessId, userId: ownerId!, token } };
 }
 
-export function updateProfile(userId: string, patch: Partial<Pick<User, "firstName" | "lastName" | "phone" | "location" | "language" | "interests" | "avatarUrl" | "dateOfBirth">>): ActionResult {
+export function updateProfile(
+  userId: string,
+  patch: Partial<Pick<User, "firstName" | "lastName" | "phone" | "location" | "language" | "interests" | "avatarUrl" | "dateOfBirth" | "gender">>,
+): ActionResult {
   draft((next) => {
     const user = next.users.find((item) => item.id === userId);
     if (!user) return;
@@ -298,6 +355,17 @@ export function updateProfile(userId: string, patch: Partial<Pick<User, "firstNa
     if (profile) {
       if (patch.language) profile.language = patch.language;
       if (patch.interests) profile.interests = patch.interests;
+    }
+  });
+  return { ok: true, data: undefined };
+}
+
+export function setPersonalizationConsent(userId: string, consent: boolean): ActionResult {
+  draft((next) => {
+    const profile = next.customerProfiles.find((item) => item.userId === userId);
+    if (profile) {
+      profile.personalizationConsent = consent;
+      profile.consentUpdatedAt = new Date().toISOString();
     }
   });
   return { ok: true, data: undefined };
@@ -485,6 +553,8 @@ export function createAppointment(input: {
   employeeId: string;
   date: string;
   time: string;
+  paymentMethod?: PaymentMethod;
+  notes?: string;
 }): ActionResult<{ id: string }> {
   const service = state.services.find((item) => item.id === input.serviceId && item.active);
   if (!service) return fail("Service unavailable");
@@ -499,8 +569,11 @@ export function createAppointment(input: {
   const end = new Date(start.getTime() + service.durationMinutes * 60 * 1000);
   const status: AppointmentStatus = service.requiresApproval || business?.bookingApproval === "manual" ? "pending" : "confirmed";
   const id = nid("apt");
+  const paymentMethod: PaymentMethod = input.paymentMethod ?? "in_person";
   draft((next) => {
     const now = new Date().toISOString();
+    const customer = next.users.find((u) => u.id === input.customerId);
+    const customerName = customer ? `${customer.firstName} ${customer.lastName}` : "Customer";
     next.appointments.push({
       id,
       businessId: service.businessId,
@@ -512,8 +585,10 @@ export function createAppointment(input: {
       status,
       price: service.price,
       currency: "USD",
-      paymentStatus: "unpaid",
+      paymentStatus: paymentMethod === "wallet" ? "paid" : "unpaid",
+      paymentMethod,
       confirmationMode: status === "pending" ? "manual" : "automatic",
+      notes: input.notes?.trim() || undefined,
       createdAt: now,
     });
     next.notifications.unshift({
@@ -527,6 +602,19 @@ export function createAppointment(input: {
       createdAt: now,
       href: `/bookings/${id}`,
     });
+    if (business && business.ownerUserId !== input.customerId) {
+      next.notifications.unshift({
+        id: nid("ntf"),
+        userId: business.ownerUserId,
+        businessId: service.businessId,
+        category: "booking",
+        title: status === "pending" ? "New booking request" : "New booking confirmed",
+        body: `${customerName} booked ${service.name} for ${input.date} at ${input.time}.`,
+        read: false,
+        createdAt: now,
+        href: "/workspace/bookings",
+      });
+    }
   });
   return { ok: true, data: { id } };
 }
@@ -540,7 +628,36 @@ export function setAppointmentStatus(id: string, status: AppointmentStatus, acto
   if (isCustomer && !["cancelled"].includes(status)) return fail("Customers can cancel from this screen");
   draft((next) => {
     const row = next.appointments.find((item) => item.id === id);
-    if (row) row.status = status;
+    if (!row) return;
+    row.status = status;
+    const now = new Date().toISOString();
+    const business = next.businesses.find((b) => b.id === row.businessId);
+    const service = next.services.find((s) => s.id === row.serviceId);
+    if (isCustomer && business) {
+      next.notifications.unshift({
+        id: nid("ntf"),
+        userId: business.ownerUserId,
+        businessId: row.businessId,
+        category: "booking",
+        title: "Booking cancelled by customer",
+        body: `${service?.name ?? "Appointment"} (${row.start.slice(0, 16).replace("T", " ")}) was cancelled.`,
+        read: false,
+        createdAt: now,
+        href: "/workspace/bookings",
+      });
+    } else if (!isCustomer) {
+      next.notifications.unshift({
+        id: nid("ntf"),
+        userId: row.customerId,
+        businessId: row.businessId,
+        category: "booking",
+        title: `Booking ${status.replaceAll("_", " ")}`,
+        body: `${service?.name ?? "Your appointment"} at ${business?.name ?? "Business"} is now ${status.replaceAll("_", " ")}.`,
+        read: false,
+        createdAt: now,
+        href: `/bookings/${row.id}`,
+      });
+    }
   });
   return { ok: true, data: undefined };
 }
@@ -561,6 +678,28 @@ export function rescheduleAppointment(id: string, date: string, time: string, ac
     row.start = `${date}T${time}:00`;
     row.end = `${date}T${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}:00`;
     row.status = row.confirmationMode === "manual" ? "pending" : "confirmed";
+    const now = new Date().toISOString();
+    const business = next.businesses.find((b) => b.id === row.businessId);
+    const isCustomer = row.customerId === actorUserId;
+    next.notifications.unshift({
+      id: nid("ntf"),
+      userId: isCustomer && business ? business.ownerUserId : row.customerId,
+      businessId: row.businessId,
+      category: "booking",
+      title: "Booking rescheduled",
+      body: `${service.name} moved to ${date} at ${time}.`,
+      read: false,
+      createdAt: now,
+      href: isCustomer ? "/workspace/bookings" : `/bookings/${row.id}`,
+    });
+  });
+  return { ok: true, data: undefined };
+}
+
+export function updateAppointmentNotes(businessId: string, appointmentId: string, notes: string): ActionResult {
+  draft((next) => {
+    const row = next.appointments.find((item) => item.id === appointmentId && item.businessId === businessId);
+    if (row) row.notes = notes.trim() || undefined;
   });
   return { ok: true, data: undefined };
 }
@@ -645,6 +784,23 @@ export function assignEmployeeToService(businessId: string, serviceId: string, e
     if (!service || !employee) return;
     if (!service.employeeIds.includes(employeeId)) service.employeeIds.push(employeeId);
     if (!employee.serviceIds.includes(serviceId)) employee.serviceIds.push(serviceId);
+  });
+  return { ok: true, data: undefined };
+}
+
+export function toggleEmployeeToService(businessId: string, serviceId: string, employeeId: string): ActionResult {
+  draft((next) => {
+    const service = next.services.find((item) => item.id === serviceId && item.businessId === businessId);
+    const employee = next.employees.find((item) => item.id === employeeId && item.businessId === businessId);
+    if (!service || !employee) return;
+    const assigned = service.employeeIds.includes(employeeId);
+    if (assigned) {
+      service.employeeIds = service.employeeIds.filter((id) => id !== employeeId);
+      employee.serviceIds = employee.serviceIds.filter((id) => id !== serviceId);
+    } else {
+      service.employeeIds.push(employeeId);
+      if (!employee.serviceIds.includes(serviceId)) employee.serviceIds.push(serviceId);
+    }
   });
   return { ok: true, data: undefined };
 }
@@ -789,6 +945,89 @@ export function updateBusiness(businessId: string, patch: Partial<Pick<AppState[
     const business = next.businesses.find((item) => item.id === businessId);
     if (!business) return;
     Object.assign(business, patch, { updatedAt: new Date().toISOString() });
+  });
+  return { ok: true, data: undefined };
+}
+
+export function updateBusinessHours(businessId: string, hours: WeeklyHours): ActionResult {
+  draft((next) => {
+    const business = next.businesses.find((item) => item.id === businessId);
+    if (business) {
+      business.hours = hours;
+      business.updatedAt = new Date().toISOString();
+    }
+  });
+  return { ok: true, data: undefined };
+}
+
+export function addBusinessHoliday(businessId: string, date: string, name: string): ActionResult {
+  if (!date || name.trim().length < 2) return fail("Enter a date and holiday name");
+  draft((next) => {
+    const business = next.businesses.find((item) => item.id === businessId);
+    if (!business) return;
+    if (business.holidays.some((h) => h.date === date)) return;
+    business.holidays.push({ date, name: name.trim() });
+    business.updatedAt = new Date().toISOString();
+  });
+  return { ok: true, data: undefined };
+}
+
+export function removeBusinessHoliday(businessId: string, date: string): ActionResult {
+  draft((next) => {
+    const business = next.businesses.find((item) => item.id === businessId);
+    if (!business) return;
+    business.holidays = business.holidays.filter((h) => h.date !== date);
+    business.updatedAt = new Date().toISOString();
+  });
+  return { ok: true, data: undefined };
+}
+
+export function addBlockedSlot(businessId: string, date: string, start: string, end: string, reason: string): ActionResult {
+  if (!date || !start || !end || start >= end) return fail("Enter a valid date and time range");
+  draft((next) => {
+    const business = next.businesses.find((item) => item.id === businessId);
+    if (!business) return;
+    business.blocked.push({ id: nid("blk"), date, start, end, reason: reason.trim() || "Blocked time" });
+    business.updatedAt = new Date().toISOString();
+  });
+  return { ok: true, data: undefined };
+}
+
+export function removeBlockedSlot(businessId: string, blockId: string): ActionResult {
+  draft((next) => {
+    const business = next.businesses.find((item) => item.id === businessId);
+    if (!business) return;
+    business.blocked = business.blocked.filter((b) => b.id !== blockId);
+    business.updatedAt = new Date().toISOString();
+  });
+  return { ok: true, data: undefined };
+}
+
+export function updateEmployeeAvailability(
+  businessId: string,
+  employeeId: string,
+  patch: Partial<Pick<Employee, "status" | "hours" | "title">>,
+): ActionResult {
+  draft((next) => {
+    const employee = next.employees.find((item) => item.id === employeeId && item.businessId === businessId);
+    if (employee) Object.assign(employee, patch);
+  });
+  return { ok: true, data: undefined };
+}
+
+export function markBusinessNotificationRead(businessId: string, notificationId: string): ActionResult {
+  draft((next) => {
+    const row = next.notifications.find((item) => item.id === notificationId && item.businessId === businessId);
+    if (row) row.read = true;
+  });
+  return { ok: true, data: undefined };
+}
+
+export function markAllBusinessNotificationsRead(businessId: string): ActionResult {
+  draft((next) => {
+    next.notifications.forEach((item) => {
+      if (item.businessId === businessId) item.read = true;
+    });
   });
   return { ok: true, data: undefined };
 }

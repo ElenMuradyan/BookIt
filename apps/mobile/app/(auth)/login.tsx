@@ -2,7 +2,7 @@ import { demoPasswordHint, login } from "@bookit/api-client";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
-import { Badge, BrandHeader, Button, Card, InputField, Screen } from "@/components/Ui";
+import { Badge, BrandHeader, Button, Card, Chip, InputField, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
 import { useAuth } from "@/services/session";
 
@@ -38,12 +38,17 @@ export default function LoginScreen() {
 
   return (
     <Screen>
-      <BrandHeader title="Sign in" showBack />
+      <BrandHeader title="Customer Sign In" showBack />
+
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <Chip label="Customer Sign In" active onPress={() => {}} />
+        <Chip label="Business Sign In" active={false} onPress={() => router.replace("/(auth)/login-business")} />
+      </View>
 
       <Card style={{ gap: 14 }}>
         <View style={{ gap: 4 }}>
           <Text style={{ color: colors.text, fontSize: 22, fontWeight: "800" }}>Welcome back</Text>
-          <Text style={{ color: colors.muted, fontSize: 13 }}>Sign in with your BookIt email or username.</Text>
+          <Text style={{ color: colors.muted, fontSize: 13 }}>Sign in with your BookIt customer email or username.</Text>
         </View>
 
         <InputField

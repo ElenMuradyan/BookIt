@@ -1,5 +1,5 @@
-import { displayUser, inviteMember, setMemberRole, useBookItState } from "@bookit/api-client";
-import type { MembershipRole } from "@bookit/types";
+import { displayUser, inviteMember, setMemberRole, updateEmployeeAvailability, useBookItState } from "@bookit/api-client";
+import type { Employee, MembershipRole } from "@bookit/types";
 import { roleLabels } from "@bookit/ui";
 import { can } from "@bookit/utils";
 import React, { useState } from "react";
@@ -9,6 +9,7 @@ import { useThemePalette } from "@/hooks/useThemePalette";
 import { useAuth } from "@/services/session";
 
 const ROLES: MembershipRole[] = ["admin", "manager", "employee", "receptionist", "accountant"];
+const SHIFT_STATUSES: Employee["status"][] = ["available", "in_appointment", "off_shift", "on_leave"];
 
 export default function WorkspaceTeamScreen() {
   const auth = useAuth();
@@ -56,7 +57,7 @@ export default function WorkspaceTeamScreen() {
                 </Text>
               </View>
               <Badge
-                label={emp ? emp.status.replace("_", " ") : mem.status}
+                label={emp ? emp.status.replaceAll("_", " ") : mem.status}
                 tone={emp?.status === "available" ? "success" : "brand"}
               />
             </View>
@@ -67,16 +68,34 @@ export default function WorkspaceTeamScreen() {
                 ))}
               </View>
             ) : null}
+            {canManage && emp ? (
+              <View style={{ gap: 4 }}>
+                <Text style={{ color: colors.muted, fontSize: 11 }}>Shift Status</Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  {SHIFT_STATUSES.map((st) => (
+                    <Chip
+                      key={st}
+                      label={st.replaceAll("_", " ")}
+                      active={emp.status === st}
+                      onPress={() => updateEmployeeAvailability(bizId, emp.id, { status: st })}
+                    />
+                  ))}
+                </View>
+              </View>
+            ) : null}
             {canManage && mem.role !== "owner" ? (
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                {(["manager", "employee", "receptionist"] as const).map((r) => (
-                  <Chip
-                    key={r}
-                    label={roleLabels[r]}
-                    active={mem.role === r}
-                    onPress={() => setMemberRole(bizId, mem.id, r)}
-                  />
-                ))}
+              <View style={{ gap: 4 }}>
+                <Text style={{ color: colors.muted, fontSize: 11 }}>Workspace Role</Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  {(["manager", "employee", "receptionist"] as const).map((r) => (
+                    <Chip
+                      key={r}
+                      label={roleLabels[r]}
+                      active={mem.role === r}
+                      onPress={() => setMemberRole(bizId, mem.id, r)}
+                    />
+                  ))}
+                </View>
               </View>
             ) : null}
           </Card>

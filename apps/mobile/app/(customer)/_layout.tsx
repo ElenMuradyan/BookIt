@@ -65,7 +65,9 @@ export default function CustomerTabsLayout() {
         }}
       />
       <Tabs.Screen name="business/[id]" options={{ href: null }} />
+      <Tabs.Screen name="service/[id]" options={{ href: null }} />
       <Tabs.Screen name="book/[businessId]" options={{ href: null }} />
+      <Tabs.Screen name="booking/[id]" options={{ href: null }} />
       <Tabs.Screen name="marketplace" options={{ href: null }} />
       <Tabs.Screen name="product/[id]" options={{ href: null }} />
       <Tabs.Screen name="cart" options={{ href: null }} />

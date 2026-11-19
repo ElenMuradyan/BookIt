@@ -122,6 +122,8 @@ export const customerProfiles: CustomerProfile[] = users.map((person) => ({
   interests: person.interests,
   language: person.language,
   marketingOptIn: person.id === "usr_elena",
+  personalizationConsent: person.id === "usr_elena",
+  consentUpdatedAt: person.id === "usr_elena" ? created : undefined,
   spendingVisibility: "recorded_only",
   theme: "dark",
   notificationPreferences: { ...prefs, promotion: person.id === "usr_elena" },

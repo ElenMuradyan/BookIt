@@ -1,4 +1,4 @@
-import { saveService, setServiceActive, useBookItState } from "@bookit/api-client";
+import { displayUser, saveService, setServiceActive, toggleEmployeeToService, useBookItState } from "@bookit/api-client";
 import type { Service } from "@bookit/types";
 import { can, formatMoney } from "@bookit/utils";
 import React, { useState } from "react";
@@ -14,6 +14,7 @@ export default function WorkspaceServicesScreen() {
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("All");
   const [editing, setEditing] = useState<Service | "new" | null>(null);
+  const [assignTargetId, setAssignTargetId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", description: "", category: "Styling", price: "75", durationMinutes: "45", cancellationPolicy: "24h notice required" });
   const [error, setError] = useState("");
 
@@ -21,12 +22,14 @@ export default function WorkspaceServicesScreen() {
   const bizId = auth.workspace.businessId;
   const canEdit = can(auth.workspace.role, "services.manage");
   const all = state.services.filter((s) => s.businessId === bizId);
+  const employees = state.employees.filter((e) => e.businessId === bizId);
   const cats = ["All", ...new Set(all.map((s) => s.category))];
   const filtered = all.filter((s) => {
     if (cat !== "All" && s.category !== cat) return false;
     if (q.trim() && !`${s.name} ${s.description}`.toLowerCase().includes(q.trim().toLowerCase())) return false;
     return true;
   });
+  const assignTarget = assignTargetId ? all.find((s) => s.id === assignTargetId) ?? null : null;
 
   const openModal = (svc: Service | "new") => {
     setError("");
@@ -59,26 +62,40 @@ export default function WorkspaceServicesScreen() {
         ))}
       </ScrollView>
 
-      {filtered.map((svc) => (
-        <Card key={svc.id} style={{ gap: 8 }}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Badge label={svc.category} tone="brand" />
-            <Switch
-              value={svc.active}
-              disabled={!canEdit}
-              onValueChange={(val) => { setServiceActive(bizId, svc.id, val); }}
-            />
-          </View>
-          <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>{svc.name}</Text>
-          <Text style={{ color: colors.muted, fontSize: 12 }}>{svc.description}</Text>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
-              {formatMoney(svc.price)} · {svc.durationMinutes} min
+      {filtered.map((svc) => {
+        const staffNames = svc.employeeIds
+          .map((id) => employees.find((e) => e.id === id))
+          .filter(Boolean)
+          .map((e) => displayUser(state, e!.userId));
+        return (
+          <Card key={svc.id} style={{ gap: 8 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Badge label={svc.category} tone="brand" />
+              <Switch
+                value={svc.active}
+                disabled={!canEdit}
+                onValueChange={(val) => { setServiceActive(bizId, svc.id, val); }}
+              />
+            </View>
+            <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>{svc.name}</Text>
+            <Text style={{ color: colors.muted, fontSize: 12 }}>{svc.description}</Text>
+            <Text style={{ color: colors.muted, fontSize: 12 }}>
+              Staff: {staffNames.length > 0 ? staffNames.join(", ") : "Unassigned"}
             </Text>
-            {canEdit ? <Button label="Edit" tone="soft" small onPress={() => openModal(svc)} /> : null}
-          </View>
-        </Card>
-      ))}
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"], flex: 1 }}>
+                {formatMoney(svc.price)} · {svc.durationMinutes} min
+              </Text>
+              {canEdit ? (
+                <View style={{ flexDirection: "row", gap: 6 }}>
+                  <Button label="Staff" tone="ghost" small onPress={() => setAssignTargetId(svc.id)} />
+                  <Button label="Edit" tone="soft" small onPress={() => openModal(svc)} />
+                </View>
+              ) : null}
+            </View>
+          </Card>
+        );
+      })}
 
       <Modal visible={Boolean(editing)} transparent animationType="slide" onRequestClose={() => setEditing(null)}>
         <View style={{ flex: 1, backgroundColor: "rgba(8,8,14,0.75)", justifyContent: "center", padding: 20 }}>
@@ -114,6 +131,49 @@ export default function WorkspaceServicesScreen() {
               />
             </View>
           </Card>
+        </View>
+      </Modal>
+
+      <Modal visible={Boolean(assignTarget)} transparent animationType="fade" onRequestClose={() => setAssignTargetId(null)}>
+        <View style={{ flex: 1, backgroundColor: "rgba(8,8,14,0.75)", justifyContent: "center", padding: 20 }}>
+          {assignTarget ? (
+            <Card style={{ gap: 12 }}>
+              <Text style={{ color: colors.text, fontSize: 18, fontWeight: "800" }}>
+                Assign Staff — {assignTarget.name}
+              </Text>
+              <Text style={{ color: colors.muted, fontSize: 12 }}>
+                Tap team members to assign or remove them from this service.
+              </Text>
+              {employees.map((emp) => {
+                const assigned = assignTarget.employeeIds.includes(emp.id);
+                return (
+                  <View
+                    key={emp.id}
+                    style={{
+                      flexDirection: "row",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      paddingVertical: 8,
+                      borderBottomWidth: 1,
+                      borderBottomColor: colors.line,
+                    }}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.text, fontWeight: "700" }}>{displayUser(state, emp.userId)}</Text>
+                      <Text style={{ color: colors.muted, fontSize: 12 }}>{emp.title}</Text>
+                    </View>
+                    <Button
+                      label={assigned ? "Assigned" : "Assign"}
+                      tone={assigned ? "soft" : "ghost"}
+                      small
+                      onPress={() => toggleEmployeeToService(bizId, assignTarget.id, emp.id)}
+                    />
+                  </View>
+                );
+              })}
+              <Button label="Done" onPress={() => setAssignTargetId(null)} />
+            </Card>
+          ) : null}
         </View>
       </Modal>
     </Screen>

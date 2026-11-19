@@ -354,3 +354,20 @@ export function monthKey(iso: string): string {
   const date = new Date(iso);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
+
+export function bookingTotals(price: number, taxRate = 0.08): { subtotal: number; tax: number; total: number } {
+  const subtotal = Math.round(price * 100) / 100;
+  const tax = Math.round(subtotal * taxRate * 100) / 100;
+  const total = Math.round((subtotal + tax) * 100) / 100;
+  return { subtotal, tax, total };
+}
+
+export const WEEKDAY_ORDER = [
+  { key: "mon", label: "Monday", short: "Mon" },
+  { key: "tue", label: "Tuesday", short: "Tue" },
+  { key: "wed", label: "Wednesday", short: "Wed" },
+  { key: "thu", label: "Thursday", short: "Thu" },
+  { key: "fri", label: "Friday", short: "Fri" },
+  { key: "sat", label: "Saturday", short: "Sat" },
+  { key: "sun", label: "Sunday", short: "Sun" },
+] as const;

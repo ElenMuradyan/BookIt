@@ -55,12 +55,24 @@ export default function WelcomeScreen() {
         <Text style={{ color: colors.muted, fontSize: 13 }}>
           Manage appointments, calendars, staff, customers, and products in a multi-workspace portal.
         </Text>
-        <Button
-          label="Register a business"
-          tone="ghost"
-          icon="storefront-outline"
-          onPress={() => router.push("/(auth)/register-business")}
-        />
+        <View style={{ flexDirection: "row", gap: 10 }}>
+          <Button
+            label="Business sign in"
+            tone="soft"
+            small
+            icon="log-in-outline"
+            style={{ flex: 1 }}
+            onPress={() => router.push("/(auth)/login-business")}
+          />
+          <Button
+            label="Register business"
+            tone="ghost"
+            small
+            icon="storefront-outline"
+            style={{ flex: 1 }}
+            onPress={() => router.push("/(auth)/register-business")}
+          />
+        </View>
       </Card>
 
       <View style={{ gap: 8 }}>

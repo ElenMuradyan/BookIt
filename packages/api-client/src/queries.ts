@@ -150,3 +150,35 @@ export function sellerOrders(state: AppState, businessId: string): Order[] {
 export function cartFor(state: AppState, userId: string) {
   return state.carts.find((cart) => cart.userId === userId);
 }
+
+export function serviceById(state: AppState, serviceId: string): Service | undefined {
+  return state.services.find((service) => service.id === serviceId && service.active);
+}
+
+export function businessNotifications(state: AppState, businessId: string) {
+  return state.notifications
+    .filter((notification) => notification.businessId === businessId)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+export function personalizedBusinesses(state: AppState, userId: string): {
+  items: PublicBusiness[];
+  personalized: boolean;
+} {
+  const all = publicBusinesses(state);
+  const profile = state.customerProfiles.find((item) => item.userId === userId);
+  const interests = profile?.interests ?? [];
+  if (!profile?.personalizationConsent || interests.length === 0) {
+    return { items: all.slice(0, 4), personalized: false };
+  }
+  const scored = [...all].sort((a, b) => {
+    const aHits = interests.filter((interest) =>
+      `${a.name} ${a.category} ${a.description} ${a.tags.join(" ")}`.toLowerCase().includes(interest.toLowerCase()),
+    ).length;
+    const bHits = interests.filter((interest) =>
+      `${b.name} ${b.category} ${b.description} ${b.tags.join(" ")}`.toLowerCase().includes(interest.toLowerCase()),
+    ).length;
+    return bHits - aHits || b.rating - a.rating;
+  });
+  return { items: scored.slice(0, 4), personalized: true };
+}

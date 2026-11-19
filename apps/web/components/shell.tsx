@@ -84,6 +84,7 @@ export function CustomerShell({ children }: { children: React.ReactNode }) {
 
 export function WorkspaceShell({ children }: { children: React.ReactNode }) {
   const auth = useRequireUser();
+  const state = useBookItState();
   const pathname = usePathname();
   const router = useRouter();
   if (!auth.ready || !auth.user) return <div className="app-boot">Opening workspace…</div>;
@@ -101,6 +102,8 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
     );
   }
   const role = auth.workspace.role;
+  const bizId = auth.workspace.businessId;
+  const unreadBiz = state.notifications.filter((n) => n.businessId === bizId && !n.read).length;
   const links = workspaceNav.filter((item) => !item.permission || can(role, item.permission));
   return (
     <div className="shell">
@@ -117,6 +120,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
           <Link key={item.href} href={item.href} className={`side-link ${active(pathname, item.href) ? "active" : ""}`}>
             <Icon name={item.icon} />
             {item.label}
+            {item.href === "/workspace/notifications" && unreadBiz ? <span className="badge tone-brand">{unreadBiz}</span> : null}
           </Link>
         ))}
         <div style={{ marginTop: "auto" }}>
@@ -127,6 +131,9 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
         <div className="topbar">
           <strong style={{ letterSpacing: "-0.03em" }}>{auth.workspace.businessName}</strong>
           <div className="spacer" />
+          <Link href="/workspace/notifications" className="btn ghost small" aria-label="Workspace notifications">
+            <Icon name="bell" /> {unreadBiz || ""}
+          </Link>
           <button className="btn small" onClick={() => router.push("/workspace/calendar?create=1")}>
             New booking
           </button>
@@ -137,6 +144,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
             {links.map((item) => (
               <Link key={item.href} href={item.href} className={`tab ${active(pathname, item.href) ? "on" : ""}`}>
                 {item.label}
+                {item.href === "/workspace/notifications" && unreadBiz ? ` (${unreadBiz})` : ""}
               </Link>
             ))}
           </div>
