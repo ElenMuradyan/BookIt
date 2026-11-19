@@ -1,0 +1,60 @@
+import type { AppState } from "@bookit/types";
+import {
+  appointments,
+  bookingSeries,
+  campaigns,
+  carts,
+  expenses,
+  favorites,
+  growthSeries,
+  invoices,
+  notes,
+  notifications,
+  orders,
+  payments,
+  plans,
+  platformStats,
+  promoCodes,
+  reports,
+  revenueSeries,
+  reviews,
+  subscriptions,
+} from "./activity";
+import { advertisements, applications, businesses, memberships } from "./businesses";
+import { employees, productCategories, products, services } from "./catalog";
+import { addresses, customerProfiles, users } from "./users";
+
+export function createSeed(): AppState {
+  return {
+    users,
+    customerProfiles,
+    addresses,
+    memberships,
+    businesses,
+    applications,
+    services,
+    employees,
+    appointments,
+    reviews,
+    productCategories,
+    products,
+    carts,
+    orders,
+    payments,
+    plans,
+    subscriptions,
+    invoices,
+    notifications,
+    expenses,
+    advertisements,
+    reports,
+    favorites,
+    promoCodes,
+    campaigns,
+    notes,
+    platformStats,
+    revenueSeries,
+    bookingSeries,
+    growthSeries,
+  };
+}
