@@ -6,9 +6,6 @@
     "scheme": "bookit",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "splash": {
-      "backgroundColor": "#141420"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.bookit.app"
@@ -25,7 +22,14 @@
     },
     "plugins": [
       "expo-router",
-      "expo-font"
+      "expo-font",
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#141420"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false
