@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.dependencies.auth import require_user
 from app.core.database import get_db
-from app.models.base import new_id
+from app.models.base import new_id, utc_now
 from app.models.business import Business
 from app.models.catalog import Product, ProductVariant
 from app.models.commerce import Cart, CartItem, Order, OrderItem, Payment
@@ -27,6 +27,17 @@ from app.schemas.commerce import (
 from app.services.rbac import require_business_permission
 
 router = APIRouter(tags=["orders"])
+
+ALLOWED_ORDER_TRANSITIONS: dict[str, set[str]] = {
+    "pending": {"confirmed", "processing", "ready_for_pickup", "shipped", "completed", "cancelled"},
+    "confirmed": {"processing", "ready_for_pickup", "shipped", "completed", "cancelled"},
+    "processing": {"ready_for_pickup", "shipped", "completed", "cancelled"},
+    "ready_for_pickup": {"completed", "cancelled"},
+    "shipped": {"completed", "refunded"},
+    "completed": {"refunded"},
+    "cancelled": set(),
+    "refunded": set(),
+}
 
 
 def _serialize_cart(cart: Cart) -> CartOut:
@@ -82,14 +93,24 @@ def _serialize_order(o: Order) -> OrderOut:
 
 async def _get_or_create_cart(db: AsyncSession, user_id: str) -> Cart:
     cart = (
-        await db.execute(select(Cart).options(selectinload(Cart.items)).where(Cart.user_id == user_id))
+        await db.execute(
+            select(Cart)
+            .execution_options(populate_existing=True)
+            .options(selectinload(Cart.items))
+            .where(Cart.user_id == user_id)
+        )
     ).scalar_one_or_none()
     if not cart:
         cart = Cart(id=new_id("cart"), user_id=user_id)
         db.add(cart)
         await db.commit()
         cart = (
-            await db.execute(select(Cart).options(selectinload(Cart.items)).where(Cart.user_id == user_id))
+            await db.execute(
+                select(Cart)
+                .execution_options(populate_existing=True)
+                .options(selectinload(Cart.items))
+                .where(Cart.user_id == user_id)
+            )
         ).scalar_one()
     return cart
 
@@ -115,6 +136,10 @@ async def add_cart_item(
         )
     ).scalar_one_or_none()
     if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That product is not available")
+
+    seller = await db.get(Business, product.business_id)
+    if not seller or not seller.is_public or seller.status != "approved":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That product is not available")
 
     variant = None
@@ -164,7 +189,16 @@ async def update_cart_item(
         await db.delete(line)
     else:
         product = await db.get(Product, line.product_id)
-        if product and payload.quantity > product.stock:
+        if not product or not product.active:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="That product is no longer available")
+        if line.variant_id:
+            variant = await db.get(ProductVariant, line.variant_id)
+            if not variant or variant.product_id != product.id:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selected option is no longer available")
+            available_stock = variant.stock
+        else:
+            available_stock = product.stock
+        if payload.quantity > available_stock:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Not enough stock")
         line.quantity = payload.quantity
     await db.commit()
@@ -194,9 +228,15 @@ async def checkout_cart(
     group_id = new_id("chk")
     order_ids: list[str] = []
 
-    sellers = list(dict.fromkeys(line.seller_id for line in cart.items))
+    today_iso = utc_now().date().isoformat()
+    # Deterministic lock ordering across all cart lines prevents PostgreSQL deadlocks on multi-item checkouts
+    ordered_lines = sorted(cart.items, key=lambda l: (l.seller_id, l.product_id, l.variant_id or ""))
+    sellers = list(dict.fromkeys(line.seller_id for line in ordered_lines))
     for seller_id in sellers:
-        seller_lines = [line for line in cart.items if line.seller_id == seller_id]
+        seller = await db.get(Business, seller_id)
+        if not seller or not seller.is_public or seller.status != "approved":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A seller in your cart is unavailable")
+        seller_lines = [line for line in ordered_lines if line.seller_id == seller_id]
         order_id = new_id("ord")
         order_ids.append(order_id)
         order_items: list[OrderItem] = []
@@ -206,12 +246,16 @@ async def checkout_cart(
             product = (
                 await db.execute(select(Product).where(Product.id == line.product_id).with_for_update())
             ).scalar_one_or_none()
-            if not product or not product.active:
+            if not product or not product.active or product.business_id != seller_id:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A product in your cart is unavailable")
             variant: ProductVariant | None = None
             if line.variant_id:
                 variant = (
-                    await db.execute(select(ProductVariant).where(ProductVariant.id == line.variant_id).with_for_update())
+                    await db.execute(
+                        select(ProductVariant)
+                        .where(ProductVariant.id == line.variant_id, ProductVariant.product_id == product.id)
+                        .with_for_update()
+                    )
                 ).scalar_one_or_none()
                 if not variant or variant.stock < line.quantity:
                     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Not enough stock for {product.name}")
@@ -220,7 +264,7 @@ async def checkout_cart(
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Not enough stock for {product.name}")
 
             product.stock = max(0, product.stock - line.quantity)
-            unit_price = float(product.price) + (float(variant.price_delta) if variant else 0.0)
+            unit_price = max(0.0, float(product.price) + (float(variant.price_delta) if variant else 0.0))
             subtotal += unit_price * line.quantity
             order_items.append(
                 OrderItem(
@@ -238,14 +282,16 @@ async def checkout_cart(
         if payload.promo_code:
             promo = (
                 await db.execute(
-                    select(PromoCode).where(
+                    select(PromoCode)
+                    .where(
                         PromoCode.business_id == seller_id,
                         PromoCode.code == payload.promo_code.strip().upper(),
                         PromoCode.active.is_(True),
                     )
+                    .with_for_update()
                 )
             ).scalar_one_or_none()
-            if promo:
+            if promo and promo.expires_on >= today_iso:
                 subtotal = round(subtotal * (1 - promo.percent_off / 100.0), 2)
                 promo.redemptions += 1
 
@@ -332,11 +378,22 @@ async def update_order_status(
     await require_business_permission(db, user, business_id, "orders.manage")
     order = (
         await db.execute(
-            select(Order).options(selectinload(Order.items)).where(Order.id == order_id, Order.seller_id == business_id)
+            select(Order)
+            .options(selectinload(Order.items))
+            .where(Order.id == order_id, Order.seller_id == business_id)
+            .with_for_update()
         )
     ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if order.status != payload.status:
+        allowed_next = ALLOWED_ORDER_TRANSITIONS.get(order.status, set())
+        if payload.status not in allowed_next:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot transition order from {order.status} to {payload.status}",
+            )
 
     order.status = payload.status
     if payload.status == "shipped":

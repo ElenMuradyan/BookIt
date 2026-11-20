@@ -4,6 +4,8 @@ from collections import defaultdict, deque
 
 from fastapi import HTTPException, Request, status
 
+from app.core.config import get_settings
+
 
 class SlidingWindowRateLimiter:
     """In-memory per-process sliding window limiter. Swap with Redis in multi-instance production."""
@@ -37,7 +39,8 @@ auth_rate_limiter = SlidingWindowRateLimiter()
 
 
 def client_ip_from_request(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    if get_settings().trust_proxy_headers:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"

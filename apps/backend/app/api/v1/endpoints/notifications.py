@@ -1,18 +1,19 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import require_user
+from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.rate_limit import auth_rate_limiter, client_ip_from_request
 from app.models.base import new_id
-from app.models.business import Business
 from app.models.engagement import Notification
 from app.models.user import User
 from app.schemas.common import OkResponse
 from app.schemas.engagement import BusinessMessageIn, NotificationOut
-from app.services.rbac import require_business_permission
+from app.services.rbac import ensure_business_visible, require_business_permission
 
 router = APIRouter(tags=["notifications"])
 
@@ -95,12 +96,18 @@ async def mark_all_business_notifications_read(
 async def send_business_message(
     business_id: str,
     payload: BusinessMessageIn,
+    request: Request,
     user: Annotated[User, Depends(require_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    business = await db.get(Business, business_id)
-    if not business:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
+    settings = get_settings()
+    ip = client_ip_from_request(request)
+    await auth_rate_limiter.check(
+        f"biz-msg:{user.id}:{ip}",
+        settings.auth_rate_limit_max_attempts,
+        settings.auth_rate_limit_window_seconds,
+    )
+    business, _ = await ensure_business_visible(db, business_id, user)
     db.add(
         Notification(
             id=new_id("ntf"),

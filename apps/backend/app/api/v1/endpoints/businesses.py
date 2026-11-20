@@ -1,11 +1,14 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_optional_user, require_user
+from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.rate_limit import auth_rate_limiter, client_ip_from_request
 from app.core.security import hash_password
 from app.models.base import new_id, utc_now
 from app.models.business import Business, BusinessApplication, Membership
@@ -24,7 +27,7 @@ from app.schemas.business import (
     WeeklyHoursSchema,
 )
 from app.services.auth_service import record_audit
-from app.services.rbac import require_business_permission
+from app.services.rbac import ensure_business_visible, require_business_permission
 
 router = APIRouter(prefix="/businesses", tags=["businesses"])
 
@@ -108,9 +111,17 @@ async def get_business(
 @router.post("/applications", response_model=BusinessApplicationOut, status_code=status.HTTP_201_CREATED)
 async def submit_business_application(
     payload: BusinessApplicationCreateIn,
+    request: Request,
     current_user: Annotated[User | None, Depends(get_optional_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    settings = get_settings()
+    ip = client_ip_from_request(request)
+    await auth_rate_limiter.check(
+        f"biz-apply:{ip}",
+        min(settings.auth_rate_limit_max_attempts, 6),
+        settings.auth_rate_limit_window_seconds,
+    )
     try:
         payload.validate_passwords()
     except ValueError as exc:
@@ -211,7 +222,14 @@ async def submit_business_application(
         target_type="business",
         target_id=business.id,
     )
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account already exists for that owner email. Please sign in first.",
+        ) from exc
     await db.refresh(application)
     return BusinessApplicationOut.model_validate(application)
 
@@ -311,19 +329,18 @@ async def remove_blocked_slot(
 @router.get("/{business_id}/services")
 async def list_business_services(
     business_id: str,
+    user: Annotated[User | None, Depends(get_optional_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     from sqlalchemy.orm import selectinload
 
     from app.schemas.catalog import ServiceOut
 
-    rows = (
-        await db.execute(
-            select(Service)
-            .options(selectinload(Service.employees))
-            .where(Service.business_id == business_id, Service.active.is_(True))
-        )
-    ).scalars().all()
+    _, is_member = await ensure_business_visible(db, business_id, user)
+    stmt = select(Service).options(selectinload(Service.employees)).where(Service.business_id == business_id)
+    if not is_member:
+        stmt = stmt.where(Service.active.is_(True))
+    rows = (await db.execute(stmt)).scalars().all()
     return [
         ServiceOut(
             id=s.id,
@@ -348,12 +365,14 @@ async def list_business_services(
 @router.get("/{business_id}/staff")
 async def list_business_staff(
     business_id: str,
+    user: Annotated[User | None, Depends(get_optional_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     from sqlalchemy.orm import selectinload
 
     from app.schemas.catalog import EmployeeOut
 
+    await ensure_business_visible(db, business_id, user)
     rows = (
         await db.execute(
             select(Employee)

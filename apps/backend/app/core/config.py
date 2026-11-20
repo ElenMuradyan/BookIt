@@ -41,6 +41,7 @@ class Settings(BaseSettings):
 
     auth_rate_limit_max_attempts: int = 15
     auth_rate_limit_window_seconds: int = 60
+    trust_proxy_headers: bool = False
 
     payment_provider: Literal["sandbox_unconfigured", "sandbox", "stripe"] = "sandbox_unconfigured"
     payment_webhook_secret: str = "dev-only-webhook-secret-change-in-production"

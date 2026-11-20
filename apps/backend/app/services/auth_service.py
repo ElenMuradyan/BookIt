@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from fastapi import HTTPException, status
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -93,15 +94,17 @@ def serialize_profile(profile: CustomerProfile | None) -> CustomerProfileOut | N
 
 async def find_user_by_identifier(db: AsyncSession, identifier: str) -> User | None:
     cleaned = identifier.strip()
+    if not cleaned:
+        return None
     lowered = cleaned.lower()
-    stmt = select(User).where(
-        or_(
-            User.email == lowered,
-            User.username == lowered,
-            User.phone == cleaned,
-        )
-    )
-    return (await db.execute(stmt)).scalar_one_or_none()
+    unique_stmt = select(User).where(or_(User.email == lowered, User.username == lowered))
+    user = (await db.execute(unique_stmt)).scalar_one_or_none()
+    if user is not None:
+        return user
+    phone_matches = (await db.execute(select(User).where(User.phone == cleaned).limit(2))).scalars().all()
+    if len(phone_matches) == 1:
+        return phone_matches[0]
+    return None
 
 
 async def _issue_session_tokens(
@@ -211,25 +214,32 @@ async def register_customer(
         expires_at=now + timedelta(hours=24),
     )
 
-    db.add(user)
-    await db.flush()
-    db.add_all([profile, cart, verify_row])
-    await record_audit(
-        db,
-        actor_user_id=user.id,
-        action="auth.register",
-        target_type="user",
-        target_id=user.id,
-        ip_address=ip_address,
-    )
-    session_out, raw_refresh = await _issue_session_tokens(
-        db,
-        user,
-        remember=True,
-        user_agent=user_agent,
-        ip_address=ip_address,
-    )
-    await db.commit()
+    try:
+        db.add(user)
+        await db.flush()
+        db.add_all([profile, cart, verify_row])
+        await record_audit(
+            db,
+            actor_user_id=user.id,
+            action="auth.register",
+            target_type="user",
+            target_id=user.id,
+            ip_address=ip_address,
+        )
+        session_out, raw_refresh = await _issue_session_tokens(
+            db,
+            user,
+            remember=True,
+            user_agent=user_agent,
+            ip_address=ip_address,
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account already uses that email or username",
+        ) from exc
     return session_out, raw_refresh, verification_code
 
 
@@ -302,9 +312,13 @@ async def rotate_refresh_session(
     *,
     user_agent: str | None,
     ip_address: str | None,
-) -> tuple[AuthSessionOut, str]:
+) -> tuple[AuthSessionOut, str, bool]:
     token_digest = hash_token(raw_refresh_token)
-    stmt = select(RefreshSession).where(RefreshSession.token_hash == token_digest)
+    stmt = (
+        select(RefreshSession)
+        .where(RefreshSession.token_hash == token_digest)
+        .with_for_update()
+    )
     existing = (await db.execute(stmt)).scalar_one_or_none()
     if not existing:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
@@ -343,10 +357,11 @@ async def rotate_refresh_session(
         await db.commit()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account inactive")
 
+    remember = (existing.expires_at - existing.created_at) > timedelta(days=2)
     session_out, new_raw_refresh = await _issue_session_tokens(
         db,
         user,
-        remember=(existing.expires_at - existing.created_at) > timedelta(days=2),
+        remember=remember,
         user_agent=user_agent,
         ip_address=ip_address,
         family_id=existing.family_id,
@@ -358,7 +373,7 @@ async def rotate_refresh_session(
     existing.revoked_at = now
     existing.replaced_by_id = new_row.id
     await db.commit()
-    return session_out, new_raw_refresh
+    return session_out, new_raw_refresh, remember
 
 
 async def revoke_refresh_token(db: AsyncSession, raw_refresh_token: str | None, user_id: str | None = None) -> None:
@@ -423,7 +438,7 @@ async def issue_email_verification(db: AsyncSession, user: User) -> str:
     return code
 
 
-async def request_password_reset_token(db: AsyncSession, identifier: str) -> str | None:
+async def request_password_reset_token(db: AsyncSession, identifier: str) -> tuple[str, str] | None:
     """Anti-enumeration: callers always receive the same generic 200 message."""
     user = await find_user_by_identifier(db, identifier)
     if not user or user.deactivated_at is not None or user.status != "active":
@@ -446,7 +461,7 @@ async def request_password_reset_token(db: AsyncSession, identifier: str) -> str
         target_id=user.id,
     )
     await db.commit()
-    return code
+    return user.email, code
 
 
 async def confirm_password_reset_token(

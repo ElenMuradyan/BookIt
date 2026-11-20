@@ -5,14 +5,14 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.dependencies.auth import require_user
+from app.api.dependencies.auth import get_optional_user, require_user
 from app.core.database import get_db
 from app.models.base import new_id
 from app.models.business import Business
 from app.models.catalog import Product, ProductCategory
 from app.models.user import User
 from app.schemas.catalog import ProductActiveIn, ProductCategoryOut, ProductIn, ProductOut, ProductVariantOut
-from app.services.rbac import require_business_permission
+from app.services.rbac import ensure_business_visible, require_business_permission
 
 router = APIRouter(tags=["products"])
 
@@ -110,11 +110,18 @@ async def search_products(
 
 
 @router.get("/products/{product_id}", response_model=ProductOut)
-async def get_product(product_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
+async def get_product(
+    product_id: str,
+    user: Annotated[User | None, Depends(get_optional_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     product = (
         await db.execute(select(Product).options(selectinload(Product.variants)).where(Product.id == product_id))
     ).scalar_one_or_none()
     if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    _, is_member = await ensure_business_visible(db, product.business_id, user)
+    if not is_member and not product.active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
     return _serialize_product(product)
 

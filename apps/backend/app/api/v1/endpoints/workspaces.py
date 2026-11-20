@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.models.base import new_id, utc_now
 from app.models.booking import Appointment, CustomerNote
 from app.models.business import Business
+from app.models.catalog import Product
 from app.models.commerce import Expense, Invoice, Order, Plan, Subscription
 from app.models.engagement import Campaign, PromoCode, Review
 from app.models.user import User
@@ -54,6 +55,9 @@ async def add_customer_note(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     await require_business_permission(db, user, business_id, "customers.notes")
+    customer = await db.get(User, payload.customer_id)
+    if not customer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
     note = CustomerNote(
         id=new_id("note"),
         business_id=business_id,
@@ -203,8 +207,17 @@ async def create_review(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     business = await db.get(Business, payload.business_id)
-    if not business:
+    if not business or not business.is_public or business.status != "approved":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
+
+    if payload.appointment_id:
+        appt = await db.get(Appointment, payload.appointment_id)
+        if not appt or appt.business_id != business.id or appt.customer_id != user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid appointment reference for review")
+    if payload.product_id:
+        product = await db.get(Product, payload.product_id)
+        if not product or product.business_id != business.id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid product reference for review")
 
     review = Review(
         id=new_id("rev"),

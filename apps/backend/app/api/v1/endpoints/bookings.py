@@ -1,11 +1,13 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import require_user
+from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.rate_limit import auth_rate_limiter, client_ip_from_request
 from app.models.booking import Appointment, AppointmentStatusHistory
 from app.models.catalog import Service
 from app.models.user import User
@@ -78,7 +80,6 @@ async def create_booking(
     payload: AppointmentCreateIn,
     user: Annotated[User, Depends(require_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    enforce_notice: bool = Query(default=False, alias="enforceNotice"),
 ):
     customer_id = user.id
     if payload.customer_id and payload.customer_id != user.id:
@@ -99,7 +100,7 @@ async def create_booking(
         payment_method=payload.payment_method,
         notes=payload.notes,
         idempotency_key=payload.idempotency_key,
-        enforce_advance_window=enforce_notice,
+        enforce_advance_window=True,
     )
     return _serialize_appointment(appt)
 
@@ -164,7 +165,6 @@ async def reschedule_booking(
     payload: AppointmentRescheduleIn,
     user: Annotated[User, Depends(require_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    enforce_notice: bool = Query(default=False, alias="enforceNotice"),
 ):
     appt = await reschedule_appointment_transactional(
         db,
@@ -172,7 +172,7 @@ async def reschedule_booking(
         date_str=payload.date,
         time_str=payload.time,
         actor=user,
-        enforce_advance_window=enforce_notice,
+        enforce_advance_window=True,
     )
     return _serialize_appointment(appt)
 
@@ -198,9 +198,17 @@ async def update_booking_notes(
 async def qr_check_in(
     business_id: str,
     payload: AppointmentCheckIn,
+    request: Request,
     user: Annotated[User, Depends(require_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    settings = get_settings()
+    ip = client_ip_from_request(request)
+    await auth_rate_limiter.check(
+        f"checkin:{user.id}:{business_id}:{ip}",
+        settings.auth_rate_limit_max_attempts,
+        settings.auth_rate_limit_window_seconds,
+    )
     appt = await check_in_appointment_by_qr(
         db,
         business_id=business_id,

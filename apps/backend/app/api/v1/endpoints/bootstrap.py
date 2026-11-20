@@ -292,28 +292,42 @@ async def bootstrap_state(
     else:
         users_out = []
 
-    total_users = (await db.execute(select(func.count(User.id)))).scalar_one()
-    total_businesses = (await db.execute(select(func.count(Business.id)))).scalar_one()
-    pending_apps = (
-        await db.execute(
-            select(func.count(BusinessApplication.id)).where(
-                BusinessApplication.status.in_(["submitted", "under_review"])
-            )
+    if is_admin:
+        total_users = int((await db.execute(select(func.count(User.id)))).scalar_one())
+        total_businesses = int((await db.execute(select(func.count(Business.id)))).scalar_one())
+        pending_apps = int(
+            (
+                await db.execute(
+                    select(func.count(BusinessApplication.id)).where(
+                        BusinessApplication.status.in_(["submitted", "under_review"])
+                    )
+                )
+            ).scalar_one()
         )
-    ).scalar_one()
-    approved_biz = (
-        await db.execute(select(func.count(Business.id)).where(Business.status == "approved"))
-    ).scalar_one()
-    total_bookings = (await db.execute(select(func.count(Appointment.id)))).scalar_one()
-    total_orders = (await db.execute(select(func.count(Order.id)))).scalar_one()
-    recorded_rev = (
-        await db.execute(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "recorded"))
-    ).scalar_one()
-    active_subs = (
-        await db.execute(
-            select(func.count(Subscription.id)).where(Subscription.status.in_(["active", "trialing"]))
+        approved_biz = int(
+            (await db.execute(select(func.count(Business.id)).where(Business.status == "approved"))).scalar_one()
         )
-    ).scalar_one()
+        total_bookings = int((await db.execute(select(func.count(Appointment.id)))).scalar_one())
+        total_orders = int((await db.execute(select(func.count(Order.id)))).scalar_one())
+        recorded_rev = float(
+            (await db.execute(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "recorded"))).scalar_one()
+        )
+        active_subs = int(
+            (
+                await db.execute(
+                    select(func.count(Subscription.id)).where(Subscription.status.in_(["active", "trialing"]))
+                )
+            ).scalar_one()
+        )
+    else:
+        total_users = 0
+        total_businesses = len(businesses)
+        pending_apps = 0
+        approved_biz = sum(1 for b in businesses if b.status == "approved")
+        total_bookings = 0
+        total_orders = 0
+        recorded_rev = 0.0
+        active_subs = 0
 
     return BootstrapStateOut(
         users=users_out,

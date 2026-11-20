@@ -14,5 +14,12 @@
   "tests/test_business_catalog.py::test_public_discovery_bootstrap_redaction_and_availability",
   "tests/test_health.py::test_health_endpoints",
   "tests/test_orders_payments.py::test_multi_vendor_checkout_stock_and_webhooks",
-  "tests/test_rbac.py::test_rbac_and_idor_boundaries"
+  "tests/test_rbac.py::test_rbac_and_idor_boundaries",
+  "tests/test_security_hardening.py::test_booking_past_slot_blocked_reschedule_self_overlap_and_idempotency_race",
+  "tests/test_security_hardening.py::test_cart_variant_stock_promo_expiry_rollback_and_order_transitions",
+  "tests/test_security_hardening.py::test_concurrent_refresh_race_allows_only_one_winner",
+  "tests/test_security_hardening.py::test_logout_and_password_change_revoke_active_access_jwt",
+  "tests/test_security_hardening.py::test_rate_limit_blocks_xff_spoofing_and_otp_brute_force",
+  "tests/test_security_hardening.py::test_review_idor_moderation_recalculates_rating_admin_suspension_and_webhook_order",
+  "tests/test_security_hardening.py::test_unapproved_business_catalog_and_bootstrap_redaction"
 ]

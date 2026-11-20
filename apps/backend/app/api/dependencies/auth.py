@@ -5,7 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import decode_access_token, verify_csrf_token
-from app.models.user import User
+from app.models.base import utc_now
+from app.models.user import RefreshSession, User
 
 ACCESS_COOKIE_NAME = "bookit_access"
 REFRESH_COOKIE_NAME = "bookit_refresh"
@@ -55,7 +56,16 @@ async def get_optional_user(
     if not payload:
         return None
     user_id = payload.get("sub")
-    if not isinstance(user_id, str):
+    sid = payload.get("sid")
+    if not isinstance(user_id, str) or not isinstance(sid, str):
+        return None
+    session_row = await db.get(RefreshSession, sid)
+    if (
+        not session_row
+        or session_row.user_id != user_id
+        or session_row.revoked_at is not None
+        or session_row.expires_at <= utc_now()
+    ):
         return None
     user = await db.get(User, user_id)
     if not user or user.deactivated_at is not None or user.status != "active":

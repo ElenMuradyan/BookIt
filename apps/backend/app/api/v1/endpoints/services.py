@@ -5,14 +5,14 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.dependencies.auth import require_user
+from app.api.dependencies.auth import get_optional_user, require_user
 from app.core.database import get_db
 from app.models.base import new_id
 from app.models.business import Business
 from app.models.catalog import Employee, Service
 from app.models.user import User
 from app.schemas.catalog import ServiceActiveIn, ServiceIn, ServiceOut
-from app.services.rbac import require_business_permission
+from app.services.rbac import ensure_business_visible, require_business_permission
 
 router = APIRouter(tags=["services"])
 
@@ -73,11 +73,18 @@ async def search_services(
 
 
 @router.get("/services/{service_id}", response_model=ServiceOut)
-async def get_service(service_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
+async def get_service(
+    service_id: str,
+    user: Annotated[User | None, Depends(get_optional_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     service = (
         await db.execute(select(Service).options(selectinload(Service.employees)).where(Service.id == service_id))
     ).scalar_one_or_none()
     if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+    _, is_member = await ensure_business_visible(db, service.business_id, user)
+    if not is_member and not service.active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
     return _serialize_service(service)
 

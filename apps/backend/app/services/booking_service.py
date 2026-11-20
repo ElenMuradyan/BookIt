@@ -39,6 +39,7 @@ async def load_availability_for_service(
     employee_id: str | None = None,
     now_utc: datetime | None = None,
     enforce_advance_window: bool = True,
+    exclude_appointment_id: str | None = None,
 ):
     stmt = (
         select(Employee)
@@ -75,6 +76,8 @@ async def load_availability_for_service(
         Appointment.end_at > day_start_utc,
         Appointment.start_at < day_end_utc,
     )
+    if exclude_appointment_id:
+        appt_stmt = appt_stmt.where(Appointment.id != exclude_appointment_id)
     existing = list((await db.execute(appt_stmt)).all())
 
     return compute_available_slots(
@@ -145,6 +148,15 @@ async def create_booking_transactional(
     ).scalar_one_or_none()
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Choose a valid team member")
+
+    if idempotency_key:
+        existing_idem = (
+            await db.execute(select(Appointment).where(Appointment.idempotency_key == idempotency_key))
+        ).scalar_one_or_none()
+        if existing_idem:
+            if existing_idem.customer_id != customer_id and not actor.is_platform_admin:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Idempotency key belongs to another user")
+            return existing_idem
 
     if not any(e.id == employee.id for e in service.employees):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected staff member does not offer this service")
@@ -229,6 +241,17 @@ async def create_booking_transactional(
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
+        if idempotency_key:
+            existing_idem = (
+                await db.execute(select(Appointment).where(Appointment.idempotency_key == idempotency_key))
+            ).scalar_one_or_none()
+            if existing_idem:
+                if existing_idem.customer_id != customer_id and not actor.is_platform_admin:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Idempotency key belongs to another user",
+                    ) from exc
+                return existing_idem
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Time slot already reserved by a concurrent booking",
@@ -367,6 +390,7 @@ async def reschedule_appointment_transactional(
         employee_id=appointment.employee_id,
         now_utc=now_utc,
         enforce_advance_window=enforce_advance_window,
+        exclude_appointment_id=appointment.id,
     )
     chosen = next((s for s in slots if s.time_label == time_str), None)
     if not chosen:
@@ -440,7 +464,14 @@ async def check_in_appointment_by_qr(
     if appointment.status not in ("confirmed", "pending"):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cannot check in a {appointment.status} booking")
 
-    appointment.checked_in_at = utc_now()
+    if appointment.status == "pending" and not is_staff:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This booking is still pending business confirmation",
+        )
+
+    if appointment.checked_in_at is None:
+        appointment.checked_in_at = utc_now()
     if appointment.status == "pending" and is_staff:
         appointment.status = "confirmed"
         db.add(

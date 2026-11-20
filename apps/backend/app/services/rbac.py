@@ -141,3 +141,28 @@ async def require_business_permission(
             detail=f"Missing permission: {permission}",
         )
     return business, membership
+
+
+async def ensure_business_visible(
+    db: AsyncSession,
+    business_id: str,
+    user: User | None,
+) -> tuple[Business, bool]:
+    """Return (business, is_privileged_member) or raise 404 if hidden/unapproved."""
+    business = await db.get(Business, business_id)
+    if not business:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
+
+    is_member = False
+    if user:
+        if user.is_platform_admin or business.owner_user_id == user.id:
+            is_member = True
+        else:
+            membership = await get_active_membership(db, user.id, business.id)
+            if membership:
+                is_member = True
+
+    if not is_member and (not business.is_public or business.status != "approved"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
+
+    return business, is_member

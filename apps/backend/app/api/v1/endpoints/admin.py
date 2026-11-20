@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import require_platform_admin
@@ -13,7 +13,7 @@ from app.models.booking import Appointment
 from app.models.business import Business, BusinessApplication
 from app.models.commerce import Order, Payment, Subscription
 from app.models.engagement import Advertisement, Report, Review
-from app.models.user import User
+from app.models.user import RefreshSession, User
 from app.schemas.auth import UserOut
 from app.schemas.business import ApplicationReviewIn, BusinessApplicationOut, BusinessOut
 from app.schemas.engagement import (
@@ -176,6 +176,12 @@ async def set_user_status(
     if target.is_platform_admin and payload.status != "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Platform admins cannot be suspended here")
     target.status = payload.status
+    if payload.status != "active":
+        await db.execute(
+            update(RefreshSession)
+            .where(RefreshSession.user_id == target.id, RefreshSession.revoked_at.is_(None))
+            .values(revoked_at=utc_now())
+        )
     await record_audit(
         db,
         actor_user_id=admin.id,
@@ -200,6 +206,18 @@ async def moderate_review(
     if not review:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review not found")
     review.status = payload.status
+    await db.flush()
+
+    business = await db.get(Business, review.business_id)
+    if business:
+        published_ratings = (
+            await db.execute(
+                select(Review.rating).where(Review.business_id == business.id, Review.status == "published")
+            )
+        ).scalars().all()
+        business.review_count = len(published_ratings)
+        business.rating = round(sum(published_ratings) / len(published_ratings), 1) if published_ratings else 0.0
+
     await record_audit(
         db,
         actor_user_id=admin.id,

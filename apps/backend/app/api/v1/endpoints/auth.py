@@ -205,22 +205,29 @@ async def refresh_session(
     payload: RefreshIn | None = None,
 ):
     await verify_csrf_if_cookie_auth(request)
+    settings = get_settings()
+    ip = client_ip_from_request(request)
+    await auth_rate_limiter.check(
+        f"refresh:{ip}",
+        settings.auth_rate_limit_max_attempts * 2,
+        settings.auth_rate_limit_window_seconds,
+    )
     raw_token = (payload.refresh_token if payload else None) or request.cookies.get(REFRESH_COOKIE_NAME)
     if not raw_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token missing")
 
-    session_out, new_raw_refresh = await rotate_refresh_session(
+    session_out, new_raw_refresh, remember = await rotate_refresh_session(
         db,
         raw_token,
         user_agent=request.headers.get("user-agent"),
-        ip_address=client_ip_from_request(request),
+        ip_address=ip,
     )
     return _set_session_cookies(
         request,
         response,
         session_out=session_out,
         raw_refresh=new_raw_refresh,
-        remember=True,
+        remember=remember,
     )
 
 
@@ -257,10 +264,18 @@ async def me(
 
 @router.post("/verify/request", response_model=OkResponse)
 async def request_verification(
+    request: Request,
     user: Annotated[User, Depends(require_user)],
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    settings = get_settings()
+    ip = client_ip_from_request(request)
+    await auth_rate_limiter.check(
+        f"verify-req:{user.id}:{ip}",
+        min(settings.auth_rate_limit_max_attempts, 6),
+        settings.auth_rate_limit_window_seconds,
+    )
     code = await issue_email_verification(db, user)
     schedule_email_notification(
         background_tasks,
@@ -274,9 +289,17 @@ async def request_verification(
 @router.post("/verify", response_model=OkResponse)
 async def verify_contact(
     payload: VerifyContactIn,
+    request: Request,
     user: Annotated[User, Depends(require_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    settings = get_settings()
+    ip = client_ip_from_request(request)
+    await auth_rate_limiter.check(
+        f"verify:{user.id}:{ip}",
+        min(settings.auth_rate_limit_max_attempts, 6),
+        settings.auth_rate_limit_window_seconds,
+    )
     await verify_email_code(db, user, payload.code)
     return OkResponse(ok=True, message="Email verified")
 
@@ -295,11 +318,12 @@ async def request_password_reset(
         settings.auth_rate_limit_max_attempts,
         settings.auth_rate_limit_window_seconds,
     )
-    code = await request_password_reset_token(db, payload.identifier)
-    if code:
+    reset_info = await request_password_reset_token(db, payload.identifier)
+    if reset_info:
+        target_email, code = reset_info
         schedule_email_notification(
             background_tasks,
-            to_email=payload.identifier,
+            to_email=target_email,
             subject="BookIt password reset",
             body=f"Your password reset code is {code}.",
         )
@@ -319,8 +343,8 @@ async def confirm_password_reset(
     settings = get_settings()
     ip = client_ip_from_request(request)
     await auth_rate_limiter.check(
-        f"pwconfirm:{ip}",
-        settings.auth_rate_limit_max_attempts,
+        f"pwconfirm:{ip}:{payload.identifier.strip().lower()}",
+        min(settings.auth_rate_limit_max_attempts, 6),
         settings.auth_rate_limit_window_seconds,
     )
     await confirm_password_reset_token(db, payload.identifier, payload.code, payload.password)
@@ -330,10 +354,18 @@ async def confirm_password_reset(
 @router.post("/change-password", response_model=OkResponse)
 async def change_password(
     payload: ChangePasswordIn,
+    request: Request,
     response: Response,
     user: Annotated[User, Depends(require_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    settings = get_settings()
+    ip = client_ip_from_request(request)
+    await auth_rate_limiter.check(
+        f"chgpw:{user.id}:{ip}",
+        min(settings.auth_rate_limit_max_attempts, 6),
+        settings.auth_rate_limit_window_seconds,
+    )
     await change_user_password(db, user, payload.current_password, payload.new_password)
     _clear_session_cookies(response)
     return OkResponse(ok=True, message="Password changed. Please sign in again.")

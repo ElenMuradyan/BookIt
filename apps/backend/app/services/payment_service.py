@@ -3,6 +3,7 @@ from typing import Protocol
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -195,19 +196,28 @@ async def process_payment_webhook(
             payload=payload,
         )
     )
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        return {"ok": True, "duplicate": True, "eventId": event_id}
 
     provider_ref = payload.get("providerReference")
     payment_id = payload.get("paymentId")
     payment: Payment | None = None
     if payment_id:
-        payment = await db.get(Payment, str(payment_id))
+        payment = (
+            await db.execute(select(Payment).where(Payment.id == str(payment_id)).with_for_update())
+        ).scalar_one_or_none()
     elif provider_ref:
         payment = (
-            await db.execute(select(Payment).where(Payment.provider_reference == str(provider_ref)))
+            await db.execute(
+                select(Payment).where(Payment.provider_reference == str(provider_ref)).with_for_update()
+            )
         ).scalar_one_or_none()
 
     if payment:
-        if event_type in ("payment.succeeded", "payment_intent.succeeded"):
+        if event_type in ("payment.succeeded", "payment_intent.succeeded") and payment.status != "refunded":
             payment.status = "recorded"
             if payment.reference_type == "appointment":
                 appt = await db.get(Appointment, payment.reference_id)
