@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  env: {
+    NEXT_PUBLIC_BOOKIT_API_URL: process.env.NEXT_PUBLIC_BOOKIT_API_URL || "http://127.0.0.1:8000",
+    NEXT_PUBLIC_BOOKIT_USE_MOCKS: process.env.NEXT_PUBLIC_BOOKIT_USE_MOCKS || "false",
+  },
   transpilePackages: [
     "@bookit/api-client",
     "@bookit/design-system",
