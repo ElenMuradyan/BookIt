@@ -6,10 +6,6 @@
     "scheme": "bookit",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "splash": {
-      "backgroundColor": "#141420"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.bookit.app"
@@ -24,7 +20,17 @@
       "bundler": "metro",
       "output": "single"
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#141420"
+        }
+      ]
+    ],
     "experiments": {
       "typedRoutes": false
     },

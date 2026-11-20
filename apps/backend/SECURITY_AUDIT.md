@@ -1,7 +1,7 @@
 # BookIt — Independent Security & Architecture Audit
 
-**Scope:** `apps/backend` (FastAPI + SQLAlchemy 2 + PostgreSQL + Alembic), `apps/web` (Next.js), `apps/mobile` (Expo / React Native), and `packages/api-client`.  
-**Reference Standards:** OWASP ASVS v4.0, OWASP API Security Top 10 (2023).  
+**Scope:** `apps/backend` (FastAPI + SQLAlchemy 2 + PostgreSQL + Alembic), `apps/web` (Next.js), `apps/mobile` (Expo / React Native), and `packages/api-client`.
+**Reference Standards:** OWASP ASVS v4.0, OWASP API Security Top 10 (2023).
 **Status:** Security audit completed, critical/high backend defects remediated and regression-tested, verification executed against local PostgreSQL 15.20 and all TypeScript workspaces.
 
 ---
