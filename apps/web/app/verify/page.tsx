@@ -1,6 +1,6 @@
 "use client";
 
-import { verifyContact } from "@bookit/api-client";
+import { usingMocks, verifyContact, verifyContactRemote } from "@bookit/api-client";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { useAuth } from "@/lib/session";
@@ -16,17 +16,28 @@ function VerifyForm() {
       <form
         className="panel stack"
         style={{ maxWidth: 460 }}
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
+          setError("");
           if (!auth.userId) {
             setError("Sign in before verifying.");
             return;
           }
-          const result = verifyContact(auth.userId, code);
+          if (usingMocks()) {
+            const result = verifyContact(auth.userId, code);
+            if (!result.ok) {
+              setError(result.error);
+              return;
+            }
+            router.push("/home");
+            return;
+          }
+          const result = await verifyContactRemote(code);
           if (!result.ok) {
             setError(result.error);
             return;
           }
+          await auth.refreshSession();
           router.push("/home");
         }}
       >

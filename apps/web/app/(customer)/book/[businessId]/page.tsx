@@ -2,10 +2,12 @@
 
 import {
   createAppointment,
+  createAppointmentRemote,
   displayUser,
   publicBusinessById,
   servicesForBusiness,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import type { PaymentMethod } from "@bookit/types";
 import { addDays, availableSlots, bookingTotals, DEMO_TODAY, formatDate, formatMoney, initials } from "@bookit/utils";
@@ -304,13 +306,31 @@ function BookingFlow({ businessId }: { businessId: string }) {
           </div>
           {error ? <p className="error">{error}</p> : null}
           <Button
-            onClick={() => {
+            onClick={async () => {
               if (!auth.userId || !activeEmployee) return;
               if (!time) {
                 setError("Choose an available time slot first.");
                 return;
               }
-              const res = createAppointment({
+              setError("");
+              if (usingMocks()) {
+                const res = createAppointment({
+                  customerId: auth.userId,
+                  serviceId: activeService.id,
+                  employeeId: activeEmployee.id,
+                  date,
+                  time,
+                  paymentMethod,
+                  notes,
+                });
+                if (!res.ok) {
+                  setError(res.error);
+                  return;
+                }
+                setConfirmedId(res.data.id);
+                return;
+              }
+              const res = await createAppointmentRemote({
                 customerId: auth.userId,
                 serviceId: activeService.id,
                 employeeId: activeEmployee.id,

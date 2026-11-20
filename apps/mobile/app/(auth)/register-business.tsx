@@ -1,4 +1,4 @@
-import { submitBusinessApplication } from "@bookit/api-client";
+import { submitBusinessApplication, submitBusinessApplicationRemote, usingMocks } from "@bookit/api-client";
 import { categoryLabels } from "@bookit/ui";
 import { passwordScore } from "@bookit/utils";
 import { useRouter } from "expo-router";
@@ -38,14 +38,30 @@ export default function RegisterBusinessScreen() {
   const strength = passwordScore(form.ownerPassword);
 
   const submit = async () => {
-    const res = submitBusinessApplication({ ...form, applicantUserId: auth.userId ?? undefined });
+    setErrors({});
+    setFormError("");
+    if (usingMocks()) {
+      const res = submitBusinessApplication({ ...form, applicantUserId: auth.userId ?? undefined });
+      if (!res.ok) {
+        setFormError(res.error);
+        setErrors(res.fieldErrors ?? {});
+        return;
+      }
+      if (res.data.token) {
+        await auth.signInWithToken(res.data.token);
+      }
+      await auth.setWorkspaceId(res.data.businessId);
+      setDoneBusinessId(res.data.businessId);
+      return;
+    }
+    const res = await submitBusinessApplicationRemote({ ...form, applicantUserId: auth.userId ?? undefined });
     if (!res.ok) {
       setFormError(res.error);
       setErrors(res.fieldErrors ?? {});
       return;
     }
-    if (res.data.token) {
-      await auth.signInWithToken(res.data.token);
+    if (res.data.session) {
+      await auth.signInRemote(res.data.session);
     }
     await auth.setWorkspaceId(res.data.businessId);
     setDoneBusinessId(res.data.businessId);

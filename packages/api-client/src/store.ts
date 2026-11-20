@@ -33,6 +33,7 @@ import {
   type RegisterInput,
 } from "@bookit/validation";
 import { createSeed } from "./seed";
+import { apiJson, usingMocks } from "./http";
 import { cartFor, workspacesFor } from "./queries";
 
 export type ActionResult<T = undefined> =
@@ -54,6 +55,16 @@ const resetCodes = new Map<string, string>();
 let state: AppState = createSeed();
 const listeners = new Set<() => void>();
 let seq = 500;
+let lastSyncError: string | null = null;
+
+export function getLastSyncError(): string | null {
+  return lastSyncError;
+}
+
+export function clearLastSyncError(): void {
+  lastSyncError = null;
+  listeners.forEach((listener) => listener());
+}
 
 export function getState(): AppState {
   return state;
@@ -67,12 +78,44 @@ export function subscribe(listener: () => void): () => void {
 export function resetDemoState(): void {
   state = createSeed();
   resetCodes.clear();
+  lastSyncError = null;
   listeners.forEach((listener) => listener());
 }
 
 function commit(next: AppState): void {
   state = next;
   listeners.forEach((listener) => listener());
+}
+
+export async function hydrateFromBackend(): Promise<ActionResult<{ hydrated: boolean }>> {
+  if (usingMocks()) {
+    return { ok: true, data: { hydrated: false } };
+  }
+  const res = await apiJson<AppState>("/api/v1/bootstrap", { method: "GET" });
+  if (!res.ok) {
+    lastSyncError = res.error;
+    listeners.forEach((listener) => listener());
+    return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  }
+  lastSyncError = null;
+  commit(res.data);
+  return { ok: true, data: { hydrated: true } };
+}
+
+function syncRemote(path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown): void {
+  if (usingMocks()) return;
+  void apiJson(path, {
+    method,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  }).then(async (res) => {
+    if (!res.ok) {
+      lastSyncError = res.error;
+      await hydrateFromBackend();
+      return;
+    }
+    lastSyncError = null;
+    await hydrateFromBackend();
+  });
 }
 
 function draft(mutate: (next: AppState) => void): void {
@@ -357,6 +400,7 @@ export function updateProfile(
       if (patch.interests) profile.interests = patch.interests;
     }
   });
+  syncRemote("/api/v1/users/me", "PATCH", patch);
   return { ok: true, data: undefined };
 }
 
@@ -368,6 +412,7 @@ export function setPersonalizationConsent(userId: string, consent: boolean): Act
       profile.consentUpdatedAt = new Date().toISOString();
     }
   });
+  syncRemote("/api/v1/users/me/consent", "PUT", { consent });
   return { ok: true, data: undefined };
 }
 
@@ -376,6 +421,7 @@ export function setTheme(userId: string, theme: "dark" | "light" | "system"): Ac
     const profile = next.customerProfiles.find((item) => item.userId === userId);
     if (profile) profile.theme = theme;
   });
+  syncRemote("/api/v1/users/me/theme", "PUT", { theme });
   return { ok: true, data: undefined };
 }
 
@@ -384,6 +430,7 @@ export function updateNotificationPrefs(userId: string, patch: Partial<AppState[
     const profile = next.customerProfiles.find((item) => item.userId === userId);
     if (profile) profile.notificationPreferences = { ...profile.notificationPreferences, ...patch };
   });
+  syncRemote("/api/v1/users/me/notification-preferences", "PATCH", patch);
   return { ok: true, data: undefined };
 }
 
@@ -392,6 +439,7 @@ export function setSpendingVisibility(userId: string, value: "recorded_only" | "
     const profile = next.customerProfiles.find((item) => item.userId === userId);
     if (profile) profile.spendingVisibility = value;
   });
+  syncRemote("/api/v1/users/me/spending-visibility", "PUT", { visibility: value });
   return { ok: true, data: undefined };
 }
 
@@ -399,10 +447,10 @@ export function addAddress(userId: string, input: unknown): ActionResult {
   const parsed = addressSchema.safeParse(input);
   if (!parsed.success) return fail("Check the address", fieldErrors(parsed.error));
   draft((next) => {
-    if (!next.addresses.some((address) => address.userId === userId)) parsed.data.label;
     const isFirst = !next.addresses.some((address) => address.userId === userId);
     next.addresses.push({ id: nid("addr"), userId, ...parsed.data, isDefault: isFirst });
   });
+  syncRemote("/api/v1/users/me/addresses", "POST", parsed.data);
   return { ok: true, data: undefined };
 }
 
@@ -412,6 +460,7 @@ export function toggleFavorite(userId: string, targetType: AppState["favorites"]
     if (index >= 0) next.favorites.splice(index, 1);
     else next.favorites.push({ id: nid("fav"), userId, targetType, targetId, collection, createdAt: new Date().toISOString() });
   });
+  syncRemote("/api/v1/users/me/favorites/toggle", "POST", { targetType, targetId, collection });
   return { ok: true, data: undefined };
 }
 
@@ -420,6 +469,7 @@ export function moveFavorite(userId: string, favoriteId: string, collection: str
     const favorite = next.favorites.find((item) => item.id === favoriteId && item.userId === userId);
     if (favorite) favorite.collection = collection;
   });
+  syncRemote(`/api/v1/users/me/favorites/${encodeURIComponent(favoriteId)}`, "PATCH", { collection });
   return { ok: true, data: undefined };
 }
 
@@ -442,6 +492,7 @@ export function addToCart(userId: string, productId: string, quantity: number, v
     else cart.items.push({ id: nid("ci"), productId, variantId, quantity, sellerId: product.businessId });
     cart.updatedAt = new Date().toISOString();
   });
+  syncRemote("/api/v1/cart/items", "POST", { productId, quantity, variantId });
   return { ok: true, data: undefined };
 }
 
@@ -455,6 +506,7 @@ export function setCartQuantity(userId: string, itemId: string, quantity: number
     else line.quantity = quantity;
     cart.updatedAt = new Date().toISOString();
   });
+  syncRemote(`/api/v1/cart/items/${encodeURIComponent(itemId)}`, "PATCH", { quantity });
   return { ok: true, data: undefined };
 }
 
@@ -659,6 +711,7 @@ export function setAppointmentStatus(id: string, status: AppointmentStatus, acto
       });
     }
   });
+  syncRemote(`/api/v1/bookings/${encodeURIComponent(id)}/status`, "PATCH", { status });
   return { ok: true, data: undefined };
 }
 
@@ -693,6 +746,7 @@ export function rescheduleAppointment(id: string, date: string, time: string, ac
       href: isCustomer ? "/workspace/bookings" : `/bookings/${row.id}`,
     });
   });
+  syncRemote(`/api/v1/bookings/${encodeURIComponent(id)}/reschedule`, "POST", { date, time });
   return { ok: true, data: undefined };
 }
 
@@ -701,6 +755,7 @@ export function updateAppointmentNotes(businessId: string, appointmentId: string
     const row = next.appointments.find((item) => item.id === appointmentId && item.businessId === businessId);
     if (row) row.notes = notes.trim() || undefined;
   });
+  syncRemote(`/api/v1/bookings/${encodeURIComponent(appointmentId)}/notes`, "PATCH", { notes });
   return { ok: true, data: undefined };
 }
 
@@ -726,6 +781,13 @@ export function addReview(input: { authorId: string; businessId: string; appoint
       business.rating = Math.round((rows.reduce((sum, review) => sum + review.rating, 0) / rows.length) * 10) / 10;
     }
   });
+  syncRemote("/api/v1/reviews", "POST", {
+    businessId: input.businessId,
+    appointmentId: input.appointmentId,
+    rating: parsed.data.rating,
+    title: parsed.data.title,
+    body: parsed.data.body,
+  });
   return { ok: true, data: undefined };
 }
 
@@ -734,6 +796,7 @@ export function markNotificationRead(id: string, userId: string): ActionResult {
     const row = next.notifications.find((item) => item.id === id && item.userId === userId);
     if (row) row.read = true;
   });
+  syncRemote(`/api/v1/notifications/${encodeURIComponent(id)}/read`, "POST");
   return { ok: true, data: undefined };
 }
 
@@ -743,6 +806,7 @@ export function markAllNotificationsRead(userId: string): ActionResult {
       if (item.userId === userId) item.read = true;
     });
   });
+  syncRemote("/api/v1/notifications/read-all", "POST");
   return { ok: true, data: undefined };
 }
 
@@ -766,6 +830,11 @@ export function saveService(businessId: string, input: unknown, serviceId?: stri
     };
     next.services.push(service);
   });
+  if (serviceId) {
+    syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}`, "PUT", parsed.data);
+  } else {
+    syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/services`, "POST", parsed.data);
+  }
   return { ok: true, data: undefined };
 }
 
@@ -774,6 +843,7 @@ export function setServiceActive(businessId: string, serviceId: string, active: 
     const row = next.services.find((item) => item.id === serviceId && item.businessId === businessId);
     if (row) row.active = active;
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}/active`, "PATCH", { active });
   return { ok: true, data: undefined };
 }
 
@@ -785,6 +855,7 @@ export function assignEmployeeToService(businessId: string, serviceId: string, e
     if (!service.employeeIds.includes(employeeId)) service.employeeIds.push(employeeId);
     if (!employee.serviceIds.includes(serviceId)) employee.serviceIds.push(serviceId);
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}/employees/${encodeURIComponent(employeeId)}/toggle`, "POST");
   return { ok: true, data: undefined };
 }
 
@@ -802,37 +873,43 @@ export function toggleEmployeeToService(businessId: string, serviceId: string, e
       if (!employee.serviceIds.includes(serviceId)) employee.serviceIds.push(serviceId);
     }
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}/employees/${encodeURIComponent(employeeId)}/toggle`, "POST");
   return { ok: true, data: undefined };
 }
 
 export function inviteMember(businessId: string, email: string, role: MembershipRole, title: string): ActionResult {
   const user = state.users.find((item) => item.email.toLowerCase() === email.toLowerCase());
-  if (!user) return fail("No BookIt account uses that email yet");
-  if (state.memberships.some((item) => item.userId === user.id && item.businessId === businessId && item.status !== "suspended")) {
-    return fail("That person is already in this workspace");
+  if (usingMocks()) {
+    if (!user) return fail("No BookIt account uses that email yet");
+    if (state.memberships.some((item) => item.userId === user.id && item.businessId === businessId && item.status !== "suspended")) {
+      return fail("That person is already in this workspace");
+    }
   }
-  draft((next) => {
-    next.memberships.push({
-      id: nid("mem"),
-      userId: user.id,
-      businessId,
-      role,
-      status: "invited",
-      title,
-      createdAt: new Date().toISOString(),
+  if (user) {
+    draft((next) => {
+      next.memberships.push({
+        id: nid("mem"),
+        userId: user.id,
+        businessId,
+        role,
+        status: "invited",
+        title,
+        createdAt: new Date().toISOString(),
+      });
+      next.notifications.unshift({
+        id: nid("ntf"),
+        userId: user.id,
+        businessId,
+        category: "message",
+        title: "Workspace invite",
+        body: `You were invited as ${role}.`,
+        read: false,
+        createdAt: new Date().toISOString(),
+        href: "/account",
+      });
     });
-    next.notifications.unshift({
-      id: nid("ntf"),
-      userId: user.id,
-      businessId,
-      category: "message",
-      title: "Workspace invite",
-      body: `You were invited as ${role}.`,
-      read: false,
-      createdAt: new Date().toISOString(),
-      href: "/account",
-    });
-  });
+  }
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/team/invite`, "POST", { email, role, title });
   return { ok: true, data: undefined };
 }
 
@@ -841,6 +918,7 @@ export function setMemberRole(businessId: string, membershipId: string, role: Me
     const row = next.memberships.find((item) => item.id === membershipId && item.businessId === businessId);
     if (row && row.role !== "owner") row.role = role;
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/team/${encodeURIComponent(membershipId)}/role`, "PATCH", { role });
   return { ok: true, data: undefined };
 }
 
@@ -849,6 +927,7 @@ export function addCustomerNote(businessId: string, customerId: string, authorId
   draft((next) => {
     next.notes.unshift({ id: nid("note"), businessId, customerId, authorId, body: body.trim(), createdAt: new Date().toISOString() });
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/notes`, "POST", { customerId, body: body.trim() });
   return { ok: true, data: undefined };
 }
 
@@ -858,6 +937,7 @@ export function addExpense(businessId: string, input: unknown): ActionResult {
   draft((next) => {
     next.expenses.unshift({ id: nid("exp"), businessId, ...parsed.data, source: "manual" });
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/expenses`, "POST", parsed.data);
   return { ok: true, data: undefined };
 }
 
@@ -890,6 +970,11 @@ export function saveProduct(businessId: string, input: unknown, productId?: stri
       popular: false,
     });
   });
+  if (productId) {
+    syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/products/${encodeURIComponent(productId)}`, "PUT", parsed.data);
+  } else {
+    syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/products`, "POST", parsed.data);
+  }
   return { ok: true, data: undefined };
 }
 
@@ -898,6 +983,7 @@ export function setProductActive(businessId: string, productId: string, active: 
     const row = next.products.find((item) => item.id === productId && item.businessId === businessId);
     if (row) row.active = active;
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/products/${encodeURIComponent(productId)}/active`, "PATCH", { active });
   return { ok: true, data: undefined };
 }
 
@@ -921,6 +1007,7 @@ export function setOrderStatus(businessId: string, orderId: string, status: Orde
       href: `/orders/${order.id}`,
     });
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/orders/${encodeURIComponent(orderId)}`, "PATCH", { status });
   return { ok: true, data: undefined };
 }
 
@@ -929,6 +1016,7 @@ export function saveCampaign(businessId: string, campaign: Pick<Campaign, "name"
   draft((next) => {
     next.campaigns.unshift({ id: nid("cmp"), businessId, status: "scheduled", ...campaign });
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/campaigns`, "POST", campaign);
   return { ok: true, data: undefined };
 }
 
@@ -937,6 +1025,7 @@ export function savePromo(businessId: string, code: string, percentOff: number, 
   draft((next) => {
     next.promoCodes.unshift({ id: nid("promo"), businessId, code, percentOff, active: true, expiresOn, redemptions: 0 });
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/promos`, "POST", { code, percentOff, expiresOn });
   return { ok: true, data: undefined };
 }
 
@@ -946,6 +1035,7 @@ export function updateBusiness(businessId: string, patch: Partial<Pick<AppState[
     if (!business) return;
     Object.assign(business, patch, { updatedAt: new Date().toISOString() });
   });
+  syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}`, "PATCH", patch);
   return { ok: true, data: undefined };
 }
 
@@ -957,6 +1047,7 @@ export function updateBusinessHours(businessId: string, hours: WeeklyHours): Act
       business.updatedAt = new Date().toISOString();
     }
   });
+  syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/hours`, "PUT", hours);
   return { ok: true, data: undefined };
 }
 
@@ -969,6 +1060,7 @@ export function addBusinessHoliday(businessId: string, date: string, name: strin
     business.holidays.push({ date, name: name.trim() });
     business.updatedAt = new Date().toISOString();
   });
+  syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/holidays`, "POST", { date, name: name.trim() });
   return { ok: true, data: undefined };
 }
 
@@ -979,6 +1071,7 @@ export function removeBusinessHoliday(businessId: string, date: string): ActionR
     business.holidays = business.holidays.filter((h) => h.date !== date);
     business.updatedAt = new Date().toISOString();
   });
+  syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/holidays/${encodeURIComponent(date)}`, "DELETE");
   return { ok: true, data: undefined };
 }
 
@@ -990,6 +1083,12 @@ export function addBlockedSlot(businessId: string, date: string, start: string, 
     business.blocked.push({ id: nid("blk"), date, start, end, reason: reason.trim() || "Blocked time" });
     business.updatedAt = new Date().toISOString();
   });
+  syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/blocked`, "POST", {
+    date,
+    start,
+    end,
+    reason: reason.trim() || "Blocked time",
+  });
   return { ok: true, data: undefined };
 }
 
@@ -1000,6 +1099,7 @@ export function removeBlockedSlot(businessId: string, blockId: string): ActionRe
     business.blocked = business.blocked.filter((b) => b.id !== blockId);
     business.updatedAt = new Date().toISOString();
   });
+  syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/blocked/${encodeURIComponent(blockId)}`, "DELETE");
   return { ok: true, data: undefined };
 }
 
@@ -1012,6 +1112,7 @@ export function updateEmployeeAvailability(
     const employee = next.employees.find((item) => item.id === employeeId && item.businessId === businessId);
     if (employee) Object.assign(employee, patch);
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/employees/${encodeURIComponent(employeeId)}`, "PATCH", patch);
   return { ok: true, data: undefined };
 }
 
@@ -1020,6 +1121,7 @@ export function markBusinessNotificationRead(businessId: string, notificationId:
     const row = next.notifications.find((item) => item.id === notificationId && item.businessId === businessId);
     if (row) row.read = true;
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/notifications/${encodeURIComponent(notificationId)}/read`, "POST");
   return { ok: true, data: undefined };
 }
 
@@ -1029,6 +1131,7 @@ export function markAllBusinessNotificationsRead(businessId: string): ActionResu
       if (item.businessId === businessId) item.read = true;
     });
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/notifications/read-all`, "POST");
   return { ok: true, data: undefined };
 }
 
@@ -1059,6 +1162,7 @@ export function changePlan(businessId: string, planId: AppState["plans"][number]
       issuedAt: now,
     });
   });
+  syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/subscription`, "PATCH", { planId });
   return { ok: true, data: undefined };
 }
 
@@ -1070,13 +1174,24 @@ export function createStaffAppointment(input: {
   date: string;
   time: string;
 }): ActionResult<{ id: string }> {
-  return createAppointment({
+  const res = createAppointment({
     customerId: input.customerId,
     serviceId: input.serviceId,
     employeeId: input.employeeId,
     date: input.date,
     time: input.time,
   });
+  if (res.ok && !usingMocks()) {
+    syncRemote("/api/v1/bookings", "POST", {
+      customerId: input.customerId,
+      serviceId: input.serviceId,
+      employeeId: input.employeeId,
+      date: input.date,
+      time: input.time,
+      paymentMethod: "in_person",
+    });
+  }
+  return res;
 }
 
 export function moveAppointment(id: string, date: string, time: string, actorUserId: string): ActionResult {
@@ -1112,6 +1227,7 @@ export function reviewApplication(applicationId: string, action: "approve" | "re
       });
     }
   });
+  syncRemote(`/api/v1/admin/applications/${encodeURIComponent(applicationId)}/review`, "POST", { action, note });
   return { ok: true, data: undefined };
 }
 
@@ -1122,6 +1238,7 @@ export function setBusinessStatus(businessId: string, status: BusinessStatus): A
     business.status = status;
     business.isPublic = status === "approved";
   });
+  syncRemote(`/api/v1/admin/businesses/${encodeURIComponent(businessId)}`, "PATCH", { status });
   return { ok: true, data: undefined };
 }
 
@@ -1133,6 +1250,7 @@ export function setUserStatus(userId: string, status: User["status"]): ActionRes
     const user = next.users.find((item) => item.id === userId);
     if (user) user.status = status;
   });
+  syncRemote(`/api/v1/admin/users/${encodeURIComponent(userId)}`, "PATCH", { status });
   return { ok: true, data: undefined };
 }
 
@@ -1141,6 +1259,7 @@ export function moderateReview(reviewId: string, status: Review["status"]): Acti
     const review = next.reviews.find((item) => item.id === reviewId);
     if (review) review.status = status;
   });
+  syncRemote(`/api/v1/admin/reviews/${encodeURIComponent(reviewId)}`, "PATCH", { status });
   return { ok: true, data: undefined };
 }
 
@@ -1149,6 +1268,7 @@ export function setAdvertisementStatus(id: string, status: AppState["advertiseme
     const ad = next.advertisements.find((item) => item.id === id);
     if (ad) ad.status = status;
   });
+  syncRemote(`/api/v1/admin/advertisements/${encodeURIComponent(id)}`, "PATCH", { status });
   return { ok: true, data: undefined };
 }
 
@@ -1157,6 +1277,7 @@ export function setReportStatus(id: string, status: AppState["reports"][number][
     const report = next.reports.find((item) => item.id === id);
     if (report) report.status = status;
   });
+  syncRemote(`/api/v1/admin/reports/${encodeURIComponent(id)}`, "PATCH", { status });
   return { ok: true, data: undefined };
 }
 
@@ -1187,5 +1308,6 @@ export function sendBusinessMessage(fromUserId: string, businessId: string, body
       createdAt: new Date().toISOString(),
     });
   });
+  syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/messages`, "POST", { body: body.trim() });
   return { ok: true, data: undefined };
 }

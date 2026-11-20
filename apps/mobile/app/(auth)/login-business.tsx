@@ -1,4 +1,4 @@
-import { demoPasswordHint, loginBusiness } from "@bookit/api-client";
+import { demoPasswordHint, loginBusiness, loginBusinessRemote, usingMocks } from "@bookit/api-client";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
@@ -23,13 +23,24 @@ export default function BusinessLoginScreen() {
   const submit = async (overrideEmail?: string) => {
     const id = overrideEmail ?? identifier;
     const pwd = overrideEmail ? demoPasswordHint() : password;
-    const res = loginBusiness({ identifier: id, password: pwd, remember });
+    setError("");
+    if (usingMocks()) {
+      const res = loginBusiness({ identifier: id, password: pwd, remember });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      await auth.signInWithToken(res.data.token);
+      await auth.setWorkspaceId(res.data.businessId);
+      router.replace("/(workspace)");
+      return;
+    }
+    const res = await loginBusinessRemote({ identifier: id, password: pwd, remember });
     if (!res.ok) {
       setError(res.error);
       return;
     }
-    setError("");
-    await auth.signInWithToken(res.data.token);
+    await auth.signInRemote(res.data);
     await auth.setWorkspaceId(res.data.businessId);
     router.replace("/(workspace)");
   };

@@ -1,4 +1,4 @@
-import { cartFor, checkout, useBookItState } from "@bookit/api-client";
+import { cartFor, checkout, checkoutRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import type { PaymentMethod } from "@bookit/types";
 import { formatMoney } from "@bookit/utils";
 import { useRouter } from "expo-router";
@@ -19,6 +19,7 @@ export default function CheckoutScreen() {
   const [deliveryMethod, setDeliveryMethod] = useState<"standard" | "express" | "pickup">("standard");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card_token_pending");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   if (!auth.userId) return null;
   const cart = cartFor(state, auth.userId);
@@ -96,19 +97,40 @@ export default function CheckoutScreen() {
         </View>
         {error ? <Text style={{ color: colors.danger, fontSize: 13 }}>{error}</Text> : null}
         <Button
-          label="Place Order"
-          onPress={() => {
-            const res = checkout({
-              userId: auth.userId!,
-              addressId: addressId || addresses[0]?.id || "",
-              deliveryMethod,
-              paymentMethod,
-            });
-            if (!res.ok) {
-              setError(res.error);
+          label={submitting ? "Placing Order..." : "Place Order"}
+          disabled={submitting}
+          onPress={async () => {
+            setError("");
+            const resolvedAddressId = addressId || addresses[0]?.id || "";
+            if (usingMocks()) {
+              const res = checkout({
+                userId: auth.userId!,
+                addressId: resolvedAddressId,
+                deliveryMethod,
+                paymentMethod,
+              });
+              if (!res.ok) {
+                setError(res.error);
+                return;
+              }
+              router.replace("/(customer)/orders");
               return;
             }
-            router.replace("/(customer)/orders");
+            setSubmitting(true);
+            try {
+              const res = await checkoutRemote({
+                addressId: resolvedAddressId,
+                deliveryMethod,
+                paymentMethod,
+              });
+              if (!res.ok) {
+                setError(res.error);
+                return;
+              }
+              router.replace("/(customer)/orders");
+            } finally {
+              setSubmitting(false);
+            }
           }}
         />
       </Card>

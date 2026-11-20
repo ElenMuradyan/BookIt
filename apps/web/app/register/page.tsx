@@ -1,6 +1,6 @@
 "use client";
 
-import { registerCustomer } from "@bookit/api-client";
+import { registerCustomer, registerCustomerRemote, usingMocks } from "@bookit/api-client";
 import { passwordScore } from "@bookit/utils";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -32,22 +32,36 @@ export default function RegisterPage() {
   const score = passwordScore(form.password);
   const set = (key: string, value: string | boolean) => setForm((current) => ({ ...current, [key]: value }));
 
-  function submit(event: React.FormEvent) {
+  async function submit(event: React.FormEvent) {
     event.preventDefault();
-    const result = registerCustomer({
+    setErrors({});
+    setMessage("");
+    const payload = {
       ...form,
       gender: form.gender || undefined,
       personalizationConsent: form.personalizationConsent,
       interests: [],
       acceptTerms: form.acceptTerms ? true : (undefined as unknown as true),
-    });
+    };
+    if (usingMocks()) {
+      const result = registerCustomer(payload);
+      if (!result.ok) {
+        setErrors(result.fieldErrors ?? {});
+        setMessage(result.error);
+        return;
+      }
+      auth.setToken(result.data.token, true);
+      router.push(`/verify?code=${result.data.code}`);
+      return;
+    }
+    const result = await registerCustomerRemote(payload);
     if (!result.ok) {
       setErrors(result.fieldErrors ?? {});
       setMessage(result.error);
       return;
     }
-    auth.setToken(result.data.token, true);
-    router.push(`/verify?code=${result.data.code}`);
+    await auth.signInRemote(result.data);
+    router.push("/verify");
   }
 
   return (
