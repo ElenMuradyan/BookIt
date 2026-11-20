@@ -74,14 +74,17 @@ def create_access_token(
     return encoded, ttl_minutes * 60
 
 
-def decode_access_token(token: str) -> dict[str, Any] | None:
+def decode_access_token(token: str, *, verify_exp: bool = True) -> dict[str, Any] | None:
     settings = get_settings()
     try:
         payload = jwt.decode(
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
-            options={"require": ["sub", "exp", "type", "jti"]},
+            options={
+                "verify_exp": verify_exp,
+                "require": ["sub", "exp", "type", "jti"],
+            },
         )
     except jwt.PyJWTError:
         return None
@@ -101,10 +104,30 @@ def create_csrf_token(session_hint: str = "") -> str:
     return f"{nonce}.{sig}"
 
 
-def verify_csrf_token(cookie_token: str | None, header_token: str | None) -> bool:
-    if not cookie_token or not header_token:
+def verify_csrf_token(
+    cookie_token: str | None,
+    header_token: str | None,
+    session_hint: str = "",
+) -> bool:
+    if not cookie_token or not header_token or not session_hint:
         return False
-    return hmac.compare_digest(cookie_token, header_token)
+    if not cookie_token.isascii() or not header_token.isascii():
+        return False
+    if not hmac.compare_digest(cookie_token, header_token):
+        return False
+    parts = cookie_token.split(".")
+    if len(parts) != 2:
+        return False
+    nonce, provided_sig = parts
+    if not nonce or nonce != nonce.strip() or len(provided_sig) != 24:
+        return False
+    settings = get_settings()
+    expected_sig = hmac.new(
+        settings.csrf_secret_key.encode("utf-8"),
+        f"{nonce}.{session_hint}".encode(),
+        hashlib.sha256,
+    ).hexdigest()[:24]
+    return hmac.compare_digest(expected_sig, provided_sig)
 
 
 def verify_hmac_signature(payload: bytes, signature_header: str | None, secret: str) -> bool:

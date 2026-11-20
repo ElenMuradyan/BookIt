@@ -204,7 +204,7 @@ async def refresh_session(
     db: Annotated[AsyncSession, Depends(get_db)],
     payload: RefreshIn | None = None,
 ):
-    await verify_csrf_if_cookie_auth(request)
+    await verify_csrf_if_cookie_auth(request, db)
     settings = get_settings()
     ip = client_ip_from_request(request)
     await auth_rate_limiter.check(
@@ -238,7 +238,7 @@ async def logout(
     db: Annotated[AsyncSession, Depends(get_db)],
     payload: RefreshIn | None = None,
 ):
-    await verify_csrf_if_cookie_auth(request)
+    await verify_csrf_if_cookie_auth(request, db)
     raw_token = (payload.refresh_token if payload else None) or request.cookies.get(REFRESH_COOKIE_NAME)
     await revoke_refresh_token(db, raw_token)
     _clear_session_cookies(response)
