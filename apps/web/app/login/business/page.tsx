@@ -1,6 +1,6 @@
 "use client";
 
-import { demoPasswordHint, loginBusiness } from "@bookit/api-client";
+import { demoPasswordHint, loginBusiness, loginBusinessRemote, usingMocks } from "@bookit/api-client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -21,14 +21,26 @@ export default function BusinessLoginPage() {
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
 
-  function submit(event: React.FormEvent) {
+  async function submit(event: React.FormEvent) {
     event.preventDefault();
-    const result = loginBusiness({ identifier, password, remember });
+    setError("");
+    if (usingMocks()) {
+      const result = loginBusiness({ identifier, password, remember });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      auth.setToken(result.data.token, remember);
+      auth.setWorkspaceId(result.data.businessId);
+      router.push("/workspace");
+      return;
+    }
+    const result = await loginBusinessRemote({ identifier, password, remember });
     if (!result.ok) {
       setError(result.error);
       return;
     }
-    auth.setToken(result.data.token, remember);
+    await auth.signInRemote(result.data);
     auth.setWorkspaceId(result.data.businessId);
     router.push("/workspace");
   }

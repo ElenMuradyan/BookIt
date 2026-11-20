@@ -22,3 +22,10 @@ android
 # Local dependency backups
 node_modules.backup/
 package-lock.backup.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

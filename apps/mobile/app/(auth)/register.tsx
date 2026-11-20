@@ -1,4 +1,4 @@
-import { registerCustomer } from "@bookit/api-client";
+import { registerCustomer, registerCustomerRemote, usingMocks } from "@bookit/api-client";
 import { passwordScore } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
@@ -32,7 +32,9 @@ export default function RegisterScreen() {
   const strength = passwordScore(form.password);
 
   const onSubmit = async () => {
-    const res = registerCustomer({
+    setErrors({});
+    setFormError("");
+    const payload = {
       ...form,
       gender: form.gender && form.gender !== "Prefer not to say" ? form.gender : undefined,
       dateOfBirth: form.dateOfBirth || undefined,
@@ -40,13 +42,25 @@ export default function RegisterScreen() {
       language: "English",
       interests: ["Beauty", "Wellness"],
       acceptTerms: acceptTerms as true,
-    });
+    };
+    if (usingMocks()) {
+      const res = registerCustomer(payload);
+      if (!res.ok) {
+        setFormError(res.error);
+        setErrors(res.fieldErrors ?? {});
+        return;
+      }
+      await auth.signInWithToken(res.data.token);
+      router.replace("/(auth)/verify");
+      return;
+    }
+    const res = await registerCustomerRemote(payload);
     if (!res.ok) {
       setFormError(res.error);
       setErrors(res.fieldErrors ?? {});
       return;
     }
-    await auth.signInWithToken(res.data.token);
+    await auth.signInRemote(res.data);
     router.replace("/(auth)/verify");
   };
 

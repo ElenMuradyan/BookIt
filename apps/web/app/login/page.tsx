@@ -1,6 +1,6 @@
 "use client";
 
-import { demoPasswordHint, login } from "@bookit/api-client";
+import { demoPasswordHint, login, loginRemote, usingMocks } from "@bookit/api-client";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
@@ -25,15 +25,26 @@ function LoginForm() {
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
 
-  function submit(event: React.FormEvent) {
+  async function submit(event: React.FormEvent) {
     event.preventDefault();
-    const result = login({ identifier, password, remember });
+    setError("");
+    if (usingMocks()) {
+      const result = login({ identifier, password, remember });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      auth.setToken(result.data.token, remember);
+      router.push(identifier.startsWith("admin@") && next === "/home" ? "/admin" : next);
+      return;
+    }
+    const result = await loginRemote({ identifier, password, remember });
     if (!result.ok) {
       setError(result.error);
       return;
     }
-    auth.setToken(result.data.token, remember);
-    router.push(identifier.startsWith("admin@") && next === "/home" ? "/admin" : next);
+    await auth.signInRemote(result.data);
+    router.push(result.data.user.isPlatformAdmin && next === "/home" ? "/admin" : next);
   }
 
   return (

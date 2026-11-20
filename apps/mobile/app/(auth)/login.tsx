@@ -1,4 +1,4 @@
-import { demoPasswordHint, login } from "@bookit/api-client";
+import { demoPasswordHint, login, loginRemote, usingMocks } from "@bookit/api-client";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
@@ -26,14 +26,24 @@ export default function LoginScreen() {
   const submit = async (overrideEmail?: string, targetRoute?: "/(customer)/home" | "/(workspace)" | "/(admin)") => {
     const id = overrideEmail ?? identifier;
     const pwd = overrideEmail ? demoPasswordHint() : password;
-    const res = login({ identifier: id, password: pwd, remember });
+    setError("");
+    if (usingMocks()) {
+      const res = login({ identifier: id, password: pwd, remember });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      await auth.signInWithToken(res.data.token);
+      router.replace(targetRoute ?? "/(customer)/home");
+      return;
+    }
+    const res = await loginRemote({ identifier: id, password: pwd, remember });
     if (!res.ok) {
       setError(res.error);
       return;
     }
-    setError("");
-    await auth.signInWithToken(res.data.token);
-    router.replace(targetRoute ?? "/(customer)/home");
+    await auth.signInRemote(res.data);
+    router.replace(targetRoute ?? (res.data.user.isPlatformAdmin ? "/(admin)" : "/(customer)/home"));
   };
 
   return (

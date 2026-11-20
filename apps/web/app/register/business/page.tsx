@@ -1,6 +1,6 @@
 "use client";
 
-import { submitBusinessApplication, useBookItState } from "@bookit/api-client";
+import { submitBusinessApplication, submitBusinessApplicationRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import type { BusinessCategory } from "@bookit/types";
 import { categoryLabels } from "@bookit/ui";
 import { passwordScore } from "@bookit/utils";
@@ -66,16 +66,32 @@ export default function BusinessRegisterPage() {
       <form
         className="panel stack"
         style={{ maxWidth: 760 }}
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
-          const result = submitBusinessApplication({ ...form, applicantUserId: auth.userId ?? undefined });
+          setErrors({});
+          setFormError("");
+          if (usingMocks()) {
+            const result = submitBusinessApplication({ ...form, applicantUserId: auth.userId ?? undefined });
+            if (!result.ok) {
+              setErrors(result.fieldErrors ?? {});
+              setFormError(result.error);
+              return;
+            }
+            if (result.data.token) {
+              auth.setToken(result.data.token, true);
+            }
+            auth.setWorkspaceId(result.data.businessId);
+            setBusinessId(result.data.businessId);
+            return;
+          }
+          const result = await submitBusinessApplicationRemote({ ...form, applicantUserId: auth.userId ?? undefined });
           if (!result.ok) {
             setErrors(result.fieldErrors ?? {});
             setFormError(result.error);
             return;
           }
-          if (result.data.token) {
-            auth.setToken(result.data.token, true);
+          if (result.data.session) {
+            await auth.signInRemote(result.data.session);
           }
           auth.setWorkspaceId(result.data.businessId);
           setBusinessId(result.data.businessId);

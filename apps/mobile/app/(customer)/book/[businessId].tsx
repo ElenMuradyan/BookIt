@@ -1,9 +1,11 @@
 import {
   createAppointment,
+  createAppointmentRemote,
   displayUser,
   publicBusinessById,
   servicesForBusiness,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { brand } from "@bookit/design-system";
 import type { PaymentMethod } from "@bookit/types";
@@ -46,6 +48,7 @@ export default function BookAppointmentScreen() {
   const [notes, setNotes] = useState("");
   const [confirmedId, setConfirmedId] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const activeService = services.find((s) => s.id === serviceId) ?? services[0];
   const eligibleEmployees = activeService
@@ -126,26 +129,48 @@ export default function BookAppointmentScreen() {
     );
   }
 
-  const confirmBooking = () => {
+  const confirmBooking = async () => {
     if (!auth.userId || !activeEmployee || !chosenTime) {
       setError("Please select an available time slot.");
       return;
     }
-    const res = createAppointment({
-      customerId: auth.userId,
-      serviceId: activeService.id,
-      employeeId: activeEmployee.id,
-      date,
-      time: chosenTime,
-      paymentMethod,
-      notes,
-    });
-    if (!res.ok) {
-      setError(res.error);
+    setError("");
+    if (usingMocks()) {
+      const res = createAppointment({
+        customerId: auth.userId,
+        serviceId: activeService.id,
+        employeeId: activeEmployee.id,
+        date,
+        time: chosenTime,
+        paymentMethod,
+        notes,
+      });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setConfirmedId(res.data.id);
       return;
     }
-    setError("");
-    setConfirmedId(res.data.id);
+    setSubmitting(true);
+    try {
+      const res = await createAppointmentRemote({
+        customerId: auth.userId,
+        serviceId: activeService.id,
+        employeeId: activeEmployee.id,
+        date,
+        time: chosenTime,
+        paymentMethod,
+        notes,
+      });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setConfirmedId(res.data.id);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -378,7 +403,12 @@ export default function BookAppointmentScreen() {
             {activeService.price === 0 ? "Free" : formatMoney(totals.total)}
           </Text>
         </View>
-        <Button label="Confirm Booking →" disabled={!chosenTime} onPress={confirmBooking} style={{ minWidth: 180 }} />
+        <Button
+          label={submitting ? "Confirming..." : "Confirm Booking →"}
+          disabled={!chosenTime || submitting}
+          onPress={confirmBooking}
+          style={{ minWidth: 180 }}
+        />
       </View>
     </Screen>
   );

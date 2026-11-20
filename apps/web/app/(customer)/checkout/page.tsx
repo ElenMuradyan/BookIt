@@ -1,6 +1,6 @@
 "use client";
 
-import { addAddress, cartFor, checkout, useBookItState } from "@bookit/api-client";
+import { addAddress, cartFor, checkout, checkoutRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import type { PaymentMethod } from "@bookit/types";
 import { formatMoney } from "@bookit/utils";
 import Link from "next/link";
@@ -184,9 +184,19 @@ function CheckoutContent() {
           </div>
           {error ? <p className="error">{error}</p> : null}
           <Button
-            onClick={() => {
+            onClick={async () => {
+              setError("");
               const targetAddr = addressId || state.addresses.find((a) => a.userId === userId)?.id || "";
-              const res = checkout({ userId, addressId: targetAddr, deliveryMethod, paymentMethod });
+              if (usingMocks()) {
+                const res = checkout({ userId, addressId: targetAddr, deliveryMethod, paymentMethod });
+                if (!res.ok) {
+                  setError(res.error);
+                  return;
+                }
+                setOrderIds(res.data.orderIds);
+                return;
+              }
+              const res = await checkoutRemote({ addressId: targetAddr, deliveryMethod, paymentMethod });
               if (!res.ok) {
                 setError(res.error);
                 return;
