@@ -104,8 +104,9 @@ export async function submitBusinessApplicationRemote(
   const res = await apiJson<{ id: string; businessId: string; applicantUserId: string }>("/api/v1/businesses/applications", {
     method: "POST",
     body: JSON.stringify(parsed.data),
+    skipAuthRefresh: !input.applicantUserId,
   });
-  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors, status: res.status };
 
   let session: RemoteAuthSession | undefined;
   if (!input.applicantUserId && parsed.data.ownerPassword) {

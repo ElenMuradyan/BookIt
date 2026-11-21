@@ -5,7 +5,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies.auth import get_optional_user, require_user
+from app.api.dependencies.auth import get_optional_user, require_user, verify_csrf_if_cookie_auth
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.rate_limit import auth_rate_limiter, client_ip_from_request
@@ -112,6 +112,7 @@ async def get_business(
 async def submit_business_application(
     payload: BusinessApplicationCreateIn,
     request: Request,
+    _: Annotated[None, Depends(verify_csrf_if_cookie_auth)],
     current_user: Annotated[User | None, Depends(get_optional_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -157,6 +158,14 @@ async def submit_business_application(
             status="active",
         )
         db.add(owner)
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account already exists for that owner email. Please sign in first.",
+            ) from exc
         db.add(CustomerProfile(user_id=owner.id))
         db.add(Cart(id=new_id("cart"), user_id=owner.id))
         await db.flush()

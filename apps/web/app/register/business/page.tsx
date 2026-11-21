@@ -5,7 +5,7 @@ import type { BusinessCategory } from "@bookit/types";
 import { categoryLabels } from "@bookit/ui";
 import { passwordScore } from "@bookit/utils";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/session";
 
 const categories = Object.keys(categoryLabels) as BusinessCategory[];
@@ -32,20 +32,37 @@ export default function BusinessRegisterPage() {
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState("");
+  const [signInRequired, setSignInRequired] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [businessId, setBusinessId] = useState("");
+  const [submittedName, setSubmittedName] = useState("");
   const set = (key: string, value: string) => setForm((current) => ({ ...current, [key]: value }));
+
+  useEffect(() => {
+    if (!auth.user) return;
+    const fullName = `${auth.user.firstName} ${auth.user.lastName}`.trim();
+    setForm((current) => ({
+      ...current,
+      ownerName: current.ownerName || fullName,
+      ownerEmail: current.ownerEmail || auth.user?.email || "",
+      ownerPhone: current.ownerPhone || auth.user?.phone || "",
+    }));
+  }, [auth.user]);
+
   const created = state.businesses.find((business) => business.id === businessId);
   const strength = passwordScore(form.ownerPassword);
 
-  if (created) {
+  if (businessId) {
+    const businessName = created?.name ?? submittedName ?? "Your business";
+    const businessStatus = created?.status ?? "submitted";
     return (
       <main className="page">
         <section className="panel stack" style={{ maxWidth: 640 }}>
-          <h2 style={{ margin: 0 }}>{created.name} is {created.status.replaceAll("_", " ")}</h2>
+          <h2 style={{ margin: 0 }}>{businessName} is {businessStatus.replaceAll("_", " ")}</h2>
           <p className="muted">
             Your business workspace is active so you can set up services, staff schedules, and working hours right away. Public booking goes live once a platform admin approves your verification packet.
           </p>
-          <p>Status: <strong>{created.status}</strong></p>
+          <p>Status: <strong>{businessStatus}</strong></p>
           <div className="row" style={{ flexWrap: "wrap" }}>
             {auth.user ? (
               <Link className="btn" href="/workspace">
@@ -68,33 +85,45 @@ export default function BusinessRegisterPage() {
         style={{ maxWidth: 760 }}
         onSubmit={async (event) => {
           event.preventDefault();
+          if (submitting) return;
           setErrors({});
           setFormError("");
-          if (usingMocks()) {
-            const result = submitBusinessApplication({ ...form, applicantUserId: auth.userId ?? undefined });
+          setSignInRequired(false);
+          setSubmitting(true);
+          try {
+            if (usingMocks()) {
+              const result = submitBusinessApplication({ ...form, applicantUserId: auth.userId ?? undefined });
+              if (!result.ok) {
+                setErrors(result.fieldErrors ?? {});
+                setFormError(result.error);
+                return;
+              }
+              if (result.data.token) {
+                auth.setToken(result.data.token, true);
+              }
+              auth.setWorkspaceId(result.data.businessId);
+              setSubmittedName(form.businessName.trim());
+              setBusinessId(result.data.businessId);
+              return;
+            }
+            const result = await submitBusinessApplicationRemote({ ...form, applicantUserId: auth.userId ?? undefined });
             if (!result.ok) {
               setErrors(result.fieldErrors ?? {});
               setFormError(result.error);
+              setSignInRequired(result.status === 401);
               return;
             }
-            if (result.data.token) {
-              auth.setToken(result.data.token, true);
+            if (result.data.session) {
+              await auth.signInRemote(result.data.session);
+            } else if (auth.userId) {
+              await auth.refreshSession();
             }
             auth.setWorkspaceId(result.data.businessId);
+            setSubmittedName(form.businessName.trim());
             setBusinessId(result.data.businessId);
-            return;
+          } finally {
+            setSubmitting(false);
           }
-          const result = await submitBusinessApplicationRemote({ ...form, applicantUserId: auth.userId ?? undefined });
-          if (!result.ok) {
-            setErrors(result.fieldErrors ?? {});
-            setFormError(result.error);
-            return;
-          }
-          if (result.data.session) {
-            await auth.signInRemote(result.data.session);
-          }
-          auth.setWorkspaceId(result.data.businessId);
-          setBusinessId(result.data.businessId);
         }}
       >
         <div className="tabs" style={{ marginBottom: 4 }}>
@@ -146,8 +175,24 @@ export default function BusinessRegisterPage() {
           <p className="tiny">This business will be added under your signed-in account ({auth.user.email}).</p>
         )}
         <p className="tiny">License upload is a placeholder until document storage connects in the FastAPI backend. The application still records a verification packet.</p>
-        {formError ? <p className="error">{formError}</p> : null}
-        <button className="btn" type="submit">Submit application</button>
+        {formError ? (
+          <div className="stack" style={{ gap: 8 }}>
+            <p className="error" style={{ margin: 0 }}>{formError}</p>
+            {signInRequired ? (
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <Link className="btn ghost small" href="/login?next=/register/business">
+                  Sign in to existing account
+                </Link>
+                <Link className="btn ghost small" href="/login/business">
+                  Business Sign In
+                </Link>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <button className="btn" type="submit" disabled={submitting}>
+          {submitting ? "Submitting application…" : "Submit application"}
+        </button>
       </form>
     </main>
   );

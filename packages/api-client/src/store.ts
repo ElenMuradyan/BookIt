@@ -50,7 +50,7 @@ import { cartFor, workspacesFor } from "./queries";
 
 export type ActionResult<T = undefined> =
   | { ok: true; data: T }
-  | { ok: false; error: string; fieldErrors?: Record<string, string> };
+  | { ok: false; error: string; fieldErrors?: Record<string, string>; status?: number };
 
 const DEMO_PASSWORD = "Demo1234!";
 
