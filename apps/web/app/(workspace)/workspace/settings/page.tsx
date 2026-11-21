@@ -1,12 +1,21 @@
 "use client";
 
-import { changePlan, updateBusiness, updateBusinessHours, useBookItState } from "@bookit/api-client";
-import type { WeeklyHours } from "@bookit/types";
+import {
+  bookingConfigsForBusiness,
+  changePlan,
+  saveBookingConfig,
+  updateBusiness,
+  updateBusinessHours,
+  useBookItState,
+} from "@bookit/api-client";
+import type { BookingModel, DepositMode, WeeklyHours } from "@bookit/types";
 import { businessSettingSections, roleLabels } from "@bookit/ui";
-import { can, formatDate, formatMoney, permissionsFor, WEEKDAY_ORDER } from "@bookit/utils";
+import { bookingModelLabel, can, formatDate, formatMoney, permissionsFor, WEEKDAY_ORDER } from "@bookit/utils";
 import { useEffect, useState } from "react";
 import { Badge, Button, Field } from "@/components/ui";
 import { useAuth } from "@/lib/session";
+
+const BOOKING_MODELS: BookingModel[] = ["appointment", "resource", "ticket", "capacity"];
 
 const EMPTY_HOURS: WeeklyHours = {
   mon: { closed: false, open: "09:00", close: "18:00" },
@@ -23,10 +32,14 @@ export default function WorkspaceSettingsPage() {
   const state = useBookItState();
   const [section, setSection] = useState("profile");
   const [notice, setNotice] = useState("");
+  const [activeModel, setActiveModel] = useState<BookingModel>("appointment");
 
   const bizId = auth.workspace?.businessId ?? "";
   const biz = state.businesses.find((b) => b.id === bizId);
   const sub = state.subscriptions.find((s) => s.businessId === bizId);
+  const modelConfigs = bookingConfigsForBusiness(state, bizId);
+  const currentModelCfg = modelConfigs.find((c) => c.bookingModel === activeModel);
+
   const [form, setForm] = useState({
     name: biz?.name ?? "",
     description: biz?.description ?? "",
@@ -39,6 +52,18 @@ export default function WorkspaceSettingsPage() {
     bookingApproval: (biz?.bookingApproval ?? "automatic") as "automatic" | "manual",
   });
   const [hours, setHours] = useState<WeeklyHours>(biz?.hours ?? EMPTY_HOURS);
+  const [cfgForm, setCfgForm] = useState({
+    enabled: currentModelCfg?.enabled ?? activeModel === "appointment",
+    displayLabel: currentModelCfg?.displayLabel ?? bookingModelLabel(activeModel),
+    approvalMode: (currentModelCfg?.approvalMode ?? "automatic") as "automatic" | "manual",
+    minNoticeMinutes: String(currentModelCfg?.minNoticeMinutes ?? 60),
+    maxAdvanceDays: String(currentModelCfg?.maxAdvanceDays ?? 90),
+    cancellationCutoffHours: String(currentModelCfg?.cancellationCutoffHours ?? 24),
+    cancellationFeePercent: String(currentModelCfg?.cancellationFeePercent ?? 0),
+    depositMode: (currentModelCfg?.depositMode ?? "none") as DepositMode,
+    depositValue: String(currentModelCfg?.depositValue ?? 0),
+    cancellationPolicyText: currentModelCfg?.cancellationPolicyText ?? biz?.cancellationPolicy ?? "Free cancellation up to 24 hours before start.",
+  });
 
   useEffect(() => {
     if (!biz) return;
@@ -55,6 +80,23 @@ export default function WorkspaceSettingsPage() {
     });
     setHours(biz.hours);
   }, [bizId, biz]);
+
+  useEffect(() => {
+    if (!biz) return;
+    const found = modelConfigs.find((c) => c.bookingModel === activeModel);
+    setCfgForm({
+      enabled: found?.enabled ?? activeModel === "appointment",
+      displayLabel: found?.displayLabel ?? bookingModelLabel(activeModel),
+      approvalMode: found?.approvalMode ?? "automatic",
+      minNoticeMinutes: String(found?.minNoticeMinutes ?? 60),
+      maxAdvanceDays: String(found?.maxAdvanceDays ?? 90),
+      cancellationCutoffHours: String(found?.cancellationCutoffHours ?? 24),
+      cancellationFeePercent: String(found?.cancellationFeePercent ?? 0),
+      depositMode: found?.depositMode ?? "none",
+      depositValue: String(found?.depositValue ?? 0),
+      cancellationPolicyText: found?.cancellationPolicyText ?? biz.cancellationPolicy ?? "Free cancellation up to 24 hours before start.",
+    });
+  }, [activeModel, bizId, currentModelCfg]);
 
   if (!auth.workspace || !biz) return null;
   const role = auth.workspace.role;
@@ -200,34 +242,126 @@ export default function WorkspaceSettingsPage() {
           ) : null}
 
           {section === "booking" || section === "cancellation" ? (
-            <form
-              className="stack"
-              onSubmit={(e) => {
-                e.preventDefault();
-                updateBusiness(bizId, {
-                  bookingApproval: form.bookingApproval,
-                  cancellationPolicy: form.cancellationPolicy,
-                });
-                setNotice("Policies updated.");
-              }}
-            >
-              <h2 style={{ margin: 0 }}>Booking & Cancellation Policies</h2>
-              <Field label="Appointment confirmation mode">
-                <select
-                  value={form.bookingApproval}
-                  onChange={(e) => setForm({ ...form, bookingApproval: e.target.value as "automatic" | "manual" })}
+            <div className="stack" style={{ gap: 20 }}>
+              <form
+                className="stack"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  updateBusiness(bizId, {
+                    bookingApproval: form.bookingApproval,
+                    cancellationPolicy: form.cancellationPolicy,
+                  });
+                  setNotice("Default venue policies updated.");
+                }}
+              >
+                <h2 style={{ margin: 0 }}>Booking & Cancellation Policies</h2>
+                <Field label="Default confirmation mode">
+                  <select
+                    value={form.bookingApproval}
+                    onChange={(e) => setForm({ ...form, bookingApproval: e.target.value as "automatic" | "manual" })}
+                  >
+                    <option value="automatic">Automatic confirmation for open slots</option>
+                    <option value="manual">Manual staff approval required</option>
+                  </select>
+                </Field>
+                <Field label="Default cancellation policy">
+                  <textarea value={form.cancellationPolicy} onChange={(e) => setForm({ ...form, cancellationPolicy: e.target.value })} />
+                </Field>
+                <div>
+                  <Button type="submit">Save venue policy</Button>
+                </div>
+              </form>
+
+              <div className="stack" style={{ borderTop: "1px solid var(--line)", paddingTop: 18 }}>
+                <div>
+                  <h3 style={{ margin: 0 }}>Per-Model Booking Rules</h3>
+                  <p className="tiny" style={{ margin: "2px 0 0" }}>
+                    Enable models and configure cutoff hours, deposits, and notice windows independently.
+                  </p>
+                </div>
+                <div className="tabs">
+                  {BOOKING_MODELS.map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={`tab ${activeModel === m ? "on" : ""}`}
+                      onClick={() => setActiveModel(m)}
+                    >
+                      {bookingModelLabel(m)}
+                    </button>
+                  ))}
+                </div>
+                <form
+                  className="stack"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const res = saveBookingConfig(bizId, activeModel, cfgForm);
+                    if (!res.ok) {
+                      setNotice(res.error);
+                      return;
+                    }
+                    setNotice(`${bookingModelLabel(activeModel)} configuration saved.`);
+                  }}
                 >
-                  <option value="automatic">Automatic confirmation for open slots</option>
-                  <option value="manual">Manual staff approval required</option>
-                </select>
-              </Field>
-              <Field label="Cancellation policy">
-                <textarea value={form.cancellationPolicy} onChange={(e) => setForm({ ...form, cancellationPolicy: e.target.value })} />
-              </Field>
-              <div>
-                <Button type="submit">Save policy</Button>
+                  <label className="row" style={{ gap: 8, fontSize: 14 }}>
+                    <input
+                      type="checkbox"
+                      checked={cfgForm.enabled}
+                      disabled={!can(role, "settings.policies")}
+                      onChange={(e) => setCfgForm({ ...cfgForm, enabled: e.target.checked })}
+                    />
+                    <strong>Enable {bookingModelLabel(activeModel)} for customer bookings</strong>
+                  </label>
+                  <div className="grid-2">
+                    <Field label="Customer Tab Label">
+                      <input value={cfgForm.displayLabel} onChange={(e) => setCfgForm({ ...cfgForm, displayLabel: e.target.value })} />
+                    </Field>
+                    <Field label="Approval Mode">
+                      <select
+                        value={cfgForm.approvalMode}
+                        onChange={(e) => setCfgForm({ ...cfgForm, approvalMode: e.target.value as "automatic" | "manual" })}
+                      >
+                        <option value="automatic">Automatic</option>
+                        <option value="manual">Manual approval</option>
+                      </select>
+                    </Field>
+                    <Field label="Min Notice (minutes)">
+                      <input type="number" value={cfgForm.minNoticeMinutes} onChange={(e) => setCfgForm({ ...cfgForm, minNoticeMinutes: e.target.value })} />
+                    </Field>
+                    <Field label="Max Advance (days)">
+                      <input type="number" value={cfgForm.maxAdvanceDays} onChange={(e) => setCfgForm({ ...cfgForm, maxAdvanceDays: e.target.value })} />
+                    </Field>
+                    <Field label="Cancellation Cutoff (hours)">
+                      <input type="number" value={cfgForm.cancellationCutoffHours} onChange={(e) => setCfgForm({ ...cfgForm, cancellationCutoffHours: e.target.value })} />
+                    </Field>
+                    <Field label="Late Cancellation Fee (%)">
+                      <input type="number" value={cfgForm.cancellationFeePercent} onChange={(e) => setCfgForm({ ...cfgForm, cancellationFeePercent: e.target.value })} />
+                    </Field>
+                    <Field label="Deposit Mode">
+                      <select
+                        value={cfgForm.depositMode}
+                        onChange={(e) => setCfgForm({ ...cfgForm, depositMode: e.target.value as DepositMode })}
+                      >
+                        <option value="none">No deposit</option>
+                        <option value="fixed">Fixed amount ($)</option>
+                        <option value="percent">Percent of total (%)</option>
+                      </select>
+                    </Field>
+                    <Field label="Deposit Value">
+                      <input type="number" value={cfgForm.depositValue} onChange={(e) => setCfgForm({ ...cfgForm, depositValue: e.target.value })} />
+                    </Field>
+                  </div>
+                  <Field label="Model Cancellation Policy Copy">
+                    <textarea value={cfgForm.cancellationPolicyText} onChange={(e) => setCfgForm({ ...cfgForm, cancellationPolicyText: e.target.value })} />
+                  </Field>
+                  {can(role, "settings.policies") ? (
+                    <div>
+                      <Button type="submit">Save {bookingModelLabel(activeModel)} Rules</Button>
+                    </div>
+                  ) : null}
+                </form>
               </div>
-            </form>
+            </div>
           ) : null}
 
           {section === "permissions" ? (

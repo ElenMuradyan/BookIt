@@ -1,11 +1,16 @@
 import type {
   AppState,
   Appointment,
+  BookingModel,
   Business,
+  BusinessBookingConfig,
+  EventOffering,
   Order,
   Product,
   PublicBusiness,
+  Resource,
   Service,
+  UniversalBooking,
   Workspace,
 } from "@bookit/types";
 import { fullName, toPublicBusiness } from "@bookit/utils";
@@ -181,4 +186,58 @@ export function personalizedBusinesses(state: AppState, userId: string): {
     return bHits - aHits || b.rating - a.rating;
   });
   return { items: scored.slice(0, 4), personalized: true };
+}
+
+export function bookingConfigsForBusiness(state: AppState, businessId: string): BusinessBookingConfig[] {
+  return (state.bookingConfigs ?? []).filter((cfg) => cfg.businessId === businessId);
+}
+
+export function resourcesForBusiness(state: AppState, businessId: string, includeInactive = false): Resource[] {
+  return (state.resources ?? []).filter(
+    (res) => res.businessId === businessId && (includeInactive || res.active),
+  );
+}
+
+export function offeringsForBusiness(
+  state: AppState,
+  businessId: string,
+  bookingModel?: "ticket" | "capacity",
+  includeInactive = false,
+): EventOffering[] {
+  return (state.eventOfferings ?? []).filter(
+    (off) =>
+      off.businessId === businessId &&
+      (includeInactive || off.active) &&
+      (!bookingModel || off.bookingModel === bookingModel),
+  );
+}
+
+export function enabledModelsForBusiness(state: AppState, businessId: string): BookingModel[] {
+  const models = new Set<BookingModel>();
+  const configs = bookingConfigsForBusiness(state, businessId);
+  for (const cfg of configs) {
+    if (cfg.enabled) models.add(cfg.bookingModel);
+  }
+  if (servicesForBusiness(state, businessId).length > 0) models.add("appointment");
+  if (resourcesForBusiness(state, businessId).length > 0) models.add("resource");
+  for (const off of offeringsForBusiness(state, businessId)) {
+    models.add(off.bookingModel);
+  }
+  return [...models];
+}
+
+export function customerUniversalBookings(state: AppState, userId: string): UniversalBooking[] {
+  return (state.bookings ?? [])
+    .filter((b) => b.customerId === userId)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+export function businessUniversalBookings(state: AppState, businessId: string): UniversalBooking[] {
+  return (state.bookings ?? [])
+    .filter((b) => b.businessId === businessId)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+export function businessesSupportingModel(state: AppState, model: BookingModel): PublicBusiness[] {
+  return publicBusinesses(state).filter((b) => enabledModelsForBusiness(state, b.id).includes(model));
 }

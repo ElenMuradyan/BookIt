@@ -34,6 +34,7 @@ router = APIRouter(prefix="/bookings", tags=["bookings"])
 def _serialize_appointment(appt: Appointment) -> AppointmentOut:
     return AppointmentOut(
         id=appt.id,
+        booking_id=appt.booking_id,
         business_id=appt.business_id,
         service_id=appt.service_id,
         employee_id=appt.employee_id,

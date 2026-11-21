@@ -1,4 +1,20 @@
-import type { Appointment, CustomerProfile, PaymentMethod, User, Workspace } from "@bookit/types";
+import type {
+  Appointment,
+  BookingModel,
+  BusinessBookingConfig,
+  CustomerProfile,
+  EventOffering,
+  EventSession,
+  PaymentMethod,
+  Resource,
+  ResourceAvailability,
+  UniversalBooking,
+  UniversalBookingCreateInput,
+  UniversalBookingStatus,
+  UniversalCheckInResult,
+  User,
+  Workspace,
+} from "@bookit/types";
 import {
   businessApplicationSchema,
   fieldErrors,
@@ -263,6 +279,138 @@ export async function checkInByQrRemote(
       method: "POST",
       body: JSON.stringify({ checkInCode }),
     },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function fetchBookingConfigsRemote(businessId: string): Promise<ActionResult<BusinessBookingConfig[]>> {
+  const res = await apiJson<BusinessBookingConfig[]>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/booking-configs`,
+    { method: "GET" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: res.data };
+}
+
+export async function upsertBookingConfigRemote(
+  businessId: string,
+  bookingModel: BookingModel,
+  payload: Omit<BusinessBookingConfig, "id" | "businessId" | "bookingModel">,
+): Promise<ActionResult<BusinessBookingConfig>> {
+  const res = await apiJson<BusinessBookingConfig>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/booking-configs/${encodeURIComponent(bookingModel)}`,
+    { method: "PUT", body: JSON.stringify(payload) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function fetchResourceAvailabilityRemote(
+  businessId: string,
+  resourceId: string,
+  date: string,
+): Promise<ActionResult<ResourceAvailability>> {
+  const qs = new URLSearchParams({ date });
+  const res = await apiJson<ResourceAvailability>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/resources/${encodeURIComponent(resourceId)}/availability?${qs.toString()}`,
+    { method: "GET" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: res.data };
+}
+
+export async function createResourceRemote(
+  businessId: string,
+  payload: Partial<Resource> & Pick<Resource, "name" | "resourceType">,
+): Promise<ActionResult<Resource>> {
+  const res = await apiJson<Resource>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/resources`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function createOfferingRemote(
+  businessId: string,
+  payload: {
+    bookingModel: "ticket" | "capacity";
+    category: string;
+    title: string;
+    description: string;
+    venueArea?: string;
+    cancellationPolicy: string;
+  },
+): Promise<ActionResult<EventOffering>> {
+  const res = await apiJson<EventOffering>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/offerings`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function createSessionRemote(
+  businessId: string,
+  offeringId: string,
+  payload: {
+    startAt: string;
+    endAt: string;
+    totalCapacity: number;
+    maxPerBooking: number;
+    tiers: { name: string; price: number; capacityLimit?: number; currency?: string }[];
+  },
+): Promise<ActionResult<EventSession>> {
+  const res = await apiJson<EventSession>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/offerings/${encodeURIComponent(offeringId)}/sessions`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function createUniversalBookingRemote(
+  input: UniversalBookingCreateInput,
+): Promise<ActionResult<UniversalBooking>> {
+  const res = await apiJson<UniversalBooking>("/api/v1/bookings/universal", {
+    method: "POST",
+    body: JSON.stringify({
+      ...input,
+      idempotencyKey: input.idempotencyKey ?? makeIdempotencyKey("ubk"),
+    }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setUniversalBookingStatusRemote(
+  bookingId: string,
+  status: UniversalBookingStatus,
+  reason?: string,
+): Promise<ActionResult<UniversalBooking>> {
+  const res = await apiJson<UniversalBooking>(`/api/v1/bookings/universal/${encodeURIComponent(bookingId)}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status, reason }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function checkInUniversalQrRemote(
+  businessId: string,
+  checkInCode: string,
+): Promise<ActionResult<UniversalCheckInResult>> {
+  const res = await apiJson<UniversalCheckInResult>(
+    `/api/v1/bookings/universal/businesses/${encodeURIComponent(businessId)}/check-in`,
+    { method: "POST", body: JSON.stringify({ checkInCode }) },
   );
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   await hydrateFromBackend();

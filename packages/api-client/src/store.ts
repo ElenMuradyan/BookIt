@@ -2,23 +2,34 @@ import type {
   Appointment,
   AppointmentStatus,
   AppState,
+  BookingModel,
+  BusinessBookingConfig,
   BusinessCategory,
   BusinessStatus,
   Campaign,
   Employee,
+  EventOffering,
   MembershipRole,
   OrderStatus,
   PaymentMethod,
   Product,
+  Resource,
   Review,
   Service,
+  UniversalBooking,
+  UniversalBookingCreateInput,
+  UniversalBookingStatus,
+  UniversalCheckInResult,
   User,
   WeeklyHours,
 } from "@bookit/types";
 import { addDays, createSessionToken, sessionFlags } from "@bookit/utils";
 import {
   addressSchema,
+  bookingConfigSchema,
   businessApplicationSchema,
+  eventOfferingSchema,
+  eventSessionSchema,
   expenseSchema,
   fieldErrors,
   loginSchema,
@@ -26,6 +37,7 @@ import {
   registerSchema,
   resetConfirmSchema,
   resetRequestSchema,
+  resourceSchema,
   reviewSchema,
   serviceSchema,
   type BusinessApplicationInput,
@@ -98,7 +110,13 @@ export async function hydrateFromBackend(): Promise<ActionResult<{ hydrated: boo
     return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   }
   lastSyncError = null;
-  commit(res.data);
+  commit({
+    ...res.data,
+    bookingConfigs: res.data.bookingConfigs ?? [],
+    resources: res.data.resources ?? [],
+    eventOfferings: res.data.eventOfferings ?? [],
+    bookings: res.data.bookings ?? [],
+  });
   return { ok: true, data: { hydrated: true } };
 }
 
@@ -626,14 +644,19 @@ export function createAppointment(input: {
     const now = new Date().toISOString();
     const customer = next.users.find((u) => u.id === input.customerId);
     const customerName = customer ? `${customer.firstName} ${customer.lastName}` : "Customer";
+    const startIso = `${input.date}T${input.time}:00`;
+    const endIso = `${input.date}T${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}:00`;
+    const bookingId = nid("bk");
+    const checkInCode = `BK-${id.toUpperCase().slice(-6)}`;
     next.appointments.push({
       id,
+      bookingId,
       businessId: service.businessId,
       serviceId: service.id,
       employeeId: employee.id,
       customerId: input.customerId,
-      start: `${input.date}T${input.time}:00`,
-      end: `${input.date}T${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}:00`,
+      start: startIso,
+      end: endIso,
       status,
       price: service.price,
       currency: "USD",
@@ -641,7 +664,40 @@ export function createAppointment(input: {
       paymentMethod,
       confirmationMode: status === "pending" ? "manual" : "automatic",
       notes: input.notes?.trim() || undefined,
+      checkInCode,
       createdAt: now,
+    });
+    next.bookings = next.bookings ?? [];
+    next.bookings.unshift({
+      id: bookingId,
+      businessId: service.businessId,
+      customerId: input.customerId,
+      bookingModel: "appointment",
+      title: service.name,
+      startAt: startIso,
+      endAt: endIso,
+      timezone: "America/Los_Angeles",
+      quantity: 1,
+      status,
+      confirmationMode: status === "pending" ? "manual" : "automatic",
+      subtotalAmount: service.price,
+      discountAmount: 0,
+      taxAmount: 0,
+      totalAmount: service.price,
+      depositDueAmount: service.depositAmount ?? 0,
+      amountPaid: paymentMethod === "wallet" ? service.price : 0,
+      refundedAmount: 0,
+      currency: "USD",
+      paymentStatus: paymentMethod === "wallet" ? "paid" : "unpaid",
+      paymentMethod,
+      cancellationPolicySnapshot: service.cancellationPolicy,
+      notes: input.notes?.trim() || undefined,
+      checkInCode,
+      createdAt: now,
+      updatedAt: now,
+      legacyAppointmentId: id,
+      resourceAllocations: [],
+      ticketPasses: [],
     });
     next.notifications.unshift({
       id: nid("ntf"),
@@ -682,6 +738,13 @@ export function setAppointmentStatus(id: string, status: AppointmentStatus, acto
     const row = next.appointments.find((item) => item.id === id);
     if (!row) return;
     row.status = status;
+    if (row.bookingId && next.bookings) {
+      const linked = next.bookings.find((b) => b.id === row.bookingId || b.legacyAppointmentId === row.id);
+      if (linked) {
+        linked.status = status;
+        linked.updatedAt = new Date().toISOString();
+      }
+    }
     const now = new Date().toISOString();
     const business = next.businesses.find((b) => b.id === row.businessId);
     const service = next.services.find((s) => s.id === row.serviceId);
@@ -1310,4 +1373,522 @@ export function sendBusinessMessage(fromUserId: string, businessId: string, body
   });
   syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/messages`, "POST", { body: body.trim() });
   return { ok: true, data: undefined };
+}
+
+export function saveBookingConfig(
+  businessId: string,
+  bookingModel: BookingModel,
+  input: unknown,
+): ActionResult<BusinessBookingConfig> {
+  const parsed = bookingConfigSchema.safeParse(input);
+  if (!parsed.success) return fail("Check booking policy fields", fieldErrors(parsed.error));
+  let saved!: BusinessBookingConfig;
+  draft((next) => {
+    next.bookingConfigs = next.bookingConfigs ?? [];
+    const existing = next.bookingConfigs.find(
+      (c) => c.businessId === businessId && c.bookingModel === bookingModel,
+    );
+    if (existing) {
+      Object.assign(existing, parsed.data);
+      saved = existing;
+    } else {
+      saved = {
+        id: nid("bcfg"),
+        businessId,
+        bookingModel,
+        bufferBeforeMinutes: 0,
+        bufferAfterMinutes: 0,
+        holdTtlMinutes: 10,
+        allowOverbooking: false,
+        settings: {},
+        ...parsed.data,
+      };
+      next.bookingConfigs.push(saved);
+    }
+  });
+  syncRemote(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/booking-configs/${encodeURIComponent(bookingModel)}`,
+    "PUT",
+    saved,
+  );
+  return { ok: true, data: saved };
+}
+
+export function saveResource(businessId: string, input: unknown, resourceId?: string): ActionResult<Resource> {
+  const parsed = resourceSchema.safeParse(input);
+  if (!parsed.success) return fail("Check resource details", fieldErrors(parsed.error));
+  let saved!: Resource;
+  draft((next) => {
+    next.resources = next.resources ?? [];
+    if (resourceId) {
+      const existing = next.resources.find((r) => r.id === resourceId && r.businessId === businessId);
+      if (existing) {
+        Object.assign(existing, parsed.data);
+        saved = existing;
+        return;
+      }
+    }
+    saved = {
+      id: nid("res"),
+      businessId,
+      name: parsed.data.name,
+      resourceType: parsed.data.resourceType,
+      description: parsed.data.description,
+      capacityPeople: parsed.data.capacityPeople,
+      unitsTotal: parsed.data.unitsTotal,
+      pricingUnit: parsed.data.pricingUnit,
+      slotDurationMinutes: parsed.data.slotDurationMinutes ?? 60,
+      minDurationMinutes: parsed.data.slotDurationMinutes ?? 60,
+      bufferMinutes: 15,
+      basePrice: parsed.data.basePrice,
+      currency: "USD",
+      depositAmount: parsed.data.depositAmount,
+      attributes: {},
+      active: true,
+    };
+    next.resources.push(saved);
+  });
+  if (resourceId) {
+    syncRemote(
+      `/api/v1/businesses/${encodeURIComponent(businessId)}/resources/${encodeURIComponent(resourceId)}`,
+      "PATCH",
+      parsed.data,
+    );
+  } else {
+    syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/resources`, "POST", {
+      ...parsed.data,
+      currency: "USD",
+      minDurationMinutes: parsed.data.slotDurationMinutes ?? 60,
+    });
+  }
+  return { ok: true, data: saved };
+}
+
+export function setResourceActive(businessId: string, resourceId: string, active: boolean): ActionResult {
+  draft((next) => {
+    const row = (next.resources ?? []).find((r) => r.id === resourceId && r.businessId === businessId);
+    if (row) row.active = active;
+  });
+  syncRemote(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/resources/${encodeURIComponent(resourceId)}`,
+    "PATCH",
+    { active },
+  );
+  return { ok: true, data: undefined };
+}
+
+export function saveEventOffering(businessId: string, input: unknown): ActionResult<EventOffering> {
+  const parsed = eventOfferingSchema.safeParse(input);
+  if (!parsed.success) return fail("Check event or class details", fieldErrors(parsed.error));
+  let created!: EventOffering;
+  draft((next) => {
+    next.eventOfferings = next.eventOfferings ?? [];
+    created = {
+      id: nid("evt"),
+      businessId,
+      bookingModel: parsed.data.bookingModel,
+      category: parsed.data.category,
+      title: parsed.data.title,
+      description: parsed.data.description,
+      venueArea: parsed.data.venueArea || undefined,
+      cancellationPolicy: parsed.data.cancellationPolicy,
+      active: true,
+      metadataJson: {},
+      sessions: [],
+    };
+    next.eventOfferings.unshift(created);
+  });
+  syncRemote(`/api/v1/businesses/${encodeURIComponent(businessId)}/offerings`, "POST", parsed.data);
+  return { ok: true, data: created };
+}
+
+export function createEventSession(businessId: string, offeringId: string, input: unknown): ActionResult {
+  const parsed = eventSessionSchema.safeParse(input);
+  if (!parsed.success) return fail("Check session details", fieldErrors(parsed.error));
+  if (parsed.data.endAt <= parsed.data.startAt) return fail("End time must be after start time");
+  draft((next) => {
+    const off = (next.eventOfferings ?? []).find((o) => o.id === offeringId && o.businessId === businessId);
+    if (!off) return;
+    const sesId = nid("ses");
+    off.sessions.push({
+      id: sesId,
+      offeringId: off.id,
+      businessId,
+      startAt: parsed.data.startAt,
+      endAt: parsed.data.endAt,
+      timezone: "America/Los_Angeles",
+      totalCapacity: parsed.data.totalCapacity,
+      reservedCount: 0,
+      remainingCapacity: parsed.data.totalCapacity,
+      maxPerBooking: parsed.data.maxPerBooking,
+      status: "on_sale",
+      tiers: [
+        {
+          id: nid("tier"),
+          sessionId: sesId,
+          name: parsed.data.tierName,
+          description: "",
+          price: parsed.data.tierPrice,
+          currency: "USD",
+          capacityLimit: parsed.data.totalCapacity,
+          reservedCount: 0,
+          remaining: parsed.data.totalCapacity,
+          sortOrder: 1,
+          active: true,
+        },
+      ],
+    });
+  });
+  syncRemote(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/offerings/${encodeURIComponent(offeringId)}/sessions`,
+    "POST",
+    {
+      startAt: parsed.data.startAt,
+      endAt: parsed.data.endAt,
+      totalCapacity: parsed.data.totalCapacity,
+      maxPerBooking: parsed.data.maxPerBooking,
+      tiers: [
+        {
+          name: parsed.data.tierName,
+          price: parsed.data.tierPrice,
+          capacityLimit: parsed.data.totalCapacity,
+          currency: "USD",
+        },
+      ],
+    },
+  );
+  return { ok: true, data: undefined };
+}
+
+export function createUniversalBooking(
+  customerId: string,
+  input: UniversalBookingCreateInput,
+): ActionResult<UniversalBooking> {
+  if (input.bookingModel === "appointment") {
+    if (!input.serviceId || !input.employeeId || !input.date || !input.time) {
+      return fail("Choose a service, specialist, date, and time");
+    }
+    const res = createAppointment({
+      customerId,
+      serviceId: input.serviceId,
+      employeeId: input.employeeId,
+      date: input.date,
+      time: input.time,
+      paymentMethod: input.paymentMethod,
+      notes: input.notes,
+    });
+    if (!res.ok) return res;
+    const found = state.bookings.find((b) => b.legacyAppointmentId === res.data.id) ?? state.bookings[0]!;
+    return { ok: true, data: found };
+  }
+
+  const now = new Date().toISOString();
+  const paymentMethod: PaymentMethod = input.paymentMethod ?? "in_person";
+
+  if (input.bookingModel === "resource") {
+    const resource = (state.resources ?? []).find((r) => r.id === input.resourceId && r.active);
+    if (!resource) return fail("Resource unavailable");
+    if (!input.startAt || !input.endAt || input.endAt <= input.startAt) {
+      return fail("Choose a valid reservation start and end time");
+    }
+    const unitsReq = input.quantityUnits ?? 1;
+    if (unitsReq < 1 || unitsReq > resource.unitsTotal) {
+      return fail("Requested units exceed resource capacity");
+    }
+    const reqStart = new Date(input.startAt).getTime();
+    const reqEnd = new Date(input.endAt).getTime();
+    let used = 0;
+    for (const bk of state.bookings ?? []) {
+      if (["cancelled", "rejected", "expired", "no_show"].includes(bk.status)) continue;
+      for (const alloc of bk.resourceAllocations) {
+        if (alloc.resourceId !== resource.id) continue;
+        if (new Date(alloc.startAt).getTime() < reqEnd && reqStart < new Date(alloc.endAt).getTime()) {
+          used += alloc.quantityUnits;
+        }
+      }
+    }
+    if (used + unitsReq > resource.unitsTotal) {
+      return fail("That space or resource is already booked for the selected window");
+    }
+    const hours = Math.max(1, (reqEnd - reqStart) / (60 * 60 * 1000));
+    const unitPrice =
+      resource.pricingUnit === "per_hour"
+        ? Math.round(resource.basePrice * hours * 100) / 100
+        : resource.basePrice;
+    const total = Math.round(unitPrice * unitsReq * 100) / 100;
+    const depositDue = resource.depositAmount ?? 0;
+    const cfg = (state.bookingConfigs ?? []).find(
+      (c) => c.businessId === resource.businessId && c.bookingModel === "resource",
+    );
+    const status: UniversalBookingStatus = cfg?.approvalMode === "manual" ? "pending" : "confirmed";
+    const id = nid("bk");
+    const checkInCode = `BK-${id.toUpperCase()}`;
+    let created!: UniversalBooking;
+    draft((next) => {
+      next.bookings = next.bookings ?? [];
+      created = {
+        id,
+        businessId: resource.businessId,
+        customerId,
+        bookingModel: "resource",
+        title: resource.name,
+        startAt: input.startAt,
+        endAt: input.endAt,
+        timezone: resource.timezone ?? "America/Los_Angeles",
+        quantity: unitsReq,
+        status,
+        confirmationMode: cfg?.approvalMode ?? "automatic",
+        subtotalAmount: total,
+        discountAmount: 0,
+        taxAmount: 0,
+        totalAmount: total,
+        depositDueAmount: depositDue,
+        amountPaid: paymentMethod === "wallet" ? total : 0,
+        refundedAmount: 0,
+        currency: "USD",
+        paymentStatus: paymentMethod === "wallet" ? "paid" : "unpaid",
+        paymentMethod,
+        cancellationPolicySnapshot: cfg?.cancellationPolicyText ?? "Standard venue cancellation rules apply.",
+        notes: input.notes?.trim() || undefined,
+        checkInCode,
+        createdAt: now,
+        updatedAt: now,
+        resourceAllocations: [
+          {
+            id: nid("ral"),
+            resourceId: resource.id,
+            startAt: input.startAt!,
+            endAt: input.endAt!,
+            quantityUnits: unitsReq,
+            partySize: input.partySize ?? 1,
+            status,
+            unitPrice,
+          },
+        ],
+        ticketPasses: [],
+      };
+      next.bookings.unshift(created);
+      next.notifications.unshift({
+        id: nid("ntf"),
+        userId: customerId,
+        businessId: resource.businessId,
+        category: "booking",
+        title: "Reservation confirmed",
+        body: `${resource.name} reserved.`,
+        read: false,
+        createdAt: now,
+        href: "/bookings",
+      });
+    });
+    return { ok: true, data: created };
+  }
+
+  // Ticket or Capacity booking
+  const offerings = state.eventOfferings ?? [];
+  const off = offerings.find((o) => o.sessions.some((s) => s.id === input.sessionId));
+  const session = off?.sessions.find((s) => s.id === input.sessionId);
+  if (!off || !session) return fail("Session not found");
+  const items = input.ticketItems ?? [];
+  const totalQty = items.reduce((sum, i) => sum + i.quantity, 0);
+  if (totalQty < 1) return fail("Select at least 1 ticket or spot");
+  if (totalQty > session.maxPerBooking) return fail(`Maximum ${session.maxPerBooking} per booking`);
+  if (session.reservedCount + totalQty > session.totalCapacity) {
+    return fail("Not enough spots remaining in this session");
+  }
+  for (const item of items) {
+    const tier = session.tiers.find((t) => t.id === item.tierId && t.active);
+    if (!tier) return fail("Selected ticket tier unavailable");
+    if (tier.capacityLimit !== undefined && tier.reservedCount + item.quantity > tier.capacityLimit) {
+      return fail(`Not enough ${tier.name} passes remaining`);
+    }
+  }
+
+  const customer = state.users.find((u) => u.id === customerId);
+  const attendeeName = input.attendeeName?.trim() || (customer ? `${customer.firstName} ${customer.lastName}` : "Guest");
+  const attendeeEmail = input.attendeeEmail?.trim() || customer?.email;
+  const id = nid("bk");
+  const checkInCode = `BK-${id.toUpperCase()}`;
+  let created!: UniversalBooking;
+  draft((next) => {
+    const nextOff = (next.eventOfferings ?? []).find((o) => o.id === off.id);
+    const nextSes = nextOff?.sessions.find((s) => s.id === session.id);
+    if (!nextOff || !nextSes) return;
+    let total = 0;
+    const passes: UniversalBooking["ticketPasses"] = [];
+    for (const item of items) {
+      const nextTier = nextSes.tiers.find((t) => t.id === item.tierId)!;
+      nextTier.reservedCount += item.quantity;
+      if (nextTier.capacityLimit !== undefined) {
+        nextTier.remaining = Math.max(0, nextTier.capacityLimit - nextTier.reservedCount);
+      }
+      for (let idx = 0; idx < item.quantity; idx += 1) {
+        total += nextTier.price;
+        const tktId = nid("tkt");
+        passes.push({
+          id: tktId,
+          bookingId: id,
+          businessId: nextOff.businessId,
+          sessionId: nextSes.id,
+          tierId: nextTier.id,
+          attendeeName,
+          attendeeEmail,
+          unitPrice: nextTier.price,
+          passCode: `TKT-${tktId.toUpperCase()}`,
+          status: "valid",
+        });
+      }
+    }
+    nextSes.reservedCount += totalQty;
+    nextSes.remainingCapacity = Math.max(0, nextSes.totalCapacity - nextSes.reservedCount);
+    if (nextSes.remainingCapacity === 0) nextSes.status = "sold_out";
+
+    created = {
+      id,
+      businessId: nextOff.businessId,
+      customerId,
+      bookingModel: nextOff.bookingModel,
+      title: nextOff.title,
+      startAt: nextSes.startAt,
+      endAt: nextSes.endAt,
+      timezone: nextSes.timezone,
+      quantity: totalQty,
+      status: "confirmed",
+      confirmationMode: "automatic",
+      subtotalAmount: total,
+      discountAmount: 0,
+      taxAmount: 0,
+      totalAmount: total,
+      depositDueAmount: 0,
+      amountPaid: paymentMethod === "wallet" ? total : 0,
+      refundedAmount: 0,
+      currency: "USD",
+      paymentStatus: paymentMethod === "wallet" || total === 0 ? "paid" : "unpaid",
+      paymentMethod,
+      cancellationPolicySnapshot: nextOff.cancellationPolicy,
+      notes: input.notes?.trim() || undefined,
+      checkInCode,
+      createdAt: now,
+      updatedAt: now,
+      resourceAllocations: [],
+      ticketPasses: passes,
+    };
+    next.bookings = next.bookings ?? [];
+    next.bookings.unshift(created);
+    next.notifications.unshift({
+      id: nid("ntf"),
+      userId: customerId,
+      businessId: nextOff.businessId,
+      category: "booking",
+      title: nextOff.bookingModel === "ticket" ? "Tickets issued" : "Class spot reserved",
+      body: `${nextOff.title} · ${totalQty} pass(es)`,
+      read: false,
+      createdAt: now,
+      href: "/bookings",
+    });
+  });
+  return { ok: true, data: created };
+}
+
+export function setUniversalBookingStatus(
+  bookingId: string,
+  status: UniversalBookingStatus,
+  actorUserId: string,
+): ActionResult {
+  const bk = (state.bookings ?? []).find((b) => b.id === bookingId);
+  if (!bk) return fail("Booking not found");
+  const isCustomer = bk.customerId === actorUserId;
+  const isStaff = state.memberships.some(
+    (m) => m.userId === actorUserId && m.businessId === bk.businessId && m.status === "active",
+  );
+  if (!isCustomer && !isStaff) return fail("You cannot update this booking");
+  if (isCustomer && status !== "cancelled") return fail("Customers can only cancel bookings");
+  if (bk.legacyAppointmentId) {
+    return setAppointmentStatus(bk.legacyAppointmentId, status as AppointmentStatus, actorUserId);
+  }
+  draft((next) => {
+    const row = (next.bookings ?? []).find((b) => b.id === bookingId);
+    if (!row) return;
+    const prev = row.status;
+    row.status = status;
+    row.updatedAt = new Date().toISOString();
+    const releasing =
+      ["cancelled", "rejected", "expired"].includes(status) &&
+      !["cancelled", "rejected", "expired"].includes(prev);
+    if (releasing) {
+      row.resourceAllocations.forEach((a) => {
+        a.status = "released";
+      });
+      if (row.ticketPasses.length > 0) {
+        const sesIds = new Set<string>();
+        row.ticketPasses.forEach((p) => {
+          p.status = "cancelled";
+          sesIds.add(p.sessionId);
+        });
+        for (const off of next.eventOfferings ?? []) {
+          for (const ses of off.sessions) {
+            if (!sesIds.has(ses.id)) continue;
+            const qty = row.ticketPasses.filter((p) => p.sessionId === ses.id).length;
+            ses.reservedCount = Math.max(0, ses.reservedCount - qty);
+            ses.remainingCapacity = Math.max(0, ses.totalCapacity - ses.reservedCount);
+            if (ses.status === "sold_out" && ses.remainingCapacity > 0) ses.status = "on_sale";
+            for (const p of row.ticketPasses.filter((tp) => tp.sessionId === ses.id)) {
+              const tier = ses.tiers.find((t) => t.id === p.tierId);
+              if (tier) {
+                tier.reservedCount = Math.max(0, tier.reservedCount - 1);
+                if (tier.capacityLimit !== undefined) {
+                  tier.remaining = Math.max(0, tier.capacityLimit - tier.reservedCount);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+  syncRemote(`/api/v1/bookings/universal/${encodeURIComponent(bookingId)}/status`, "PATCH", { status });
+  return { ok: true, data: undefined };
+}
+
+export function checkInUniversalQr(
+  businessId: string,
+  code: string,
+  _actorUserId: string,
+): ActionResult<UniversalCheckInResult> {
+  const clean = code.trim();
+  if (!clean) return fail("Enter or scan a valid check-in code");
+  let result: UniversalCheckInResult | null = null;
+  let error: string | null = null;
+  draft((next) => {
+    const bookings = next.bookings ?? [];
+    for (const bk of bookings) {
+      if (bk.businessId !== businessId) continue;
+      const pass = bk.ticketPasses.find((p) => p.passCode === clean);
+      if (pass) {
+        if (pass.status === "checked_in") {
+          error = "This ticket pass has already been checked in";
+          return;
+        }
+        if (pass.status !== "valid") {
+          error = "This ticket pass is no longer valid";
+          return;
+        }
+        pass.status = "checked_in";
+        pass.checkedInAt = new Date().toISOString();
+        result = { matchedType: "ticket_pass", booking: bk, ticketPass: pass };
+        return;
+      }
+      if (bk.checkInCode === clean) {
+        if (["cancelled", "rejected", "expired"].includes(bk.status)) {
+          error = "This booking cannot be checked in";
+          return;
+        }
+        bk.checkedInAt = new Date().toISOString();
+        result = { matchedType: "booking", booking: bk };
+        return;
+      }
+    }
+  });
+  if (error) return fail(error);
+  if (!result) return fail("No matching pass or booking code found for this business");
+  return { ok: true, data: result };
 }

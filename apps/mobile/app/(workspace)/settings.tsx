@@ -1,11 +1,20 @@
-import { changePlan, updateBusiness, updateBusinessHours, useBookItState } from "@bookit/api-client";
-import type { WeeklyHours } from "@bookit/types";
-import { can, formatMoney, WEEKDAY_ORDER } from "@bookit/utils";
+import {
+  bookingConfigsForBusiness,
+  changePlan,
+  saveBookingConfig,
+  updateBusiness,
+  updateBusinessHours,
+  useBookItState,
+} from "@bookit/api-client";
+import type { BookingModel, DepositMode, WeeklyHours } from "@bookit/types";
+import { bookingModelLabel, can, formatMoney, WEEKDAY_ORDER } from "@bookit/utils";
 import React, { useEffect, useState } from "react";
-import { Switch, Text, View } from "react-native";
+import { ScrollView, Switch, Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, Chip, InputField, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
 import { useAuth } from "@/services/session";
+
+const BOOKING_MODELS: BookingModel[] = ["appointment", "resource", "ticket", "capacity"];
 
 const EMPTY_HOURS: WeeklyHours = {
   mon: { closed: false, open: "09:00", close: "18:00" },
@@ -25,6 +34,7 @@ export default function WorkspaceSettingsScreen() {
   const bizId = auth.workspace?.businessId ?? "";
   const biz = state.businesses.find((b) => b.id === bizId);
   const sub = state.subscriptions.find((s) => s.businessId === bizId);
+  const modelConfigs = bookingConfigsForBusiness(state, bizId);
 
   const [name, setName] = useState(biz?.name ?? "");
   const [phone, setPhone] = useState(biz?.phone ?? "");
@@ -35,6 +45,16 @@ export default function WorkspaceSettingsScreen() {
   const [policy, setPolicy] = useState(biz?.cancellationPolicy ?? "");
   const [approval, setApproval] = useState<"automatic" | "manual">(biz?.bookingApproval ?? "automatic");
   const [hours, setHours] = useState<WeeklyHours>(biz?.hours ?? EMPTY_HOURS);
+  const [activeModel, setActiveModel] = useState<BookingModel>("appointment");
+  const currentCfg = modelConfigs.find((c) => c.bookingModel === activeModel);
+  const [cfgEnabled, setCfgEnabled] = useState(currentCfg?.enabled ?? true);
+  const [cfgApproval, setCfgApproval] = useState<"automatic" | "manual">(currentCfg?.approvalMode ?? "automatic");
+  const [cfgCutoff, setCfgCutoff] = useState(String(currentCfg?.cancellationCutoffHours ?? 24));
+  const [cfgDepositMode, setCfgDepositMode] = useState<DepositMode>(currentCfg?.depositMode ?? "none");
+  const [cfgDepositVal, setCfgDepositVal] = useState(String(currentCfg?.depositValue ?? 0));
+  const [cfgPolicyText, setCfgPolicyText] = useState(
+    currentCfg?.cancellationPolicyText ?? biz?.cancellationPolicy ?? "Free cancellation up to 24 hours before start.",
+  );
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
@@ -50,9 +70,21 @@ export default function WorkspaceSettingsScreen() {
     setHours(biz.hours);
   }, [bizId, biz]);
 
+  useEffect(() => {
+    if (!biz) return;
+    const found = modelConfigs.find((c) => c.bookingModel === activeModel);
+    setCfgEnabled(found?.enabled ?? activeModel === "appointment");
+    setCfgApproval(found?.approvalMode ?? "automatic");
+    setCfgCutoff(String(found?.cancellationCutoffHours ?? 24));
+    setCfgDepositMode(found?.depositMode ?? "none");
+    setCfgDepositVal(String(found?.depositValue ?? 0));
+    setCfgPolicyText(found?.cancellationPolicyText ?? biz.cancellationPolicy ?? "Free cancellation up to 24 hours before start.");
+  }, [activeModel, bizId, currentCfg]);
+
   if (!auth.workspace || !biz) return null;
   const canSub = can(auth.workspace.role, "subscription.manage");
   const canEdit = can(auth.workspace.role, "settings.profile");
+  const canPolicies = can(auth.workspace.role, "settings.policies");
 
   return (
     <Screen>
@@ -93,6 +125,58 @@ export default function WorkspaceSettingsScreen() {
                 bookingApproval: approval,
               });
               setNotice("Business settings updated.");
+            }}
+          />
+        ) : null}
+      </Card>
+
+      <Card style={{ gap: 10 }}>
+        <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>Per-Model Booking Rules</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+          {BOOKING_MODELS.map((m) => (
+            <Chip key={m} label={bookingModelLabel(m)} active={activeModel === m} onPress={() => setActiveModel(m)} />
+          ))}
+        </ScrollView>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <Text style={{ color: colors.text, fontWeight: "600" }}>Enable {bookingModelLabel(activeModel)}</Text>
+          <Switch value={cfgEnabled} disabled={!canPolicies} onValueChange={setCfgEnabled} />
+        </View>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <Chip label="Auto-confirm" active={cfgApproval === "automatic"} onPress={() => canPolicies && setCfgApproval("automatic")} />
+          <Chip label="Manual" active={cfgApproval === "manual"} onPress={() => canPolicies && setCfgApproval("manual")} />
+        </View>
+        <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={{ flex: 1 }}>
+            <InputField label="Cutoff (hrs)" value={cfgCutoff} onChangeText={setCfgCutoff} keyboardType="numeric" editable={canPolicies} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <InputField label="Deposit ($ / %)" value={cfgDepositVal} onChangeText={setCfgDepositVal} keyboardType="numeric" editable={canPolicies} />
+          </View>
+        </View>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          {(["none", "fixed", "percent"] as DepositMode[]).map((dm) => (
+            <Chip key={dm} label={`Deposit: ${dm}`} active={cfgDepositMode === dm} onPress={() => canPolicies && setCfgDepositMode(dm)} />
+          ))}
+        </View>
+        <InputField label="Model policy copy" value={cfgPolicyText} onChangeText={setCfgPolicyText} multiline editable={canPolicies} />
+        {canPolicies ? (
+          <Button
+            label={`Save ${bookingModelLabel(activeModel)}`}
+            tone="soft"
+            onPress={() => {
+              const res = saveBookingConfig(bizId, activeModel, {
+                enabled: cfgEnabled,
+                displayLabel: bookingModelLabel(activeModel),
+                approvalMode: cfgApproval,
+                minNoticeMinutes: currentCfg?.minNoticeMinutes ?? 60,
+                maxAdvanceDays: currentCfg?.maxAdvanceDays ?? 90,
+                cancellationCutoffHours: cfgCutoff,
+                cancellationFeePercent: currentCfg?.cancellationFeePercent ?? 0,
+                cancellationPolicyText: cfgPolicyText,
+                depositMode: cfgDepositMode,
+                depositValue: cfgDepositVal,
+              });
+              setNotice(res.ok ? `${bookingModelLabel(activeModel)} rules saved.` : res.error);
             }}
           />
         ) : null}

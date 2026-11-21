@@ -1,14 +1,20 @@
 import {
   businessAppointments,
+  businessUniversalBookings,
+  checkInUniversalQr,
+  checkInUniversalQrRemote,
   displayUser,
   rescheduleAppointment,
   setAppointmentStatus,
+  setUniversalBookingStatus,
+  setUniversalBookingStatusRemote,
   updateAppointmentNotes,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
-import type { Appointment } from "@bookit/types";
-import { appointmentStatus } from "@bookit/ui";
-import { addDays, availableSlots, can, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
+import type { Appointment, UniversalBookingStatus } from "@bookit/types";
+import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
+import { addDays, availableSlots, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
 import React, { useState } from "react";
 import { Modal, ScrollView, Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, Chip, EmptyState, InputField, Screen } from "@/components/Ui";
@@ -27,13 +33,21 @@ export default function WorkspaceBookingsScreen() {
   const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
   const [date, setDate] = useState(addDays(DEMO_TODAY, 1));
   const [time, setTime] = useState("10:00");
+  const [checkInCode, setCheckInCode] = useState("");
+  const [checkInMsg, setCheckInMsg] = useState<{ err?: boolean; text: string } | null>(null);
+  const [checkingIn, setCheckingIn] = useState(false);
 
   if (!auth.workspace || !auth.userId) return null;
   const bizId = auth.workspace.businessId;
+  const actorId = auth.userId;
   const biz = state.businesses.find((b) => b.id === bizId);
   const canManage = can(auth.workspace.role, "bookings.manage");
   const canViewCustomers = can(auth.workspace.role, "customers.view");
   const rows = businessAppointments(state, bizId).filter((a) => filter === "all" || a.status === filter);
+  const universalRows = businessUniversalBookings(state, bizId).filter((ub) => {
+    if (ub.bookingModel === "appointment" && ub.legacyAppointmentId) return false;
+    return filter === "all" || ub.status === filter;
+  });
 
   const rescheduleSvc = rescheduleTarget ? state.services.find((s) => s.id === rescheduleTarget.serviceId) : undefined;
   const openSlots =
@@ -50,84 +64,191 @@ export default function WorkspaceBookingsScreen() {
         })
       : [];
 
+  const handleUniversalStatus = async (bookingId: string, status: UniversalBookingStatus) => {
+    if (usingMocks()) {
+      const res = setUniversalBookingStatus(bookingId, status, actorId);
+      if (!res.ok) setCheckInMsg({ err: true, text: res.error });
+      return;
+    }
+    const res = await setUniversalBookingStatusRemote(bookingId, status);
+    if (!res.ok) setCheckInMsg({ err: true, text: res.error });
+  };
+
   return (
     <Screen>
       <BrandHeader mode="workspace" showBack />
+
+      {canManage ? (
+        <Card style={{ gap: 8 }}>
+          <Text style={{ color: colors.text, fontWeight: "700", fontSize: 14 }}>Front-Desk QR / Pass Check-In</Text>
+          <InputField
+            label="Booking or Ticket Code"
+            value={checkInCode}
+            onChangeText={setCheckInCode}
+            placeholder="BK-xxxxxx or TKT-xxxxxx"
+            autoCapitalize="characters"
+          />
+          <Button
+            label={checkingIn ? "Checking in..." : "Check In Guest"}
+            disabled={checkingIn || !checkInCode.trim()}
+            small
+            onPress={async () => {
+              setCheckingIn(true);
+              setCheckInMsg(null);
+              try {
+                const res = usingMocks()
+                  ? checkInUniversalQr(bizId, checkInCode, actorId)
+                  : await checkInUniversalQrRemote(bizId, checkInCode);
+                if (!res.ok) {
+                  setCheckInMsg({ err: true, text: res.error });
+                  return;
+                }
+                setCheckInMsg({
+                  text: `Checked in ${res.data.ticketPass ? res.data.ticketPass.passCode : res.data.booking.checkInCode ?? res.data.booking.id} (${res.data.booking.title}).`,
+                });
+                setCheckInCode("");
+              } finally {
+                setCheckingIn(false);
+              }
+            }}
+          />
+          {checkInMsg ? (
+            <Text style={{ color: checkInMsg.err ? colors.danger : colors.lavender, fontSize: 12 }}>
+              {checkInMsg.text}
+            </Text>
+          ) : null}
+        </Card>
+      ) : null}
+
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
         {FILTERS.map((f) => (
           <Chip key={f} label={f.replaceAll("_", " ").toUpperCase()} active={filter === f} onPress={() => setFilter(f)} />
         ))}
       </ScrollView>
 
-      {rows.length === 0 ? (
-        <EmptyState title="No bookings" body="No appointments match this status filter." />
+      {rows.length === 0 && universalRows.length === 0 ? (
+        <EmptyState title="No bookings" body="No appointments, spaces, or event passes match this status filter." />
       ) : (
-        rows.map((apt) => {
-          const customer = state.users.find((u) => u.id === apt.customerId);
-          const svc = state.services.find((s) => s.id === apt.serviceId);
-          const emp = state.employees.find((e) => e.id === apt.employeeId);
-          const meta = appointmentStatus(apt.status);
-          return (
-            <Card key={apt.id} style={{ gap: 6 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Badge label={meta.label} tone={meta.tone} />
-                <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
-                  {formatMoney(apt.price)}
-                </Text>
-              </View>
-              <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>{displayUser(state, apt.customerId)}</Text>
-              {canViewCustomers && customer ? (
-                <Text style={{ color: colors.muted, fontSize: 12 }}>
-                  {customer.phone} · {customer.email}
-                </Text>
-              ) : null}
-              <Text style={{ color: colors.muted, fontSize: 12 }}>
-                {svc?.name} · {emp ? displayUser(state, emp.userId) : "Staff"} · {formatDateTime(apt.start)}
-              </Text>
-              {apt.notes ? <Text style={{ color: colors.lavender, fontSize: 12 }}>Note: {apt.notes}</Text> : null}
-              {canManage ? (
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
-                  {apt.status === "pending" ? (
-                    <>
-                      <Button label="Approve" tone="soft" small onPress={() => setAppointmentStatus(apt.id, "confirmed", auth.userId!)} />
-                      <Button label="Reject" tone="danger" small onPress={() => setAppointmentStatus(apt.id, "rejected", auth.userId!)} />
-                    </>
-                  ) : null}
-                  {apt.status === "confirmed" ? (
-                    <>
-                      <Button label="Complete" tone="soft" small onPress={() => setAppointmentStatus(apt.id, "completed", auth.userId!)} />
-                      <Button label="No-show" tone="ghost" small onPress={() => setAppointmentStatus(apt.id, "no_show", auth.userId!)} />
-                    </>
-                  ) : null}
-                  {apt.status === "pending" || apt.status === "confirmed" ? (
-                    <>
-                      <Button
-                        label="Reschedule"
-                        tone="ghost"
-                        small
-                        onPress={() => {
-                          setRescheduleTarget(apt);
-                          setDate(apt.start.slice(0, 10));
-                          setTime(apt.start.slice(11, 16));
-                        }}
-                      />
-                      <Button label="Cancel" tone="danger" small onPress={() => setAppointmentStatus(apt.id, "cancelled", auth.userId!)} />
-                    </>
-                  ) : null}
-                  <Button
-                    label="Notes"
-                    tone="ghost"
-                    small
-                    onPress={() => {
-                      setNotesTarget(apt);
-                      setNoteText(apt.notes ?? "");
-                    }}
-                  />
+        <>
+          {universalRows.map((ub) => {
+            const customer = state.users.find((u) => u.id === ub.customerId);
+            const meta = universalBookingStatus(ub.status);
+            return (
+              <Card key={ub.id} style={{ gap: 6 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                  <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap", flex: 1 }}>
+                    <Badge label={bookingModelLabel(ub.bookingModel)} tone="brand" />
+                    <Badge label={meta.label} tone={meta.tone} />
+                  </View>
+                  <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
+                    {formatMoney(ub.totalAmount)}
+                  </Text>
                 </View>
-              ) : null}
-            </Card>
-          );
-        })
+                <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>
+                  {displayUser(state, ub.customerId)} · {ub.title}
+                </Text>
+                {canViewCustomers && customer ? (
+                  <Text style={{ color: colors.muted, fontSize: 12 }}>
+                    {customer.phone} · {customer.email}
+                  </Text>
+                ) : null}
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)} · {ub.quantity}x
+                </Text>
+                {ub.checkInCode ? (
+                  <Text style={{ color: colors.lavender, fontSize: 12, fontVariant: ["tabular-nums"] }}>
+                    Code: {ub.checkInCode}
+                    {ub.ticketPasses.length > 0 ? ` · ${ub.ticketPasses.length} pass(es)` : ""}
+                  </Text>
+                ) : null}
+                {canManage ? (
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+                    {ub.status === "pending" || ub.status === "held" ? (
+                      <>
+                        <Button label="Approve" tone="soft" small onPress={() => void handleUniversalStatus(ub.id, "confirmed")} />
+                        <Button label="Reject" tone="danger" small onPress={() => void handleUniversalStatus(ub.id, "rejected")} />
+                      </>
+                    ) : null}
+                    {ub.status === "confirmed" ? (
+                      <>
+                        <Button label="Complete" tone="soft" small onPress={() => void handleUniversalStatus(ub.id, "completed")} />
+                        <Button label="No-show" tone="ghost" small onPress={() => void handleUniversalStatus(ub.id, "no_show")} />
+                        <Button label="Cancel" tone="danger" small onPress={() => void handleUniversalStatus(ub.id, "cancelled")} />
+                      </>
+                    ) : null}
+                  </View>
+                ) : null}
+              </Card>
+            );
+          })}
+
+          {rows.map((apt) => {
+            const customer = state.users.find((u) => u.id === apt.customerId);
+            const svc = state.services.find((s) => s.id === apt.serviceId);
+            const emp = state.employees.find((e) => e.id === apt.employeeId);
+            const meta = appointmentStatus(apt.status);
+            return (
+              <Card key={apt.id} style={{ gap: 6 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Badge label={meta.label} tone={meta.tone} />
+                  <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
+                    {formatMoney(apt.price)}
+                  </Text>
+                </View>
+                <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>{displayUser(state, apt.customerId)}</Text>
+                {canViewCustomers && customer ? (
+                  <Text style={{ color: colors.muted, fontSize: 12 }}>
+                    {customer.phone} · {customer.email}
+                  </Text>
+                ) : null}
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  {svc?.name} · {emp ? displayUser(state, emp.userId) : "Staff"} · {formatDateTime(apt.start)}
+                </Text>
+                {apt.notes ? <Text style={{ color: colors.lavender, fontSize: 12 }}>Note: {apt.notes}</Text> : null}
+                {canManage ? (
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+                    {apt.status === "pending" ? (
+                      <>
+                        <Button label="Approve" tone="soft" small onPress={() => setAppointmentStatus(apt.id, "confirmed", actorId)} />
+                        <Button label="Reject" tone="danger" small onPress={() => setAppointmentStatus(apt.id, "rejected", actorId)} />
+                      </>
+                    ) : null}
+                    {apt.status === "confirmed" ? (
+                      <>
+                        <Button label="Complete" tone="soft" small onPress={() => setAppointmentStatus(apt.id, "completed", actorId)} />
+                        <Button label="No-show" tone="ghost" small onPress={() => setAppointmentStatus(apt.id, "no_show", actorId)} />
+                      </>
+                    ) : null}
+                    {apt.status === "pending" || apt.status === "confirmed" ? (
+                      <>
+                        <Button
+                          label="Reschedule"
+                          tone="ghost"
+                          small
+                          onPress={() => {
+                            setRescheduleTarget(apt);
+                            setDate(apt.start.slice(0, 10));
+                            setTime(apt.start.slice(11, 16));
+                          }}
+                        />
+                        <Button label="Cancel" tone="danger" small onPress={() => setAppointmentStatus(apt.id, "cancelled", actorId)} />
+                      </>
+                    ) : null}
+                    <Button
+                      label="Notes"
+                      tone="ghost"
+                      small
+                      onPress={() => {
+                        setNotesTarget(apt);
+                        setNoteText(apt.notes ?? "");
+                      }}
+                    />
+                  </View>
+                ) : null}
+              </Card>
+            );
+          })}
+        </>
       )}
 
       <Modal visible={Boolean(notesTarget)} transparent animationType="slide" onRequestClose={() => setNotesTarget(null)}>
@@ -185,7 +306,7 @@ export default function WorkspaceBookingsScreen() {
                   label="Update"
                   style={{ flex: 1 }}
                   onPress={() => {
-                    rescheduleAppointment(rescheduleTarget.id, date, time, auth.userId!);
+                    rescheduleAppointment(rescheduleTarget.id, date, time, actorId);
                     setRescheduleTarget(null);
                   }}
                 />

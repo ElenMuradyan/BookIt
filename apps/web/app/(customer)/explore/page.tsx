@@ -2,14 +2,15 @@
 
 import {
   addToCart,
+  enabledModelsForBusiness,
   searchBusinesses,
   searchProducts,
   searchServices,
   useBookItState,
 } from "@bookit/api-client";
-import type { BusinessCategory } from "@bookit/types";
+import type { BookingModel, BusinessCategory } from "@bookit/types";
 import { categoryLabels, exploreFilterHints } from "@bookit/ui";
-import { formatMoney } from "@bookit/utils";
+import { bookingModelLabel, formatDateTime, formatMoney } from "@bookit/utils";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
@@ -17,14 +18,18 @@ import { Badge, Button, Empty } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
 const CATEGORIES = Object.keys(categoryLabels) as BusinessCategory[];
+const BOOKING_MODELS: BookingModel[] = ["appointment", "resource", "ticket", "capacity"];
 
 function ExploreContent() {
   const auth = useAuth();
   const state = useBookItState();
   const params = useSearchParams();
-  const [tab, setTab] = useState<"businesses" | "services" | "products">((params.get("tab") as "businesses" | "services" | "products") || "businesses");
+  const [tab, setTab] = useState<"businesses" | "services" | "events" | "products">(
+    (params.get("tab") as "businesses" | "services" | "events" | "products") || "businesses",
+  );
   const [q, setQ] = useState(params.get("q") ?? "");
   const [category, setCategory] = useState(params.get("category") ?? "");
+  const [modelFilter, setModelFilter] = useState<BookingModel | "">((params.get("model") as BookingModel) || "");
   const [minRating, setMinRating] = useState(0);
   const [maxPrice, setMaxPrice] = useState<number | undefined>(undefined);
   const [sort, setSort] = useState<"rating" | "distance" | "price_asc" | "price_desc">("rating");
@@ -35,8 +40,23 @@ function ExploreContent() {
     category: category || undefined,
     minRating: minRating || undefined,
     sort: sort === "distance" ? "distance" : "rating",
+  }).filter((biz) => {
+    if (!modelFilter) return true;
+    return enabledModelsForBusiness(state, biz.id).includes(modelFilter);
   });
+
   const services = searchServices(state, { q, category: category || undefined, maxPrice });
+  const offerings = (state.eventOfferings ?? []).filter((off) => {
+    if (!off.active) return false;
+    const biz = state.businesses.find((b) => b.id === off.businessId && b.isPublic && b.status === "approved");
+    if (!biz) return false;
+    if (category && biz.category !== category) return false;
+    if (modelFilter && off.bookingModel !== modelFilter) return false;
+    if (q.trim() && !`${off.title} ${off.description} ${off.category} ${biz.name}`.toLowerCase().includes(q.trim().toLowerCase())) {
+      return false;
+    }
+    return true;
+  });
   const products = searchProducts(state, {
     q,
     maxPrice,
@@ -52,13 +72,20 @@ function ExploreContent() {
         <div>
           <h1 style={{ margin: 0 }}>Explore BookIt</h1>
           <p className="muted" style={{ margin: "4px 0 0" }}>
-            Discover approved businesses, bookable services, and multi-vendor products.
+            Discover approved businesses, bookable spaces, events, classes, services, and products.
           </p>
         </div>
         <div className="tabs">
-          {(["businesses", "services", "products"] as const).map((item) => (
+          {(
+            [
+              ["businesses", "Businesses"],
+              ["services", "Services"],
+              ["events", "Events & Classes"],
+              ["products", "Products"],
+            ] as const
+          ).map(([item, label]) => (
             <button key={item} type="button" className={`tab ${tab === item ? "on" : ""}`} onClick={() => setTab(item)}>
-              {item[0].toUpperCase() + item.slice(1)}
+              {label}
             </button>
           ))}
         </div>
@@ -68,7 +95,7 @@ function ExploreContent() {
         <div className="grid-4" style={{ gridTemplateColumns: "2fr 1fr 1fr 1fr" }}>
           <label className="field">
             <span>Search</span>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Salon, dentist, running shoes, massage..." />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Salon, dining table, workshop, pottery..." />
           </label>
           <label className="field">
             <span>Category</span>
@@ -82,11 +109,14 @@ function ExploreContent() {
             </select>
           </label>
           <label className="field">
-            <span>Min rating</span>
-            <select value={minRating} onChange={(e) => setMinRating(Number(e.target.value))}>
-              <option value={0}>Any rating</option>
-              <option value={4.5}>4.5★ & up</option>
-              <option value={4.8}>4.8★ & up</option>
+            <span>Booking Type</span>
+            <select value={modelFilter} onChange={(e) => setModelFilter(e.target.value as BookingModel | "")}>
+              <option value="">All booking models</option>
+              {BOOKING_MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {bookingModelLabel(m)}
+                </option>
+              ))}
             </select>
           </label>
           <label className="field">
@@ -103,17 +133,27 @@ function ExploreContent() {
           <div className="tiny">
             Active category filters: {hints.join(" · ")}
           </div>
-          {tab !== "businesses" ? (
+          <div className="row" style={{ gap: 12 }}>
             <label className="row tiny">
-              <span>Max price:</span>
-              <select value={maxPrice ?? ""} onChange={(e) => setMaxPrice(e.target.value ? Number(e.target.value) : undefined)}>
-                <option value="">Any</option>
-                <option value="50">Under $50</option>
-                <option value="100">Under $100</option>
-                <option value="200">Under $200</option>
+              <span>Min rating:</span>
+              <select value={minRating} onChange={(e) => setMinRating(Number(e.target.value))}>
+                <option value={0}>Any</option>
+                <option value={4.5}>4.5★+</option>
+                <option value={4.8}>4.8★+</option>
               </select>
             </label>
-          ) : null}
+            {tab !== "businesses" ? (
+              <label className="row tiny">
+                <span>Max price:</span>
+                <select value={maxPrice ?? ""} onChange={(e) => setMaxPrice(e.target.value ? Number(e.target.value) : undefined)}>
+                  <option value="">Any</option>
+                  <option value="50">Under $50</option>
+                  <option value="100">Under $100</option>
+                  <option value="200">Under $200</option>
+                </select>
+              </label>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -124,40 +164,44 @@ function ExploreContent() {
           <Empty title="No matching businesses" body="Try clearing your search or category filter." />
         ) : (
           <div className="grid-3">
-            {businesses.map((biz) => (
-              <article key={biz.id} className="card">
-                <Link href={`/business/${biz.id}`}>
-                  {biz.coverUrl ? (
-                    <img className="cover" src={biz.coverUrl} alt={biz.name} referrerPolicy="no-referrer" />
-                  ) : (
-                    <div className="cover" />
-                  )}
-                </Link>
-                <div className="body stack" style={{ gap: 6 }}>
-                  <div className="row" style={{ justifyContent: "space-between" }}>
-                    <Badge tone="brand">{categoryLabels[biz.category]}</Badge>
-                    <span className="tiny">{biz.distanceMiles} mi</span>
-                  </div>
+            {businesses.map((biz) => {
+              const models = enabledModelsForBusiness(state, biz.id);
+              const primaryModel = models[0] ?? "appointment";
+              return (
+                <article key={biz.id} className="card">
                   <Link href={`/business/${biz.id}`}>
-                    <h3>{biz.name}</h3>
+                    {biz.coverUrl ? (
+                      <img className="cover" src={biz.coverUrl} alt={biz.name} referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="cover" />
+                    )}
                   </Link>
-                  <div className="stars">
-                    ★ {biz.rating.toFixed(1)} · {biz.reviewCount} reviews
-                  </div>
-                  <p className="tiny" style={{ margin: 0 }}>
-                    {biz.city} · {biz.tags.join(" · ")}
-                  </p>
-                  <div className="row" style={{ marginTop: 6 }}>
-                    <Link href={`/business/${biz.id}`} className="btn ghost small">
-                      Profile
+                  <div className="body stack" style={{ gap: 6 }}>
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <Badge tone="brand">{categoryLabels[biz.category]}</Badge>
+                      <span className="tiny">{biz.distanceMiles} mi</span>
+                    </div>
+                    <Link href={`/business/${biz.id}`}>
+                      <h3>{biz.name}</h3>
                     </Link>
-                    <Link href={`/book/${biz.id}`} className="btn small">
-                      Book now
-                    </Link>
+                    <div className="stars">
+                      ★ {biz.rating.toFixed(1)} · {biz.reviewCount} reviews
+                    </div>
+                    <p className="tiny" style={{ margin: 0 }}>
+                      {biz.city} · {models.map((m) => bookingModelLabel(m)).join(" · ") || biz.tags.join(" · ")}
+                    </p>
+                    <div className="row" style={{ marginTop: 6 }}>
+                      <Link href={`/business/${biz.id}`} className="btn ghost small">
+                        Profile
+                      </Link>
+                      <Link href={`/book/${biz.id}?model=${primaryModel}`} className="btn small">
+                        Book now
+                      </Link>
+                    </div>
                   </div>
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         )
       ) : null}
@@ -190,10 +234,59 @@ function ExploreContent() {
                         <Link href={`/services/${svc.id}`} className="btn ghost small">
                           Details
                         </Link>
-                        <Link href={`/book/${svc.businessId}?service=${svc.id}`} className="btn small">
+                        <Link href={`/book/${svc.businessId}?model=appointment&service=${svc.id}`} className="btn small">
                           Book
                         </Link>
                       </div>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )
+      ) : null}
+
+      {tab === "events" ? (
+        offerings.length === 0 ? (
+          <Empty title="No upcoming events or classes" body="Try clearing your search or category filter." />
+        ) : (
+          <div className="grid-3">
+            {offerings.map((off) => {
+              const biz = state.businesses.find((b) => b.id === off.businessId);
+              const nextSession = off.sessions.find((s) => s.status === "on_sale" || s.status === "scheduled");
+              const minPrice = nextSession?.tiers.length
+                ? Math.min(...nextSession.tiers.map((t) => t.price))
+                : 0;
+              return (
+                <article key={off.id} className="card">
+                  <div className="body stack" style={{ gap: 6 }}>
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <Badge tone={off.bookingModel === "ticket" ? "brand" : "info"}>
+                        {off.bookingModel === "ticket" ? "Ticketed Event" : "Group Class"}
+                      </Badge>
+                      {nextSession ? (
+                        <span className="tiny tabular">{nextSession.remainingCapacity} spots left</span>
+                      ) : null}
+                    </div>
+                    <h3>{off.title}</h3>
+                    <span className="tiny">
+                      {biz?.name} {off.venueArea ? `· ${off.venueArea}` : ""}
+                    </span>
+                    <p className="tiny" style={{ margin: 0 }}>{off.description}</p>
+                    {nextSession ? (
+                      <span className="tiny tabular">{formatDateTime(nextSession.startAt)}</span>
+                    ) : null}
+                    <div className="row" style={{ justifyContent: "space-between", marginTop: 6 }}>
+                      <strong className="tabular">
+                        {minPrice === 0 ? "Free" : `From ${formatMoney(minPrice)}`}
+                      </strong>
+                      <Link
+                        href={`/book/${off.businessId}?model=${off.bookingModel}&offering=${off.id}`}
+                        className="btn small"
+                      >
+                        {off.bookingModel === "ticket" ? "Get Tickets" : "Reserve Spot"}
+                      </Link>
                     </div>
                   </div>
                 </article>

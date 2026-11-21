@@ -103,7 +103,7 @@ class PaymentOut(CamelModel):
 
 
 class PaymentIntentCreateIn(CamelModel):
-    reference_type: Literal["appointment", "order", "subscription"]
+    reference_type: Literal["appointment", "booking", "order", "subscription"]
     reference_id: str
     method: Literal["card_token_pending", "wallet", "in_person", "pay_on_pickup"] = "card_token_pending"
     idempotency_key: str | None = Field(default=None, max_length=128)

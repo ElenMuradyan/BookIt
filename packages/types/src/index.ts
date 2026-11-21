@@ -22,6 +22,10 @@ export type Permission =
   | "bookings.manage"
   | "services.view"
   | "services.manage"
+  | "resources.view"
+  | "resources.manage"
+  | "events.view"
+  | "events.manage"
   | "team.view"
   | "team.manage"
   | "customers.view"
@@ -36,6 +40,29 @@ export type Permission =
   | "settings.payments"
   | "settings.security"
   | "subscription.manage";
+
+export type BookingModel = "appointment" | "resource" | "ticket" | "capacity";
+export type UniversalBookingStatus =
+  | "held"
+  | "pending"
+  | "confirmed"
+  | "completed"
+  | "cancelled"
+  | "rejected"
+  | "no_show"
+  | "expired";
+export type DepositMode = "none" | "fixed" | "percent";
+export type ResourceType =
+  | "hotel_room"
+  | "restaurant_table"
+  | "sports_court"
+  | "parking_space"
+  | "coworking_desk"
+  | "meeting_room"
+  | "vehicle"
+  | "equipment"
+  | "custom";
+export type PricingUnit = "per_slot" | "per_hour" | "per_day" | "per_night";
 
 export type BusinessCategory =
   | "beauty"
@@ -293,6 +320,7 @@ export interface Employee {
 
 export interface Appointment {
   id: ID;
+  bookingId?: ID;
   businessId: ID;
   serviceId: ID;
   employeeId: ID;
@@ -306,7 +334,208 @@ export interface Appointment {
   paymentMethod?: PaymentMethod;
   confirmationMode: "automatic" | "manual";
   notes?: string;
+  checkInCode?: string;
+  checkedInAt?: ISODateTime;
   createdAt: ISODateTime;
+}
+
+export interface BusinessBookingConfig {
+  id: ID;
+  businessId: ID;
+  bookingModel: BookingModel;
+  enabled: boolean;
+  displayLabel?: string;
+  approvalMode: "automatic" | "manual";
+  minNoticeMinutes: number;
+  maxAdvanceDays: number;
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  cancellationCutoffHours: number;
+  cancellationFeePercent: number;
+  cancellationPolicyText: string;
+  depositMode: DepositMode;
+  depositValue: number;
+  holdTtlMinutes: number;
+  allowOverbooking: boolean;
+  settings?: Record<string, unknown>;
+}
+
+export interface Resource {
+  id: ID;
+  businessId: ID;
+  name: string;
+  resourceType: ResourceType;
+  description: string;
+  capacityPeople: number;
+  unitsTotal: number;
+  pricingUnit: PricingUnit;
+  slotDurationMinutes?: number;
+  minDurationMinutes: number;
+  maxDurationMinutes?: number;
+  bufferMinutes: number;
+  basePrice: number;
+  currency: CurrencyCode;
+  depositAmount?: number;
+  scheduleHours?: WeeklyHours;
+  timezone?: string;
+  attributes: Record<string, unknown>;
+  imageUrl?: string;
+  active: boolean;
+}
+
+export interface ResourceAvailabilitySlot {
+  time: string;
+  startAt: ISODateTime;
+  endAt: ISODateTime;
+  remainingUnits: number;
+}
+
+export interface ResourceAvailability {
+  businessId: ID;
+  resourceId: ID;
+  date: string;
+  timezone: string;
+  unitsTotal: number;
+  slots: ResourceAvailabilitySlot[];
+}
+
+export interface ResourceAllocation {
+  id: ID;
+  resourceId: ID;
+  startAt: ISODateTime;
+  endAt: ISODateTime;
+  quantityUnits: number;
+  partySize: number;
+  status: string;
+  unitPrice: number;
+}
+
+export interface TicketTier {
+  id: ID;
+  sessionId: ID;
+  name: string;
+  description: string;
+  price: number;
+  currency: CurrencyCode;
+  capacityLimit?: number;
+  reservedCount: number;
+  remaining?: number;
+  sortOrder: number;
+  active: boolean;
+}
+
+export interface EventSession {
+  id: ID;
+  offeringId: ID;
+  businessId: ID;
+  instructorEmployeeId?: ID;
+  resourceId?: ID;
+  titleOverride?: string;
+  startAt: ISODateTime;
+  endAt: ISODateTime;
+  timezone: string;
+  salesStartAt?: ISODateTime;
+  salesEndAt?: ISODateTime;
+  totalCapacity: number;
+  reservedCount: number;
+  remainingCapacity: number;
+  maxPerBooking: number;
+  status: "scheduled" | "on_sale" | "sold_out" | "cancelled" | "completed";
+  tiers: TicketTier[];
+}
+
+export interface EventOffering {
+  id: ID;
+  businessId: ID;
+  bookingModel: "ticket" | "capacity";
+  category: string;
+  title: string;
+  description: string;
+  venueArea?: string;
+  imageUrl?: string;
+  cancellationPolicy: string;
+  active: boolean;
+  metadataJson?: Record<string, unknown>;
+  sessions: EventSession[];
+}
+
+export interface TicketPass {
+  id: ID;
+  bookingId: ID;
+  businessId: ID;
+  sessionId: ID;
+  tierId: ID;
+  attendeeName?: string;
+  attendeeEmail?: string;
+  seatLabel?: string;
+  unitPrice: number;
+  passCode: string;
+  status: "valid" | "checked_in" | "cancelled" | "refunded" | "expired";
+  checkedInAt?: ISODateTime;
+}
+
+export interface UniversalBooking {
+  id: ID;
+  businessId: ID;
+  customerId: ID;
+  bookingModel: BookingModel;
+  title: string;
+  startAt?: ISODateTime;
+  endAt?: ISODateTime;
+  timezone: string;
+  quantity: number;
+  status: UniversalBookingStatus;
+  confirmationMode: "automatic" | "manual";
+  subtotalAmount: number;
+  discountAmount: number;
+  taxAmount: number;
+  totalAmount: number;
+  depositDueAmount: number;
+  amountPaid: number;
+  refundedAmount: number;
+  currency: CurrencyCode;
+  paymentStatus: string;
+  paymentMethod?: PaymentMethod;
+  cancellationCutoffAt?: ISODateTime;
+  cancellationPolicySnapshot?: string;
+  notes?: string;
+  metadataJson?: Record<string, unknown>;
+  holdExpiresAt?: ISODateTime;
+  checkInCode?: string;
+  checkedInAt?: ISODateTime;
+  createdAt: ISODateTime;
+  updatedAt: ISODateTime;
+  legacyAppointmentId?: ID;
+  resourceAllocations: ResourceAllocation[];
+  ticketPasses: TicketPass[];
+}
+
+export interface UniversalBookingCreateInput {
+  bookingModel: BookingModel;
+  businessId?: ID;
+  customerId?: ID;
+  serviceId?: ID;
+  employeeId?: ID;
+  date?: string;
+  time?: string;
+  resourceId?: ID;
+  startAt?: ISODateTime;
+  endAt?: ISODateTime;
+  quantityUnits?: number;
+  partySize?: number;
+  sessionId?: ID;
+  ticketItems?: { tierId: ID; quantity: number }[];
+  attendeeName?: string;
+  attendeeEmail?: string;
+  paymentMethod?: PaymentMethod;
+  notes?: string;
+  idempotencyKey?: string;
+}
+
+export interface UniversalCheckInResult {
+  matchedType: "booking" | "ticket_pass";
+  booking: UniversalBooking;
+  ticketPass?: TicketPass;
 }
 
 export interface Review {
@@ -413,7 +642,7 @@ export interface Payment {
   currency: CurrencyCode;
   status: PaymentStatus;
   method: PaymentMethod;
-  referenceType: "appointment" | "order" | "subscription";
+  referenceType: "appointment" | "booking" | "order" | "subscription";
   referenceId: ID;
   createdAt: ISODateTime;
   /** Present only to explain estimated rows. Never a card number. */
@@ -567,6 +796,10 @@ export interface AppState {
   services: Service[];
   employees: Employee[];
   appointments: Appointment[];
+  bookingConfigs: BusinessBookingConfig[];
+  resources: Resource[];
+  eventOfferings: EventOffering[];
+  bookings: UniversalBooking[];
   reviews: Review[];
   productCategories: ProductCategory[];
   products: Product[];

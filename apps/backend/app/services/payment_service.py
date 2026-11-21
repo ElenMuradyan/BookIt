@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.security import verify_hmac_signature
 from app.models.base import new_id
-from app.models.booking import Appointment
+from app.models.booking import Appointment, Booking, ResourceAllocation
 from app.models.commerce import Order, Payment, PaymentWebhookEvent
 
 
@@ -125,6 +125,18 @@ async def create_payment_intent(
         amount = float(appt.price)
         business_id = appt.business_id
         currency = appt.currency
+    elif reference_type == "booking":
+        bk = await db.get(Booking, reference_id)
+        if not bk or bk.customer_id != payer_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+        remaining_total = max(0.0, float(bk.total_amount) - float(bk.amount_paid))
+        deposit_due = float(bk.deposit_due_amount)
+        if float(bk.amount_paid) == 0 and 0 < deposit_due < remaining_total:
+            amount = round(deposit_due, 2)
+        else:
+            amount = round(remaining_total, 2)
+        business_id = bk.business_id
+        currency = bk.currency
     elif reference_type == "order":
         order = await db.get(Order, reference_id)
         if not order or order.user_id != payer_id:
@@ -223,6 +235,34 @@ async def process_payment_webhook(
                 appt = await db.get(Appointment, payment.reference_id)
                 if appt:
                     appt.payment_status = "paid"
+                    if appt.booking_id:
+                        bk = await db.get(Booking, appt.booking_id)
+                        if bk:
+                            bk.amount_paid = float(bk.total_amount)
+                            bk.payment_status = "paid"
+            elif payment.reference_type == "booking":
+                bk = await db.get(Booking, payment.reference_id)
+                if bk:
+                    bk.amount_paid = round(float(bk.amount_paid) + float(payment.amount), 2)
+                    bk.payment_status = "paid" if float(bk.amount_paid) >= float(bk.total_amount) else "deposit_paid"
+                    if bk.status == "held":
+                        target_status = "pending" if bk.confirmation_mode == "manual" else "confirmed"
+                        bk.status = target_status
+                        bk.hold_expires_at = None
+                        allocs = list(
+                            (await db.execute(select(ResourceAllocation).where(ResourceAllocation.booking_id == bk.id)))
+                            .scalars()
+                            .all()
+                        )
+                        for alloc in allocs:
+                            if alloc.status == "held":
+                                alloc.status = target_status
+                    if bk.booking_model == "appointment":
+                        appt = (
+                            await db.execute(select(Appointment).where(Appointment.booking_id == bk.id))
+                        ).scalar_one_or_none()
+                        if appt:
+                            appt.payment_status = "paid" if bk.payment_status == "paid" else "deposit"
             elif payment.reference_type == "order":
                 order = await db.get(Order, payment.reference_id)
                 if order:
@@ -233,6 +273,22 @@ async def process_payment_webhook(
                 appt = await db.get(Appointment, payment.reference_id)
                 if appt:
                     appt.payment_status = "refunded"
+                    if appt.booking_id:
+                        bk = await db.get(Booking, appt.booking_id)
+                        if bk:
+                            bk.payment_status = "refunded"
+                            bk.refunded_amount = float(bk.amount_paid)
+            elif payment.reference_type == "booking":
+                bk = await db.get(Booking, payment.reference_id)
+                if bk:
+                    bk.payment_status = "refunded"
+                    bk.refunded_amount = float(bk.amount_paid)
+                    if bk.booking_model == "appointment":
+                        appt = (
+                            await db.execute(select(Appointment).where(Appointment.booking_id == bk.id))
+                        ).scalar_one_or_none()
+                        if appt:
+                            appt.payment_status = "refunded"
             elif payment.reference_type == "order":
                 order = await db.get(Order, payment.reference_id)
                 if order:

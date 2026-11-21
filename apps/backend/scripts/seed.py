@@ -8,7 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session_factory
 from app.core.security import hash_password
-from app.models.booking import Appointment, AppointmentStatusHistory, CustomerNote
+from app.models.booking import (
+    Appointment,
+    AppointmentStatusHistory,
+    Booking,
+    BookingStatusHistory,
+    BusinessBookingConfig,
+    CustomerNote,
+    EventOffering,
+    EventSession,
+    Resource,
+    TicketTier,
+)
 from app.models.business import Business, BusinessApplication, Membership
 from app.models.catalog import Employee, EmployeeService, Product, ProductCategory, ProductVariant, Service
 from app.models.commerce import (
@@ -381,8 +392,53 @@ async def seed_database(session: AsyncSession) -> None:
     ])
 
     session.add(
+        Booking(
+            id="bk_seed_apt_elena_upcoming",
+            business_id="biz_aura",
+            customer_id="usr_elena",
+            booking_model="appointment",
+            title_snapshot="Signature Haircut & Style",
+            start_at=dt("2026-11-20T18:30:00+00:00"),
+            end_at=dt("2026-11-20T19:15:00+00:00"),
+            timezone="America/Los_Angeles",
+            quantity=1,
+            status="confirmed",
+            confirmation_mode="automatic",
+            subtotal_amount=75,
+            discount_amount=0,
+            tax_amount=0,
+            total_amount=75,
+            deposit_due_amount=0,
+            amount_paid=75,
+            refunded_amount=0,
+            currency="USD",
+            payment_status="paid",
+            payment_method="card_token_pending",
+            cancellation_cutoff_at=dt("2026-11-19T18:30:00+00:00"),
+            cancellation_policy_snapshot="Free cancellation up to 24 hours before the visit.",
+            metadata_json={
+                "legacyAppointmentId": "apt_elena_upcoming",
+                "serviceId": "svc_signature",
+                "employeeId": "emp_vance",
+            },
+            check_in_code="BK-ELENA1",
+        )
+    )
+    await session.flush()
+    session.add(
+        BookingStatusHistory(
+            id="bsh_seed_1",
+            booking_id="bk_seed_apt_elena_upcoming",
+            from_status=None,
+            to_status="confirmed",
+            changed_by_user_id="usr_elena",
+            reason="Seed appointment",
+        )
+    )
+    session.add(
         Appointment(
             id="apt_elena_upcoming",
+            booking_id="bk_seed_apt_elena_upcoming",
             business_id="biz_aura",
             service_id="svc_signature",
             employee_id="emp_vance",
@@ -408,6 +464,232 @@ async def seed_database(session: AsyncSession) -> None:
             reason="Seed appointment",
         )
     )
+
+    session.add_all([
+        BusinessBookingConfig(
+            id="bcfg_aura_appt",
+            business_id="biz_aura",
+            booking_model="appointment",
+            enabled=True,
+            display_label="Salon Appointments",
+            approval_mode="automatic",
+            min_notice_minutes=30,
+            max_advance_days=90,
+            cancellation_cutoff_hours=24,
+            cancellation_fee_percent=0,
+            cancellation_policy_text="Free cancellation up to 24 hours before the visit.",
+            deposit_mode="none",
+            deposit_value=0,
+        ),
+        BusinessBookingConfig(
+            id="bcfg_aura_ticket",
+            business_id="biz_aura",
+            booking_model="ticket",
+            enabled=True,
+            display_label="Masterclasses & Events",
+            approval_mode="automatic",
+            min_notice_minutes=60,
+            max_advance_days=180,
+            cancellation_cutoff_hours=48,
+            cancellation_fee_percent=25,
+            cancellation_policy_text="75% refund up to 48 hours before event start.",
+            deposit_mode="none",
+            deposit_value=0,
+        ),
+        BusinessBookingConfig(
+            id="bcfg_harbor_res",
+            business_id="biz_harbor",
+            booking_model="resource",
+            enabled=True,
+            display_label="Tables & Dining Spaces",
+            approval_mode="automatic",
+            min_notice_minutes=30,
+            max_advance_days=60,
+            buffer_after_minutes=15,
+            cancellation_cutoff_hours=6,
+            cancellation_fee_percent=0,
+            cancellation_policy_text="Free table cancellation up to 6 hours ahead.",
+            deposit_mode="fixed",
+            deposit_value=25,
+        ),
+        BusinessBookingConfig(
+            id="bcfg_zenith_res",
+            business_id="biz_zenith",
+            booking_model="resource",
+            enabled=True,
+            display_label="Recovery Suites",
+            approval_mode="automatic",
+            min_notice_minutes=30,
+            max_advance_days=90,
+            cancellation_cutoff_hours=24,
+            deposit_mode="percent",
+            deposit_value=25,
+        ),
+        BusinessBookingConfig(
+            id="bcfg_komorebi_cap",
+            business_id="biz_komorebi",
+            booking_model="capacity",
+            enabled=True,
+            display_label="Ceramics Workshops",
+            approval_mode="automatic",
+            min_notice_minutes=60,
+            max_advance_days=90,
+            cancellation_cutoff_hours=24,
+            deposit_mode="none",
+            deposit_value=0,
+        ),
+    ])
+
+    session.add_all([
+        Resource(
+            id="res_harbor_patio",
+            business_id="biz_harbor",
+            name="Cedar Patio Table",
+            resource_type="restaurant_table",
+            description="Heated cedar table for up to 4 guests.",
+            capacity_people=4,
+            units_total=1,
+            pricing_unit="per_slot",
+            slot_duration_minutes=90,
+            min_duration_minutes=90,
+            max_duration_minutes=120,
+            buffer_minutes=15,
+            base_price=25,
+            currency="USD",
+            deposit_amount=25,
+            attributes={"seating": "outdoor", "heated": True},
+        ),
+        Resource(
+            id="res_harbor_booth",
+            business_id="biz_harbor",
+            name="Main Dining Booth",
+            resource_type="restaurant_table",
+            description="Standard two-person dining booths in the cedar room.",
+            capacity_people=2,
+            units_total=4,
+            pricing_unit="per_slot",
+            slot_duration_minutes=90,
+            min_duration_minutes=90,
+            max_duration_minutes=120,
+            buffer_minutes=15,
+            base_price=0,
+            currency="USD",
+            attributes={"seating": "indoor"},
+        ),
+        Resource(
+            id="res_zenith_sauna",
+            business_id="biz_zenith",
+            name="Private Cedar Sauna Suite",
+            resource_type="meeting_room",
+            description="60-minute private contrast suite with cold plunge.",
+            capacity_people=2,
+            units_total=1,
+            pricing_unit="per_hour",
+            slot_duration_minutes=60,
+            min_duration_minutes=60,
+            max_duration_minutes=120,
+            buffer_minutes=15,
+            base_price=95,
+            currency="USD",
+            deposit_amount=25,
+            attributes={"temperature": "185F", "coldPlunge": True},
+        ),
+    ])
+
+    session.add_all([
+        EventOffering(
+            id="evt_aura_masterclass",
+            business_id="biz_aura",
+            booking_model="ticket",
+            category="workshop",
+            title="Autumn Gloss & Editorial Styling Live",
+            description="Live hands-on styling showcase with senior directors.",
+            venue_area="Main Studio Floor",
+            active=True,
+        ),
+        EventOffering(
+            id="evt_komorebi_wheel",
+            business_id="biz_komorebi",
+            booking_model="capacity",
+            category="class",
+            title="Wheel Throwing Foundations",
+            description="Small-group stoneware wheel session — clay and kiln glaze included.",
+            venue_area="Kiln Room B",
+            active=True,
+        ),
+    ])
+    await session.flush()
+
+    session.add_all([
+        EventSession(
+            id="ses_aura_live_1",
+            offering_id="evt_aura_masterclass",
+            business_id="biz_aura",
+            instructor_employee_id="emp_vance",
+            start_at=dt("2026-12-05T18:00:00+00:00"),
+            end_at=dt("2026-12-05T20:00:00+00:00"),
+            timezone="America/Los_Angeles",
+            total_capacity=20,
+            reserved_count=0,
+            max_per_booking=4,
+            status="on_sale",
+        ),
+        EventSession(
+            id="ses_komorebi_wheel_1",
+            offering_id="evt_komorebi_wheel",
+            business_id="biz_komorebi",
+            start_at=dt("2026-12-06T18:00:00+00:00"),
+            end_at=dt("2026-12-06T20:00:00+00:00"),
+            timezone="America/Los_Angeles",
+            total_capacity=8,
+            reserved_count=0,
+            max_per_booking=4,
+            status="on_sale",
+        ),
+    ])
+    await session.flush()
+
+    session.add_all([
+        TicketTier(
+            id="tier_aura_ga",
+            session_id="ses_aura_live_1",
+            business_id="biz_aura",
+            name="General Admission",
+            description="Standing gallery view + styling gift bag",
+            price=45,
+            currency="USD",
+            capacity_limit=14,
+            reserved_count=0,
+            sort_order=1,
+            active=True,
+        ),
+        TicketTier(
+            id="tier_aura_vip",
+            session_id="ses_aura_live_1",
+            business_id="biz_aura",
+            name="VIP Front Row",
+            description="Front-row seat + full hair care kit",
+            price=95,
+            currency="USD",
+            capacity_limit=6,
+            reserved_count=0,
+            sort_order=2,
+            active=True,
+        ),
+        TicketTier(
+            id="tier_komorebi_seat",
+            session_id="ses_komorebi_wheel_1",
+            business_id="biz_komorebi",
+            name="Studio Wheel Spot",
+            description="Single wheel seat including clay and firing",
+            price=68,
+            currency="USD",
+            capacity_limit=8,
+            reserved_count=0,
+            sort_order=1,
+            active=True,
+        ),
+    ])
     session.add(
         PromoCode(id="promo_glow", business_id="biz_aura", code="GLOW15", percent_off=15, active=True, expires_on="2026-12-31", redemptions=18)
     )

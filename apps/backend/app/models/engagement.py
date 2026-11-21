@@ -54,6 +54,12 @@ class Review(Base):
         ForeignKey("appointments.id", ondelete="SET NULL"),
         nullable=True,
     )
+    booking_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("bookings.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     product_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("products.id", ondelete="SET NULL"),

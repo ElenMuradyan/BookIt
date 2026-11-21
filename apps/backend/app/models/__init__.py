@@ -1,5 +1,19 @@
 from app.models.base import Base
-from app.models.booking import Appointment, AppointmentStatusHistory, CustomerNote
+from app.models.booking import (
+    Appointment,
+    AppointmentStatusHistory,
+    Booking,
+    BookingStatusHistory,
+    BusinessBookingConfig,
+    CustomerNote,
+    EventOffering,
+    EventSession,
+    Resource,
+    ResourceAllocation,
+    ResourceBlock,
+    TicketPass,
+    TicketTier,
+)
 from app.models.business import Business, BusinessApplication, Membership
 from app.models.catalog import Employee, EmployeeService, Product, ProductCategory, ProductVariant, Service
 from app.models.commerce import (
@@ -24,8 +38,11 @@ __all__ = [
     "AppointmentStatusHistory",
     "AuditLog",
     "Base",
+    "Booking",
+    "BookingStatusHistory",
     "Business",
     "BusinessApplication",
+    "BusinessBookingConfig",
     "Campaign",
     "Cart",
     "CartItem",
@@ -33,6 +50,8 @@ __all__ = [
     "CustomerProfile",
     "Employee",
     "EmployeeService",
+    "EventOffering",
+    "EventSession",
     "Expense",
     "Favorite",
     "Invoice",
@@ -49,9 +68,14 @@ __all__ = [
     "PromoCode",
     "RefreshSession",
     "Report",
+    "Resource",
+    "ResourceAllocation",
+    "ResourceBlock",
     "Review",
     "Service",
     "Subscription",
+    "TicketPass",
+    "TicketTier",
     "User",
     "VerificationToken",
 ]

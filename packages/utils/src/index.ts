@@ -1,5 +1,6 @@
 import type {
   Appointment,
+  BookingModel,
   Business,
   Employee,
   MembershipRole,
@@ -121,6 +122,10 @@ const ROLE_PERMISSIONS: Record<MembershipRole, Permission[]> = {
     "bookings.manage",
     "services.view",
     "services.manage",
+    "resources.view",
+    "resources.manage",
+    "events.view",
+    "events.manage",
     "team.view",
     "team.manage",
     "customers.view",
@@ -144,6 +149,10 @@ const ROLE_PERMISSIONS: Record<MembershipRole, Permission[]> = {
     "bookings.manage",
     "services.view",
     "services.manage",
+    "resources.view",
+    "resources.manage",
+    "events.view",
+    "events.manage",
     "team.view",
     "team.manage",
     "customers.view",
@@ -166,6 +175,10 @@ const ROLE_PERMISSIONS: Record<MembershipRole, Permission[]> = {
     "bookings.manage",
     "services.view",
     "services.manage",
+    "resources.view",
+    "resources.manage",
+    "events.view",
+    "events.manage",
     "team.view",
     "customers.view",
     "customers.notes",
@@ -177,7 +190,15 @@ const ROLE_PERMISSIONS: Record<MembershipRole, Permission[]> = {
     "settings.policies",
     "settings.payments",
   ],
-  employee: ["overview.view", "calendar.view", "bookings.view", "services.view", "customers.view"],
+  employee: [
+    "overview.view",
+    "calendar.view",
+    "bookings.view",
+    "services.view",
+    "resources.view",
+    "events.view",
+    "customers.view",
+  ],
   receptionist: [
     "overview.view",
     "calendar.view",
@@ -185,10 +206,25 @@ const ROLE_PERMISSIONS: Record<MembershipRole, Permission[]> = {
     "bookings.view",
     "bookings.manage",
     "services.view",
+    "resources.view",
+    "events.view",
     "customers.view",
   ],
   accountant: ["overview.view", "customers.view", "orders.manage", "finance.view", "finance.manage"],
 };
+
+export function bookingModelLabel(model: BookingModel): string {
+  switch (model) {
+    case "appointment":
+      return "Appointments";
+    case "resource":
+      return "Spaces & Resources";
+    case "ticket":
+      return "Events & Tickets";
+    case "capacity":
+      return "Classes & Capacity";
+  }
+}
 
 export function permissionsFor(role: MembershipRole): Permission[] {
   return ROLE_PERMISSIONS[role];

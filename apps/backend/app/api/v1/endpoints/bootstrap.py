@@ -7,7 +7,15 @@ from sqlalchemy.orm import selectinload
 
 from app.api.dependencies.auth import get_optional_user
 from app.core.database import get_db
-from app.models.booking import Appointment, CustomerNote
+from app.models.booking import (
+    Appointment,
+    Booking,
+    BusinessBookingConfig,
+    CustomerNote,
+    EventOffering,
+    EventSession,
+    Resource,
+)
 from app.models.business import Business, BusinessApplication, Membership
 from app.models.catalog import Employee, Product, ProductCategory, Service
 from app.models.commerce import Cart, Expense, Invoice, Order, Payment, Plan, Subscription
@@ -40,6 +48,10 @@ from app.schemas.engagement import (
     ReportOut,
     ReviewOut,
 )
+from app.api.v1.endpoints.booking_configs import serialize_booking_config
+from app.api.v1.endpoints.events import serialize_offering
+from app.api.v1.endpoints.resources import serialize_resource
+from app.api.v1.endpoints.universal_bookings import serialize_universal_booking
 from app.services.auth_service import serialize_profile
 
 router = APIRouter(tags=["bootstrap"])
@@ -150,11 +162,45 @@ async def bootstrap_state(
         ).scalars().all()
     )
 
+    # Phase 2 Booking Configs, Resources & Event Offerings for visible businesses
+    booking_configs = list(
+        (
+            await db.execute(
+                select(BusinessBookingConfig).where(BusinessBookingConfig.business_id.in_(visible_biz_ids))
+            )
+        ).scalars().all()
+    ) if visible_biz_ids else []
+    if not is_admin:
+        booking_configs = [
+            c for c in booking_configs if c.enabled or c.business_id in user_business_ids
+        ]
+
+    resources = list(
+        (
+            await db.execute(select(Resource).where(Resource.business_id.in_(visible_biz_ids)))
+        ).scalars().all()
+    ) if visible_biz_ids else []
+    if not is_admin:
+        resources = [r for r in resources if r.active or r.business_id in user_business_ids]
+
+    event_offerings = list(
+        (
+            await db.execute(
+                select(EventOffering)
+                .options(selectinload(EventOffering.sessions).selectinload(EventSession.tiers))
+                .where(EventOffering.business_id.in_(visible_biz_ids))
+            )
+        ).scalars().all()
+    ) if visible_biz_ids else []
+    if not is_admin:
+        event_offerings = [o for o in event_offerings if o.active or o.business_id in user_business_ids]
+
     # Authenticated user-scoped / workspace-scoped records
     profiles_out: list[CustomerProfileOut] = []
     addresses_out: list[AddressOut] = []
     carts_out: list[CartOut] = []
     appointments: list[Appointment] = []
+    universal_bookings: list[Booking] = []
     orders: list[Order] = []
     payments: list[Payment] = []
     notifications: list[Notification] = []
@@ -204,6 +250,16 @@ async def bootstrap_state(
 
         if is_admin:
             appointments = list((await db.execute(select(Appointment))).scalars().all())
+            universal_bookings = list(
+                (
+                    await db.execute(
+                        select(Booking).options(
+                            selectinload(Booking.resource_allocations),
+                            selectinload(Booking.ticket_passes),
+                        )
+                    )
+                ).scalars().all()
+            )
             orders = list((await db.execute(select(Order).options(selectinload(Order.items)))).scalars().all())
             payments = list((await db.execute(select(Payment))).scalars().all())
             notifications = list((await db.execute(select(Notification))).scalars().all())
@@ -261,6 +317,21 @@ async def bootstrap_state(
                 )
 
             appointments = list((await db.execute(select(Appointment).where(appt_cond))).scalars().all())
+            ub_cond = Booking.customer_id == user.id
+            if user_business_ids:
+                ub_cond = or_(ub_cond, Booking.business_id.in_(user_business_ids))
+            universal_bookings = list(
+                (
+                    await db.execute(
+                        select(Booking)
+                        .options(
+                            selectinload(Booking.resource_allocations),
+                            selectinload(Booking.ticket_passes),
+                        )
+                        .where(ub_cond)
+                    )
+                ).scalars().all()
+            )
             orders = list(
                 (await db.execute(select(Order).options(selectinload(Order.items)).where(order_cond))).scalars().all()
             )
@@ -275,6 +346,8 @@ async def bootstrap_state(
         needed_user_ids.add(user.id)
         for a in appointments:
             needed_user_ids.add(a.customer_id)
+        for b in universal_bookings:
+            needed_user_ids.add(b.customer_id)
         for o in orders:
             needed_user_ids.add(o.user_id)
         for m in memberships:
@@ -307,7 +380,9 @@ async def bootstrap_state(
         approved_biz = int(
             (await db.execute(select(func.count(Business.id)).where(Business.status == "approved"))).scalar_one()
         )
-        total_bookings = int((await db.execute(select(func.count(Appointment.id)))).scalar_one())
+        total_bookings = int((await db.execute(select(func.count(Booking.id)))).scalar_one()) + int(
+            (await db.execute(select(func.count(Appointment.id)).where(Appointment.booking_id.is_(None)))).scalar_one()
+        )
         total_orders = int((await db.execute(select(func.count(Order.id)))).scalar_one())
         recorded_rev = float(
             (await db.execute(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "recorded"))).scalar_one()
@@ -373,6 +448,7 @@ async def bootstrap_state(
         appointments=[
             AppointmentOut(
                 id=a.id,
+                booking_id=a.booking_id,
                 business_id=a.business_id,
                 service_id=a.service_id,
                 employee_id=a.employee_id,
@@ -392,6 +468,10 @@ async def bootstrap_state(
             )
             for a in appointments
         ],
+        booking_configs=[serialize_booking_config(c) for c in booking_configs],
+        resources=[serialize_resource(r) for r in resources],
+        event_offerings=[serialize_offering(o) for o in event_offerings],
+        bookings=[serialize_universal_booking(b) for b in universal_bookings],
         reviews=[ReviewOut.model_validate(r) for r in reviews],
         product_categories=[ProductCategoryOut.model_validate(c) for c in categories],
         products=[

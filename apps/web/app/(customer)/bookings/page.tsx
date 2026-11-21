@@ -3,15 +3,19 @@
 import {
   addReview,
   customerAppointments,
+  customerUniversalBookings,
   displayUser,
   rescheduleAppointment,
   sendBusinessMessage,
   setAppointmentStatus,
+  setUniversalBookingStatus,
+  setUniversalBookingStatusRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import type { Appointment } from "@bookit/types";
-import { appointmentStatus } from "@bookit/ui";
-import { addDays, availableSlots, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
+import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
+import { addDays, availableSlots, bookingModelLabel, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Badge, Button, Empty, Field, Modal } from "@/components/ui";
@@ -58,6 +62,11 @@ export default function CustomerBookingsPage() {
     if (tab === "upcoming") return apt.status === "pending" || apt.status === "confirmed";
     return apt.status === tab;
   });
+  const universalOnly = customerUniversalBookings(state, userId).filter((ub) => {
+    if (ub.bookingModel === "appointment" && ub.legacyAppointmentId) return false;
+    if (tab === "upcoming") return ["held", "pending", "confirmed"].includes(ub.status);
+    return ub.status === tab;
+  });
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -83,10 +92,62 @@ export default function CustomerBookingsPage() {
 
       {notice ? <p className="tiny" style={{ color: "var(--lavender)" }}>{notice}</p> : null}
 
-      {filtered.length === 0 ? (
-        <Empty title={`No ${tab} bookings`} body="Explore approved businesses to book your next appointment." />
+      {filtered.length === 0 && universalOnly.length === 0 ? (
+        <Empty title={`No ${tab} bookings`} body="Explore approved businesses to book your next appointment, space, or event." />
       ) : (
         <div className="stack">
+          {universalOnly.map((ub) => {
+            const biz = state.businesses.find((b) => b.id === ub.businessId);
+            const st = universalBookingStatus(ub.status);
+            return (
+              <article key={ub.id} className="panel stack" style={{ gap: 10 }}>
+                <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 14 }}>
+                  <div className="stack" style={{ gap: 4 }}>
+                    <div className="row">
+                      <strong>{ub.title}</strong>
+                      <Badge tone="brand">{bookingModelLabel(ub.bookingModel)}</Badge>
+                      <Badge tone={st.tone}>{st.label}</Badge>
+                    </div>
+                    <span className="tiny">{biz?.name}</span>
+                    <span className="tiny tabular">
+                      {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)} ·{" "}
+                      {formatMoney(ub.totalAmount)} ({ub.paymentStatus})
+                    </span>
+                    {ub.checkInCode ? (
+                      <span className="tiny tabular">Check-in Code: <strong>{ub.checkInCode}</strong></span>
+                    ) : null}
+                  </div>
+                  <div className="row">
+                    {["held", "pending", "confirmed"].includes(ub.status) ? (
+                      <Button
+                        tone="danger"
+                        small
+                        onClick={async () => {
+                          if (usingMocks()) {
+                            setUniversalBookingStatus(ub.id, "cancelled", userId);
+                          } else {
+                            await setUniversalBookingStatusRemote(ub.id, "cancelled", "Customer cancelled");
+                          }
+                          setNotice("Booking cancelled");
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+                {ub.ticketPasses.length > 0 ? (
+                  <div className="chips">
+                    {ub.ticketPasses.map((p) => (
+                      <span key={p.id} className="slot tabular">
+                        {p.passCode} · {p.status}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
           {filtered.map((apt) => {
             const biz = state.businesses.find((b) => b.id === apt.businessId);
             const svc = state.services.find((s) => s.id === apt.serviceId);

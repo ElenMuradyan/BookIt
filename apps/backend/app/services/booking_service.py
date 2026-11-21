@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.base import new_id, utc_now
-from app.models.booking import Appointment, AppointmentStatusHistory
+from app.models.booking import Appointment, AppointmentStatusHistory, Booking, BookingStatusHistory
 from app.models.business import Business, Membership
 from app.models.catalog import Employee, Service
 from app.models.engagement import Notification
@@ -17,6 +17,11 @@ from app.services.availability_service import (
     ACTIVE_BOOKING_STATUSES,
     compute_available_slots,
     get_zone_info,
+)
+from app.services.booking_config_service import (
+    compute_cancellation_cutoff,
+    compute_deposit_amount,
+    get_effective_booking_config,
 )
 from app.services.rbac import get_active_membership, has_permission
 
@@ -178,13 +183,56 @@ async def create_booking_transactional(
             detail="This time slot is no longer available",
         )
 
-    booking_status = "pending" if (service.requires_approval or business.booking_approval == "manual") else "confirmed"
+    policy = await get_effective_booking_config(db, business=business, booking_model="appointment")
+    booking_status = "pending" if (service.requires_approval or policy.approval_mode == "manual") else "confirmed"
     confirmation_mode = "manual" if booking_status == "pending" else "automatic"
     appt_id = new_id("apt")
+    booking_id = new_id("bk")
     check_in_code = f"BK-{secrets.token_hex(3).upper()}"
+    total_price = float(service.price)
+    deposit_due = compute_deposit_amount(
+        total_amount=total_price,
+        policy=policy,
+        override_deposit=float(service.deposit_amount) if service.deposit_amount is not None else None,
+    )
+    is_paid = payment_method == "wallet"
 
+    booking = Booking(
+        id=booking_id,
+        business_id=business.id,
+        customer_id=customer_id,
+        booking_model="appointment",
+        title_snapshot=service.name,
+        start_at=chosen.start_at,
+        end_at=chosen.end_at,
+        timezone=business.timezone,
+        quantity=1,
+        status=booking_status,
+        confirmation_mode=confirmation_mode,
+        subtotal_amount=total_price,
+        discount_amount=0,
+        tax_amount=0,
+        total_amount=total_price,
+        deposit_due_amount=deposit_due,
+        amount_paid=total_price if is_paid else 0,
+        refunded_amount=0,
+        currency=service.currency,
+        payment_status="paid" if is_paid else "unpaid",
+        payment_method=payment_method,
+        cancellation_cutoff_at=compute_cancellation_cutoff(chosen.start_at, policy),
+        cancellation_policy_snapshot=service.cancellation_policy or policy.cancellation_policy_text,
+        notes=notes.strip() if notes and notes.strip() else None,
+        metadata_json={
+            "legacyAppointmentId": appt_id,
+            "serviceId": service.id,
+            "employeeId": employee.id,
+        },
+        idempotency_key=idempotency_key,
+        check_in_code=check_in_code,
+    )
     appointment = Appointment(
         id=appt_id,
+        booking_id=booking_id,
         business_id=business.id,
         service_id=service.id,
         employee_id=employee.id,
@@ -192,14 +240,25 @@ async def create_booking_transactional(
         start_at=chosen.start_at,
         end_at=chosen.end_at,
         status=booking_status,
-        price=float(service.price),
+        price=total_price,
         currency=service.currency,
-        payment_status="paid" if payment_method == "wallet" else "unpaid",
+        payment_status="paid" if is_paid else "unpaid",
         payment_method=payment_method,
         confirmation_mode=confirmation_mode,
         notes=notes.strip() if notes and notes.strip() else None,
         idempotency_key=idempotency_key,
         check_in_code=check_in_code,
+    )
+    db.add(booking)
+    await db.flush()
+    db.add(
+        BookingStatusHistory(
+            booking_id=booking_id,
+            from_status=None,
+            to_status=booking_status,
+            changed_by_user_id=actor.id,
+            reason="Initial booking creation",
+        )
     )
     db.add(appointment)
     db.add(
@@ -313,6 +372,19 @@ async def transition_appointment_status(
             reason=reason,
         )
     )
+    if appointment.booking_id:
+        linked_bk = await db.get(Booking, appointment.booking_id)
+        if linked_bk:
+            linked_bk.status = target_status
+            db.add(
+                BookingStatusHistory(
+                    booking_id=linked_bk.id,
+                    from_status=old_status,
+                    to_status=target_status,
+                    changed_by_user_id=actor.id,
+                    reason=reason,
+                )
+            )
 
     service = await db.get(Service, appointment.service_id)
     if is_customer and not is_staff and business:
@@ -410,6 +482,21 @@ async def reschedule_appointment_transactional(
             reason=f"Rescheduled to {date_str} {time_str}",
         )
     )
+    if appointment.booking_id:
+        linked_bk = await db.get(Booking, appointment.booking_id)
+        if linked_bk:
+            linked_bk.start_at = chosen.start_at
+            linked_bk.end_at = chosen.end_at
+            linked_bk.status = new_status
+            db.add(
+                BookingStatusHistory(
+                    booking_id=linked_bk.id,
+                    from_status=old_status,
+                    to_status=new_status,
+                    changed_by_user_id=actor.id,
+                    reason=f"Rescheduled to {date_str} {time_str}",
+                )
+            )
     recipient_id = business.owner_user_id if (is_customer and not is_staff) else appointment.customer_id
     db.add(
         Notification(
@@ -483,6 +570,22 @@ async def check_in_appointment_by_qr(
                 reason="Confirmed via QR front-desk check-in",
             )
         )
+    if appointment.booking_id:
+        linked_bk = await db.get(Booking, appointment.booking_id)
+        if linked_bk:
+            if linked_bk.checked_in_at is None:
+                linked_bk.checked_in_at = appointment.checked_in_at
+            if appointment.status == "confirmed" and linked_bk.status == "pending":
+                linked_bk.status = "confirmed"
+                db.add(
+                    BookingStatusHistory(
+                        booking_id=linked_bk.id,
+                        from_status="pending",
+                        to_status="confirmed",
+                        changed_by_user_id=actor.id,
+                        reason="Confirmed via QR front-desk check-in",
+                    )
+                )
     await db.commit()
     await db.refresh(appointment)
     return appointment

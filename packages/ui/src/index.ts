@@ -4,6 +4,7 @@ import type {
   MembershipRole,
   OrderStatus,
   Permission,
+  UniversalBookingStatus,
 } from "@bookit/types";
 import type { Tone } from "@bookit/design-system";
 
@@ -20,6 +21,20 @@ export function appointmentStatus(status: AppointmentStatus): StatusMeta {
     cancelled: { label: "Cancelled", tone: "neutral" },
     rejected: { label: "Rejected", tone: "danger" },
     no_show: { label: "No-show", tone: "danger" },
+  };
+  return map[status];
+}
+
+export function universalBookingStatus(status: UniversalBookingStatus): StatusMeta {
+  const map: Record<UniversalBookingStatus, StatusMeta> = {
+    held: { label: "Hold active", tone: "warning" },
+    pending: { label: "Pending", tone: "warning" },
+    confirmed: { label: "Confirmed", tone: "success" },
+    completed: { label: "Completed", tone: "info" },
+    cancelled: { label: "Cancelled", tone: "neutral" },
+    rejected: { label: "Rejected", tone: "danger" },
+    no_show: { label: "No-show", tone: "danger" },
+    expired: { label: "Expired", tone: "neutral" },
   };
   return map[status];
 }

@@ -4,7 +4,14 @@ from typing import Literal
 from pydantic import Field
 
 from app.schemas.auth import AddressOut, CustomerProfileOut, UserOut
-from app.schemas.booking import AppointmentOut, CustomerNoteOut
+from app.schemas.booking import (
+    AppointmentOut,
+    BusinessBookingConfigOut,
+    CustomerNoteOut,
+    EventOfferingOut,
+    ResourceOut,
+    UniversalBookingOut,
+)
 from app.schemas.business import BusinessApplicationOut, BusinessOut, MembershipOut
 from app.schemas.catalog import EmployeeOut, ProductCategoryOut, ProductOut, ServiceOut
 from app.schemas.commerce import (
@@ -177,6 +184,10 @@ class BootstrapStateOut(CamelModel):
     services: list[ServiceOut] = Field(default_factory=list)
     employees: list[EmployeeOut] = Field(default_factory=list)
     appointments: list[AppointmentOut] = Field(default_factory=list)
+    booking_configs: list[BusinessBookingConfigOut] = Field(default_factory=list)
+    resources: list[ResourceOut] = Field(default_factory=list)
+    event_offerings: list[EventOfferingOut] = Field(default_factory=list)
+    bookings: list[UniversalBookingOut] = Field(default_factory=list)
     reviews: list[ReviewOut] = Field(default_factory=list)
     product_categories: list[ProductCategoryOut] = Field(default_factory=list)
     products: list[ProductOut] = Field(default_factory=list)

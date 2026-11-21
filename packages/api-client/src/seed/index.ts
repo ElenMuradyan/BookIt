@@ -22,6 +22,7 @@ import {
 } from "./activity";
 import { advertisements, applications, businesses, memberships } from "./businesses";
 import { employees, productCategories, products, services } from "./catalog";
+import { bookingConfigs, eventOfferings, resources, universalBookings } from "./universal";
 import { addresses, customerProfiles, users } from "./users";
 
 export function createSeed(): AppState {
@@ -35,6 +36,10 @@ export function createSeed(): AppState {
     services,
     employees,
     appointments,
+    bookingConfigs,
+    resources,
+    eventOfferings,
+    bookings: universalBookings,
     reviews,
     productCategories,
     products,
