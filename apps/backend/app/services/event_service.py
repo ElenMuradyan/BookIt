@@ -125,6 +125,9 @@ async def reserve_session_transactional(
             detail=f"Session belongs to booking model '{session.offering.booking_model}', not '{booking_model}'",
         )
 
+    offering_title = session.offering.title
+    offering_cancellation_policy = session.offering.cancellation_policy
+
     business = await db.get(Business, session.business_id)
     if not business:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
@@ -135,7 +138,7 @@ async def reserve_session_transactional(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This business is not open for booking")
 
     await expire_stale_session_holds(db, session_id=session.id, now_utc=ref_now)
-    await db.refresh(session)
+    await db.refresh(session, attribute_names=["reserved_count", "status"])
 
     if session.status not in ("scheduled", "on_sale"):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Session is {session.status}")
@@ -196,6 +199,11 @@ async def reserve_session_transactional(
             for item in lines:
                 item["tier_id"] = default_tier.id
 
+    # Snapshot loaded tier attributes before bulk updates/rollbacks can expire ORM state
+    tier_snapshots: dict[str, tuple[str, float, str]] = {
+        tid: (t.name, float(t.price), t.currency) for tid, t in tier_map.items()
+    }
+
     # Atomic guarded session capacity update
     updated_session = (
         await db.execute(
@@ -225,7 +233,7 @@ async def reserve_session_transactional(
             tier_qty_totals[tid] = tier_qty_totals.get(tid, 0) + int(item["quantity"])
 
     for tid, qty in sorted(tier_qty_totals.items()):
-        tier = tier_map[tid]
+        tier_name, _, _ = tier_snapshots[tid]
         res = (
             await db.execute(
                 update(TicketTier)
@@ -242,7 +250,7 @@ async def reserve_session_transactional(
             await db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Tier '{tier.name}' does not have enough tickets remaining",
+                detail=f"Tier '{tier_name}' does not have enough tickets remaining",
             )
 
     policy = await get_effective_booking_config(db, business=business, booking_model=booking_model)
@@ -256,10 +264,10 @@ async def reserve_session_transactional(
         tid = item.get("tier_id")
         qty = int(item["quantity"])
         names = list(item.get("attendee_names") or [])
-        tier = tier_map.get(tid) if tid else None
-        unit_price = float(tier.price) if tier else 0.0
-        if tier:
-            currency = tier.currency
+        tier_snap = tier_snapshots.get(tid) if tid else None
+        unit_price = tier_snap[1] if tier_snap else 0.0
+        if tier_snap:
+            currency = tier_snap[2]
         subtotal += unit_price * qty
         for idx in range(qty):
             attendee_name = names[idx].strip() if idx < len(names) and names[idx].strip() else None
@@ -292,7 +300,7 @@ async def reserve_session_transactional(
         business_id=business.id,
         customer_id=customer_id,
         booking_model=booking_model,
-        title_snapshot=session.title_override or session.offering.title,
+        title_snapshot=session.title_override or offering_title,
         start_at=session.start_at,
         end_at=session.end_at,
         timezone=session.timezone,
@@ -310,7 +318,7 @@ async def reserve_session_transactional(
         payment_status="paid" if is_paid else "unpaid",
         payment_method=payment_method,
         cancellation_cutoff_at=compute_cancellation_cutoff(session.start_at, policy),
-        cancellation_policy_snapshot=session.offering.cancellation_policy or policy.cancellation_policy_text,
+        cancellation_policy_snapshot=offering_cancellation_policy or policy.cancellation_policy_text,
         notes=notes.strip() if notes and notes.strip() else None,
         metadata_json={
             "offeringId": session.offering_id,

@@ -80,6 +80,7 @@ async def backfill_phase2_records(session: AsyncSession, *, commit: bool = True)
     await session.flush()
 
     appts = list((await session.execute(select(Appointment).where(Appointment.booking_id.is_(None)))).scalars().all())
+    pending_links: list[tuple[Appointment, str]] = []
     for appt in appts:
         bk_id = deterministic_booking_id(appt.id)
         existing_bk = await session.get(Booking, bk_id)
@@ -129,6 +130,13 @@ async def backfill_phase2_records(session: AsyncSession, *, commit: bool = True)
             )
             created_bookings += 1
 
+        pending_links.append((appt, bk_id))
+
+    # Flush Booking inserts before setting appointments.booking_id so PostgreSQL
+    # always sees the target Booking row regardless of SQLAlchemy UOW ordering.
+    await session.flush()
+
+    for appt, bk_id in pending_links:
         appt.booking_id = bk_id
 
     await session.flush()

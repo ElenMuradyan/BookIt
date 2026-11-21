@@ -121,9 +121,17 @@ async def test_phase2_non_cascade_fk_and_backfill_parity(session_factory: async_
         assert hist_count_after == hist_count_before
         assert await verify_phase2_parity(session) == parity
 
-        # Deleting the universal booking must NOT delete the legacy Appointment
+        # Verify the universal Booking row exists in DB and matches the legacy appointment
         bk = await session.get(Booking, refreshed.booking_id)
         assert bk is not None
+        assert bk.business_id == "biz_aura"
+        assert bk.customer_id == "usr_elena"
+        assert bk.booking_model == "appointment"
+        assert float(bk.total_amount) == 75.0
+        assert bk.check_in_code == "BK-LEGACY1"
+        assert bk.metadata_json.get("legacyAppointmentId") == "apt_legacy_only"
+
+        # Deleting the universal booking must NOT delete the legacy Appointment
         await session.delete(bk)
         await session.commit()
 
@@ -135,6 +143,61 @@ async def test_phase2_non_cascade_fk_and_backfill_parity(session_factory: async_
         assert surviving_review is not None
         assert surviving_review.booking_id is None
         assert surviving_review.appointment_id == "apt_legacy_only"
+
+
+@pytest.mark.asyncio
+async def test_backfill_commit_false_preserves_transaction_and_links_existing_booking(
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    from scripts.backfill_phase2 import deterministic_booking_id
+
+    async with session_factory() as session:
+        legacy = Appointment(
+            id="apt_legacy_commit_false",
+            business_id="biz_aura",
+            service_id="svc_signature",
+            employee_id="emp_vance",
+            customer_id="usr_elena",
+            start_at=datetime(2026, 12, 11, 18, 0, tzinfo=UTC),
+            end_at=datetime(2026, 12, 11, 18, 45, tzinfo=UTC),
+            status="confirmed",
+            price=75,
+            currency="USD",
+            payment_status="unpaid",
+            confirmation_mode="automatic",
+            check_in_code="BK-LEGACY2",
+        )
+        session.add(legacy)
+        await session.commit()
+
+        result = await backfill_phase2_records(session, commit=False)
+        assert result["created_bookings"] == 1
+        assert session.in_transaction()
+
+        expected_bk_id = deterministic_booking_id("apt_legacy_commit_false")
+        linked_bk = await session.get(Booking, expected_bk_id)
+        linked_appt = await session.get(Appointment, "apt_legacy_commit_false")
+        assert linked_bk is not None
+        assert linked_appt is not None
+        assert linked_appt.booking_id == linked_bk.id
+
+        await session.commit()
+
+    # Verify persisted after explicit commit and still links if appointment becomes unlinked while Booking exists
+    async with session_factory() as verify_session:
+        persisted_appt = await verify_session.get(Appointment, "apt_legacy_commit_false")
+        assert persisted_appt is not None
+        assert persisted_appt.booking_id is not None
+        persisted_appt.booking_id = None
+        await verify_session.commit()
+
+        relink = await backfill_phase2_records(verify_session, commit=False)
+        assert relink["created_bookings"] == 0
+        await verify_session.commit()
+
+        relinked_appt = await verify_session.get(Appointment, "apt_legacy_commit_false")
+        assert relinked_appt is not None
+        assert relinked_appt.booking_id == deterministic_booking_id("apt_legacy_commit_false")
 
 
 @pytest.mark.asyncio
@@ -294,7 +357,9 @@ async def test_ticket_capacity_oversell_deposit_webhook_cancellation_and_qr(
     )
     assert sorted([t1.status_code, t2.status_code]) == [201, 409]
     winner = t1 if t1.status_code == 201 else t2
+    loser = t2 if t1.status_code == 201 else t1
     winner_headers = h1 if t1.status_code == 201 else h2
+    assert "VIP Front Row" in loser.json()["detail"]
     bk = winner.json()
     assert bk["status"] == "held"
     assert len(bk["ticketPasses"]) == 4
@@ -381,6 +446,52 @@ async def test_ticket_capacity_oversell_deposit_webhook_cancellation_and_qr(
         ses = await s.get(EventSession, "ses_aura_live_1")
         assert ses is not None
         assert ses.reserved_count == 4
+
+
+@pytest.mark.asyncio
+async def test_ticket_insufficient_tier_capacity_returns_409_and_rolls_back(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+):
+    cust1 = await login_as(client, "customer@bookit.demo")
+    cust2 = await login_as(client, "liam.patel@bookit.demo")
+    h1 = {"Authorization": f"Bearer {cust1['accessToken']}"}
+    h2 = {"Authorization": f"Bearer {cust2['accessToken']}"}
+
+    # Reserve 4 of 6 VIP tickets (session still has 16 of 20 spots remaining)
+    first = await client.post(
+        "/api/v1/bookings/universal",
+        headers=h1,
+        json={
+            "bookingModel": "ticket",
+            "businessId": "biz_aura",
+            "sessionId": "ses_aura_live_1",
+            "tickets": [{"tierId": "tier_aura_vip", "quantity": 4}],
+            "paymentMethod": "in_person",
+        },
+    )
+    assert first.status_code == 201, first.text
+
+    # Request 3 more VIP tickets: session check passes (4+3 <= 20), tier check fails (4+3 > 6)
+    # and must roll back session reserved_count and return 409 with tier name (never 500/MissingGreenlet)
+    over = await client.post(
+        "/api/v1/bookings/universal",
+        headers=h2,
+        json={
+            "bookingModel": "ticket",
+            "businessId": "biz_aura",
+            "sessionId": "ses_aura_live_1",
+            "tickets": [{"tierId": "tier_aura_vip", "quantity": 3}],
+            "paymentMethod": "in_person",
+        },
+    )
+    assert over.status_code == 409, over.text
+    assert over.json()["detail"] == "Tier 'VIP Front Row' does not have enough tickets remaining"
+
+    async with session_factory() as s:
+        ses = await s.get(EventSession, "ses_aura_live_1")
+        tier_vip = await s.get(TicketTier, "tier_aura_vip")
+        assert ses is not None and ses.reserved_count == 4
+        assert tier_vip is not None and tier_vip.reserved_count == 4
 
 
 @pytest.mark.asyncio
