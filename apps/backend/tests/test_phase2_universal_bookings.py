@@ -6,12 +6,23 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
-from app.models.booking import Appointment, Booking, EventSession, ResourceAllocation, TicketPass, TicketTier
-from scripts.backfill_phase2 import backfill_existing_appointments, verify_phase2_parity
+from app.models.booking import (
+    Appointment,
+    AppointmentStatusHistory,
+    Booking,
+    BookingStatusHistory,
+    BusinessBookingConfig,
+    EventSession,
+    ResourceAllocation,
+    TicketPass,
+    TicketTier,
+)
+from app.models.engagement import Review
+from scripts.backfill_phase2 import backfill_phase2_records, verify_phase2_parity
 from tests.conftest import login_as
 
 
@@ -29,7 +40,7 @@ async def test_phase2_non_cascade_fk_and_backfill_parity(session_factory: async_
     assert (fk.ondelete or "").upper() == "SET NULL"
 
     async with session_factory() as session:
-        # Insert a legacy-like appointment without booking_id
+        # Insert a legacy-like appointment, status history, and review without booking_id
         legacy = Appointment(
             id="apt_legacy_only",
             business_id="biz_aura",
@@ -45,20 +56,72 @@ async def test_phase2_non_cascade_fk_and_backfill_parity(session_factory: async_
             confirmation_mode="automatic",
             check_in_code="BK-LEGACY1",
         )
-        session.add(legacy)
+        legacy_history = AppointmentStatusHistory(
+            id="ash_legacy_only",
+            appointment_id="apt_legacy_only",
+            from_status=None,
+            to_status="confirmed",
+            changed_by_user_id="usr_elena",
+            reason="Legacy appointment before Phase 2",
+        )
+        legacy_review = Review(
+            id="rev_legacy_only",
+            business_id="biz_aura",
+            author_id="usr_elena",
+            appointment_id="apt_legacy_only",
+            booking_id=None,
+            rating=5,
+            title="Legacy appointment review",
+            body="Created prior to Phase 2 universal booking bridge.",
+            status="published",
+        )
+        session.add_all([legacy, legacy_history, legacy_review])
         await session.commit()
 
-        created_count = await backfill_existing_appointments(session)
-        assert created_count >= 1
-        parity = await verify_phase2_parity(session)
-        assert parity["ok"] is True
-        assert parity["unlinkedAppointments"] == 0
-        assert parity["cascadeDisabled"] is True
+        first_run = await backfill_phase2_records(session)
+        assert first_run["created_configs"] >= 1
+        assert first_run["created_bookings"] == 1
+        assert first_run["created_histories"] >= 1
+        assert first_run["linked_reviews"] >= 1
 
-        # Deleting the universal booking must NOT delete the legacy Appointment
+        parity = await verify_phase2_parity(session)
+        assert parity["appointments_total"] >= 2
+        assert parity["appointments_unlinked"] == 0
+        assert parity["bookings_appointment_total"] == parity["appointments_total"]
+        assert parity["count_parity"] is True
+        assert parity["amount_parity"] is True
+        assert parity["safe_non_cascade_fk"] is True
+
         refreshed = await session.get(Appointment, "apt_legacy_only")
         assert refreshed is not None
         assert refreshed.booking_id is not None
+
+        refreshed_review = await session.get(Review, "rev_legacy_only")
+        assert refreshed_review is not None
+        assert refreshed_review.booking_id == refreshed.booking_id
+
+        # Re-running backfill must be strictly idempotent (zero new rows or duplicates)
+        cfg_count_before = int((await session.execute(select(func.count(BusinessBookingConfig.id)))).scalar_one())
+        bk_count_before = int((await session.execute(select(func.count(Booking.id)))).scalar_one())
+        hist_count_before = int((await session.execute(select(func.count(BookingStatusHistory.id)))).scalar_one())
+
+        second_run = await backfill_phase2_records(session)
+        assert second_run == {
+            "created_configs": 0,
+            "created_bookings": 0,
+            "created_histories": 0,
+            "linked_reviews": 0,
+        }
+
+        cfg_count_after = int((await session.execute(select(func.count(BusinessBookingConfig.id)))).scalar_one())
+        bk_count_after = int((await session.execute(select(func.count(Booking.id)))).scalar_one())
+        hist_count_after = int((await session.execute(select(func.count(BookingStatusHistory.id)))).scalar_one())
+        assert cfg_count_after == cfg_count_before
+        assert bk_count_after == bk_count_before
+        assert hist_count_after == hist_count_before
+        assert await verify_phase2_parity(session) == parity
+
+        # Deleting the universal booking must NOT delete the legacy Appointment
         bk = await session.get(Booking, refreshed.booking_id)
         assert bk is not None
         await session.delete(bk)
@@ -68,6 +131,10 @@ async def test_phase2_non_cascade_fk_and_backfill_parity(session_factory: async_
         surviving = await session.get(Appointment, "apt_legacy_only")
         assert surviving is not None
         assert surviving.booking_id is None
+        surviving_review = await session.get(Review, "rev_legacy_only")
+        assert surviving_review is not None
+        assert surviving_review.booking_id is None
+        assert surviving_review.appointment_id == "apt_legacy_only"
 
 
 @pytest.mark.asyncio
@@ -217,8 +284,9 @@ async def test_ticket_capacity_oversell_deposit_webhook_cancellation_and_qr(
         "bookingModel": "ticket",
         "businessId": "biz_aura",
         "sessionId": "ses_aura_live_1",
-        "ticketItems": [{"tierId": "tier_aura_vip", "quantity": 4}],
+        "tickets": [{"tierId": "tier_aura_vip", "quantity": 4}],
         "paymentMethod": "card_token_pending",
+        "holdOnly": True,
     }
     t1, t2 = await asyncio.gather(
         client.post("/api/v1/bookings/universal", headers=h1, json=vip_req),
@@ -271,8 +339,9 @@ async def test_ticket_capacity_oversell_deposit_webhook_cancellation_and_qr(
         json={"checkInCode": pass_code},
     )
     assert checkin.status_code == 200, checkin.text
-    assert checkin.json()["matchedType"] == "ticket_pass"
-    assert checkin.json()["ticketPass"]["status"] == "checked_in"
+    assert checkin.json()["kind"] == "ticket_pass"
+    assert checkin.json()["status"] == "checked_in"
+    assert checkin.json()["ticketPassId"] is not None
 
     # Duplicate scan rejected cleanly as already checked in (409)
     dup_scan = await client.post(
@@ -290,7 +359,7 @@ async def test_ticket_capacity_oversell_deposit_webhook_cancellation_and_qr(
             "bookingModel": "ticket",
             "businessId": "biz_aura",
             "sessionId": "ses_aura_live_1",
-            "ticketItems": [{"tierId": "tier_aura_ga", "quantity": 2}],
+            "tickets": [{"tierId": "tier_aura_ga", "quantity": 2}],
             "paymentMethod": "in_person",
         },
     )
@@ -346,7 +415,8 @@ async def test_legacy_appointment_dual_write_and_qr_compatibility(client: AsyncC
         json={"checkInCode": appt_data["checkInCode"]},
     )
     assert checkin.status_code == 200
-    assert checkin.json()["matchedType"] == "booking"
+    assert checkin.json()["kind"] == "appointment"
+    assert checkin.json()["legacyAppointmentId"] == appt_data["id"]
 
     refreshed_appt = await client.get(f"/api/v1/bookings/{appt_data['id']}", headers=headers)
     assert refreshed_appt.status_code == 200

@@ -38,7 +38,7 @@ def deterministic_config_id(business_id: str, model: str) -> str:
     return f"bcfg_{hashlib.md5(f'{business_id}:{model}'.encode('utf-8')).hexdigest()}"
 
 
-async def backfill_phase2_records(session: AsyncSession) -> dict[str, int]:
+async def backfill_phase2_records(session: AsyncSession, *, commit: bool = True) -> dict[str, int]:
     created_configs = 0
     created_bookings = 0
     created_histories = 0
@@ -167,7 +167,10 @@ async def backfill_phase2_records(session: AsyncSession) -> dict[str, int]:
                 rev.booking_id = appt.booking_id
                 linked_reviews += 1
 
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     return {
         "created_configs": created_configs,
         "created_bookings": created_bookings,
