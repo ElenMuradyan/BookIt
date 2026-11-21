@@ -319,3 +319,147 @@ async def test_auth_rate_limiting(client: AsyncClient):
     finally:
         settings.auth_rate_limit_max_attempts = old
         await auth_rate_limiter.reset()
+
+
+def test_prepare_async_database_url_neon_ssl_and_channel_binding():
+    from app.core.database import prepare_async_database_url
+
+    url, args = prepare_async_database_url(
+        "postgresql://user:pass@ep-cool-host.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+    )
+    assert url == "postgresql+asyncpg://user:pass@ep-cool-host.us-east-2.aws.neon.tech/neondb"
+    assert args["ssl"] == "require"
+
+    url2, args2 = prepare_async_database_url(
+        "postgres://user:pass@ep-cool-host.neon.tech/neondb?sslmode=verify-full&application_name=bookit"
+    )
+    assert url2 == "postgresql+asyncpg://user:pass@ep-cool-host.neon.tech/neondb?application_name=bookit"
+    assert args2["ssl"] is not None
+
+    url3, args3 = prepare_async_database_url(
+        "postgresql+asyncpg://bookit:pass@localhost:5432/bookit?sslmode=disable"
+    )
+    assert url3 == "postgresql+asyncpg://bookit:pass@localhost:5432/bookit"
+    assert args3["ssl"] is False
+
+
+@pytest.mark.asyncio
+async def test_dual_email_verification_unauthenticated_otp_link_and_cooldown(client: AsyncClient):
+    import re
+    from urllib.parse import parse_qs, urlparse
+
+    from app.services.notification_service import clear_test_email_outbox, get_test_email_outbox
+
+    settings = get_settings()
+    old_cooldown = settings.verification_resend_cooldown_seconds
+    settings.verification_resend_cooldown_seconds = 60
+    clear_test_email_outbox()
+    await auth_rate_limiter.reset()
+    try:
+        reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "firstName": "Verify",
+                "lastName": "Tester",
+                "username": "verifytester",
+                "email": "verify.tester@example.com",
+                "phone": "+1 206 555 0144",
+                "password": "StrongPassword1!",
+                "confirmPassword": "StrongPassword1!",
+                "acceptTerms": True,
+            },
+        )
+        assert reg.status_code == 201, reg.text
+        access = reg.json()["accessToken"]
+        assert reg.json()["user"]["emailVerified"] is False
+
+        outbox = get_test_email_outbox()
+        assert len(outbox) == 1
+        sent = outbox[0]
+        assert sent.to_email == "verify.tester@example.com"
+        code_match = re.search(r"\b(\d{6})\b", sent.body)
+        assert code_match is not None
+        otp_1 = code_match.group(1)
+        url_match = re.search(r"https?://[^\s]+/verify\?token=[^\s]+", sent.body)
+        assert url_match is not None
+        link_token_1 = parse_qs(urlparse(url_match.group(0)).query)["token"][0]
+
+        # Cooldown blocks immediate authenticated resend with 429
+        too_soon = await client.post(
+            "/api/v1/auth/verify/request",
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert too_soon.status_code == 429
+
+        # Unauthenticated public resend preserves anti-enumeration (identical 200 for unknown vs known)
+        pub_unknown = await client.post(
+            "/api/v1/auth/verify/request",
+            json={"email": "does-not-exist@example.com"},
+        )
+        pub_known = await client.post(
+            "/api/v1/auth/verify/request",
+            json={"email": "verify.tester@example.com"},
+        )
+        assert pub_unknown.status_code == 200
+        assert pub_known.status_code == 200
+        assert pub_unknown.json() == pub_known.json()
+
+        # Verify WITHOUT authentication session using email + 6-digit OTP
+        wrong_otp = await client.post(
+            "/api/v1/auth/verify",
+            json={"email": "verify.tester@example.com", "code": "000000"},
+        )
+        assert wrong_otp.status_code == 400
+
+        ok_otp = await client.post(
+            "/api/v1/auth/verify",
+            json={"email": "verify.tester@example.com", "code": otp_1},
+        )
+        assert ok_otp.status_code == 200
+
+        me = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
+        assert me.status_code == 200
+        assert me.json()["user"]["emailVerified"] is True
+
+        # Single-use link token issued at the same time must now be invalidated (cannot reuse)
+        reuse_link = await client.post("/api/v1/auth/verify-token", json={"token": link_token_1})
+        assert reuse_link.status_code == 400
+
+        # Second account verifies purely via single-use link without ever sending auth headers
+        clear_test_email_outbox()
+        reg2 = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "firstName": "Link",
+                "lastName": "Verifier",
+                "username": "linkverifier",
+                "email": "link.verifier@example.com",
+                "phone": "+1 206 555 0145",
+                "password": "StrongPassword1!",
+                "confirmPassword": "StrongPassword1!",
+                "acceptTerms": True,
+            },
+        )
+        assert reg2.status_code == 201
+        sent2 = get_test_email_outbox()[0]
+        otp_2 = re.search(r"\b(\d{6})\b", sent2.body).group(1)  # type: ignore[union-attr]
+        link_token_2 = parse_qs(
+            urlparse(re.search(r"https?://[^\s]+/verify\?token=[^\s]+", sent2.body).group(0)).query  # type: ignore[union-attr]
+        )["token"][0]
+
+        ok_link = await client.post("/api/v1/auth/verify-token", json={"token": link_token_2})
+        assert ok_link.status_code == 200
+
+        # Single-use link cannot be replayed and sibling OTP is invalidated
+        assert (await client.post("/api/v1/auth/verify-token", json={"token": link_token_2})).status_code == 400
+        assert (
+            await client.post(
+                "/api/v1/auth/verify",
+                json={"email": "link.verifier@example.com", "code": otp_2},
+            )
+        ).status_code == 400
+    finally:
+        settings.verification_resend_cooldown_seconds = old_cooldown
+        clear_test_email_outbox()
+        await auth_rate_limiter.reset()
+

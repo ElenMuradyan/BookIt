@@ -161,7 +161,7 @@ async def register_customer(
     *,
     user_agent: str | None,
     ip_address: str | None,
-) -> tuple[AuthSessionOut, str, str]:
+) -> tuple[AuthSessionOut, str, str, str]:
     email = data.email.strip().lower()
     username = data.username.strip().lower()
 
@@ -207,17 +207,24 @@ async def register_customer(
     )
     cart = Cart(id=new_id("cart"), user_id=user.id)
     verification_code = generate_six_digit_code()
-    verify_row = VerificationToken(
+    verification_link_token = generate_opaque_token(32)
+    verify_otp_row = VerificationToken(
         user_id=user.id,
         purpose="email_verify",
         token_hash=hash_token(f"{user.id}:email_verify:{verification_code}"),
+        expires_at=now + timedelta(hours=24),
+    )
+    verify_link_row = VerificationToken(
+        user_id=user.id,
+        purpose="email_verify_link",
+        token_hash=hash_token(f"email_verify_link:{verification_link_token}"),
         expires_at=now + timedelta(hours=24),
     )
 
     try:
         db.add(user)
         await db.flush()
-        db.add_all([profile, cart, verify_row])
+        db.add_all([profile, cart, verify_otp_row, verify_link_row])
         await record_audit(
             db,
             actor_user_id=user.id,
@@ -240,7 +247,7 @@ async def register_customer(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account already uses that email or username",
         ) from exc
-    return session_out, raw_refresh, verification_code
+    return session_out, raw_refresh, verification_code, verification_link_token
 
 
 async def authenticate_user(
@@ -394,24 +401,121 @@ async def revoke_refresh_token(db: AsyncSession, raw_refresh_token: str | None, 
     await db.commit()
 
 
-async def verify_email_code(db: AsyncSession, user: User, code: str) -> None:
+async def verify_email_code(
+    db: AsyncSession,
+    *,
+    code: str,
+    authenticated_user: User | None = None,
+    identifier: str | None = None,
+) -> User:
+    target_user: User | None = authenticated_user
+    cleaned_identifier = (identifier or "").strip()
+    if target_user is None:
+        if not cleaned_identifier:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Provide your account email or sign in to verify",
+            )
+        target_user = await find_user_by_identifier(db, cleaned_identifier)
+    elif cleaned_identifier:
+        resolved = await find_user_by_identifier(db, cleaned_identifier)
+        if not resolved or resolved.id != target_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="That code does not match or has expired",
+            )
+
+    if not target_user or target_user.deactivated_at is not None or target_user.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That code does not match or has expired",
+        )
+
     now = utc_now()
-    digest = hash_token(f"{user.id}:email_verify:{code}")
+    digest = hash_token(f"{target_user.id}:email_verify:{code.strip()}")
     stmt = (
         select(VerificationToken)
         .where(
-            VerificationToken.user_id == user.id,
+            VerificationToken.user_id == target_user.id,
             VerificationToken.purpose == "email_verify",
             VerificationToken.token_hash == digest,
             VerificationToken.consumed_at.is_(None),
             VerificationToken.expires_at > now,
         )
         .order_by(VerificationToken.created_at.desc())
+        .with_for_update()
     )
     tok = (await db.execute(stmt)).scalar_one_or_none()
     if not tok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="That code does not match or has expired")
+
     tok.consumed_at = now
+    await db.execute(
+        update(VerificationToken)
+        .where(
+            VerificationToken.user_id == target_user.id,
+            VerificationToken.purpose.in_(("email_verify", "email_verify_link")),
+            VerificationToken.consumed_at.is_(None),
+        )
+        .values(consumed_at=now)
+    )
+    target_user.email_verified = True
+    await record_audit(
+        db,
+        actor_user_id=target_user.id,
+        action="auth.email_verified",
+        target_type="user",
+        target_id=target_user.id,
+        details={"method": "otp"},
+    )
+    await db.commit()
+    return target_user
+
+
+async def verify_email_link_token(db: AsyncSession, raw_token: str) -> User:
+    cleaned = raw_token.strip()
+    if not cleaned:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification link is invalid or has expired",
+        )
+    now = utc_now()
+    digest = hash_token(f"email_verify_link:{cleaned}")
+    stmt = (
+        select(VerificationToken)
+        .where(
+            VerificationToken.purpose == "email_verify_link",
+            VerificationToken.token_hash == digest,
+            VerificationToken.consumed_at.is_(None),
+            VerificationToken.expires_at > now,
+        )
+        .order_by(VerificationToken.created_at.desc())
+        .with_for_update()
+    )
+    tok = (await db.execute(stmt)).scalar_one_or_none()
+    if not tok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification link is invalid or has expired",
+        )
+
+    user = await db.get(User, tok.user_id)
+    if not user or user.deactivated_at is not None or user.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification link is invalid or has expired",
+        )
+
+    tok.consumed_at = now
+    await db.execute(
+        update(VerificationToken)
+        .where(
+            VerificationToken.user_id == user.id,
+            VerificationToken.purpose.in_(("email_verify", "email_verify_link")),
+            VerificationToken.consumed_at.is_(None),
+        )
+        .values(consumed_at=now)
+    )
     user.email_verified = True
     await record_audit(
         db,
@@ -419,23 +523,81 @@ async def verify_email_code(db: AsyncSession, user: User, code: str) -> None:
         action="auth.email_verified",
         target_type="user",
         target_id=user.id,
+        details={"method": "link"},
     )
     await db.commit()
+    return user
 
 
-async def issue_email_verification(db: AsyncSession, user: User) -> str:
+async def issue_email_verification(
+    db: AsyncSession,
+    user: User,
+    *,
+    enforce_cooldown_error: bool = True,
+) -> tuple[str, str] | None:
+    settings = get_settings()
     now = utc_now()
-    code = generate_six_digit_code()
-    db.add(
-        VerificationToken(
-            user_id=user.id,
-            purpose="email_verify",
-            token_hash=hash_token(f"{user.id}:email_verify:{code}"),
-            expires_at=now + timedelta(hours=24),
+    latest_stmt = (
+        select(VerificationToken)
+        .where(
+            VerificationToken.user_id == user.id,
+            VerificationToken.purpose == "email_verify",
         )
+        .order_by(VerificationToken.created_at.desc())
+        .limit(1)
+    )
+    latest = (await db.execute(latest_stmt)).scalar_one_or_none()
+    cooldown = settings.verification_resend_cooldown_seconds
+    if latest is not None and cooldown > 0:
+        elapsed = (now - latest.created_at).total_seconds()
+        if elapsed < cooldown:
+            if enforce_cooldown_error:
+                wait_seconds = max(1, int(cooldown - elapsed))
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Please wait {wait_seconds} seconds before requesting a new verification email.",
+                    headers={"Retry-After": str(wait_seconds)},
+                )
+            return None
+
+    await db.execute(
+        update(VerificationToken)
+        .where(
+            VerificationToken.user_id == user.id,
+            VerificationToken.purpose.in_(("email_verify", "email_verify_link")),
+            VerificationToken.consumed_at.is_(None),
+        )
+        .values(consumed_at=now)
+    )
+
+    code = generate_six_digit_code()
+    link_token = generate_opaque_token(32)
+    db.add_all(
+        [
+            VerificationToken(
+                user_id=user.id,
+                purpose="email_verify",
+                token_hash=hash_token(f"{user.id}:email_verify:{code}"),
+                expires_at=now + timedelta(hours=24),
+            ),
+            VerificationToken(
+                user_id=user.id,
+                purpose="email_verify_link",
+                token_hash=hash_token(f"email_verify_link:{link_token}"),
+                expires_at=now + timedelta(hours=24),
+            ),
+        ]
+    )
+    await record_audit(
+        db,
+        actor_user_id=user.id,
+        action="auth.verification_sent",
+        target_type="user",
+        target_id=user.id,
     )
     await db.commit()
-    return code
+    return code, link_token
+
 
 
 async def request_password_reset_token(db: AsyncSession, identifier: str) -> tuple[str, str] | None:

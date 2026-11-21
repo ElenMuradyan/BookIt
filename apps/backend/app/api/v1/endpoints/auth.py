@@ -1,4 +1,6 @@
+from html import escape
 from typing import Annotated
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +9,7 @@ from app.api.dependencies.auth import (
     ACCESS_COOKIE_NAME,
     CSRF_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
+    get_optional_user,
     require_user,
     verify_csrf_if_cookie_auth,
 )
@@ -24,6 +27,8 @@ from app.schemas.auth import (
     RegisterIn,
     UserOut,
     VerifyContactIn,
+    VerifyResendIn,
+    VerifyTokenIn,
 )
 from app.schemas.common import OkResponse
 from app.services.auth_service import (
@@ -31,6 +36,7 @@ from app.services.auth_service import (
     change_user_password,
     confirm_password_reset_token,
     deactivate_user_account,
+    find_user_by_identifier,
     issue_email_verification,
     register_customer,
     request_password_reset_token,
@@ -39,10 +45,47 @@ from app.services.auth_service import (
     serialize_profile,
     user_workspaces,
     verify_email_code,
+    verify_email_link_token,
 )
 from app.services.notification_service import schedule_email_notification
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _send_verification_email(
+    background_tasks: BackgroundTasks,
+    *,
+    to_email: str,
+    code: str,
+    link_token: str,
+) -> None:
+    settings = get_settings()
+    base_url = settings.frontend_base_url.rstrip("/")
+    verify_url = f"{base_url}/verify?{urlencode({'token': link_token})}"
+    text_body = (
+        f"Welcome to BookIt.\n\n"
+        f"Your 6-digit verification code is: {code}\n\n"
+        f"Or verify with a single click using this link (expires in 24 hours):\n{verify_url}\n"
+    )
+    safe_url = escape(verify_url, quote=True)
+    safe_code = escape(code)
+    html_body = (
+        "<div style=\"font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#111827;\">"
+        "<h2 style=\"margin:0 0 12px;\">Verify your BookIt email</h2>"
+        "<p style=\"margin:0 0 16px;line-height:1.5;\">Enter this 6-digit verification code in BookIt:</p>"
+        f"<p style=\"font-size:28px;font-weight:700;letter-spacing:6px;margin:0 0 20px;\">{safe_code}</p>"
+        "<p style=\"margin:0 0 16px;line-height:1.5;\">Or verify directly with the button below (valid for 24 hours, single use):</p>"
+        f"<p style=\"margin:0 0 20px;\"><a href=\"{safe_url}\" style=\"display:inline-block;padding:12px 20px;background:#6d28d9;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;\">Verify email address</a></p>"
+        f"<p style=\"font-size:12px;color:#6b7280;word-break:break-all;\">Direct link: {safe_url}</p>"
+        "</div>"
+    )
+    schedule_email_notification(
+        background_tasks,
+        to_email=to_email,
+        subject="Verify your BookIt email",
+        body=text_body,
+        html_body=html_body,
+    )
 
 
 def _set_session_cookies(
@@ -118,17 +161,17 @@ async def register(
         settings.auth_rate_limit_max_attempts,
         settings.auth_rate_limit_window_seconds,
     )
-    session_out, raw_refresh, verify_code = await register_customer(
+    session_out, raw_refresh, verify_code, verify_link_token = await register_customer(
         db,
         payload,
         user_agent=request.headers.get("user-agent"),
         ip_address=ip,
     )
-    schedule_email_notification(
+    _send_verification_email(
         background_tasks,
-        to_email=payload.email,
-        subject="Verify your BookIt email",
-        body=f"Your verification code is {verify_code}.",
+        to_email=payload.email.strip().lower(),
+        code=verify_code,
+        link_token=verify_link_token,
     )
     return _set_session_cookies(request, response, session_out=session_out, raw_refresh=raw_refresh, remember=True)
 
@@ -263,44 +306,125 @@ async def me(
 
 
 @router.post("/verify/request", response_model=OkResponse)
+@router.post("/verify/resend", response_model=OkResponse)
 async def request_verification(
     request: Request,
-    user: Annotated[User, Depends(require_user)],
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[None, Depends(verify_csrf_if_cookie_auth)],
+    user: Annotated[User | None, Depends(get_optional_user)],
+    payload: VerifyResendIn | None = None,
 ):
     settings = get_settings()
     ip = client_ip_from_request(request)
+    requested_identifier = (
+        (payload.email or payload.identifier or "").strip() if payload else ""
+    )
+
+    if user is not None and not requested_identifier:
+        await auth_rate_limiter.check(
+            f"verify-req:{user.id}:{ip}",
+            min(settings.auth_rate_limit_max_attempts, 6),
+            settings.auth_rate_limit_window_seconds,
+        )
+        if user.email_verified:
+            return OkResponse(ok=True, message="Email is already verified")
+        issued = await issue_email_verification(db, user, enforce_cooldown_error=True)
+        if issued:
+            code, link_token = issued
+            _send_verification_email(
+                background_tasks,
+                to_email=user.email,
+                code=code,
+                link_token=link_token,
+            )
+        return OkResponse(ok=True, message="Verification email sent")
+
+    if not requested_identifier:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide the account email to resend verification instructions",
+        )
+
     await auth_rate_limiter.check(
-        f"verify-req:{user.id}:{ip}",
+        f"verify-req-pub:{ip}:{requested_identifier.lower()}",
         min(settings.auth_rate_limit_max_attempts, 6),
         settings.auth_rate_limit_window_seconds,
     )
-    code = await issue_email_verification(db, user)
-    schedule_email_notification(
-        background_tasks,
-        to_email=user.email,
-        subject="Your BookIt verification code",
-        body=f"Verification code: {code}",
+    target = await find_user_by_identifier(db, requested_identifier)
+    if (
+        target is not None
+        and target.deactivated_at is None
+        and target.status == "active"
+        and not target.email_verified
+    ):
+        issued = await issue_email_verification(db, target, enforce_cooldown_error=False)
+        if issued:
+            code, link_token = issued
+            _send_verification_email(
+                background_tasks,
+                to_email=target.email,
+                code=code,
+                link_token=link_token,
+            )
+    # Anti-enumeration: identical 200 response for unknown, verified, cooldown, or unverified identifiers
+    return OkResponse(
+        ok=True,
+        message="If an unverified account matches that email, verification instructions have been sent.",
     )
-    return OkResponse(ok=True, message="Verification code sent")
 
 
 @router.post("/verify", response_model=OkResponse)
 async def verify_contact(
     payload: VerifyContactIn,
     request: Request,
-    user: Annotated[User, Depends(require_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[None, Depends(verify_csrf_if_cookie_auth)],
+    user: Annotated[User | None, Depends(get_optional_user)],
+):
+    settings = get_settings()
+    ip = client_ip_from_request(request)
+    identifier = (payload.email or payload.identifier or "").strip() or None
+    if user is None and not identifier:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide the account email or sign in before verifying",
+        )
+
+    rate_key = (
+        f"verify:{user.id}:{ip}"
+        if user is not None
+        else f"verify-pub:{ip}:{identifier.lower() if identifier else ''}"
+    )
+    await auth_rate_limiter.check(
+        rate_key,
+        min(settings.auth_rate_limit_max_attempts, 6),
+        settings.auth_rate_limit_window_seconds,
+    )
+    await verify_email_code(
+        db,
+        code=payload.code,
+        authenticated_user=user,
+        identifier=identifier,
+    )
+    return OkResponse(ok=True, message="Email verified")
+
+
+@router.post("/verify-token", response_model=OkResponse)
+async def verify_email_token(
+    payload: VerifyTokenIn,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[None, Depends(verify_csrf_if_cookie_auth)],
 ):
     settings = get_settings()
     ip = client_ip_from_request(request)
     await auth_rate_limiter.check(
-        f"verify:{user.id}:{ip}",
-        min(settings.auth_rate_limit_max_attempts, 6),
+        f"verify-tok:{ip}",
+        min(settings.auth_rate_limit_max_attempts, 8),
         settings.auth_rate_limit_window_seconds,
     )
-    await verify_email_code(db, user, payload.code)
+    await verify_email_link_token(db, payload.token)
     return OkResponse(ok=True, message="Email verified")
 
 

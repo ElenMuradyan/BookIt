@@ -61,7 +61,7 @@ export default function RegisterPage() {
       return;
     }
     await auth.signInRemote(result.data);
-    router.push("/verify");
+    router.push(`/verify?email=${encodeURIComponent(form.email.trim())}`);
   }
 
   return (

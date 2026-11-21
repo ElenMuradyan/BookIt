@@ -51,7 +51,7 @@ export default function RegisterScreen() {
         return;
       }
       await auth.signInWithToken(res.data.token);
-      router.replace("/(auth)/verify");
+      router.replace({ pathname: "/(auth)/verify", params: { email: form.email.trim() } });
       return;
     }
     const res = await registerCustomerRemote(payload);
@@ -61,7 +61,7 @@ export default function RegisterScreen() {
       return;
     }
     await auth.signInRemote(res.data);
-    router.replace("/(auth)/verify");
+    router.replace({ pathname: "/(auth)/verify", params: { email: form.email.trim() } });
   };
 
   return (

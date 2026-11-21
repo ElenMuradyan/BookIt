@@ -4,15 +4,19 @@ import { checkout, createAppointment, demoPasswordHint, getState, login, publicB
 resetDemoState();
 
 const auth = login({ identifier: "customer@bookit.demo", password: demoPasswordHint(), remember: true });
-assert.equal(auth.ok, true, "Customer login should succeed");
+if (!auth.ok) {
+  throw new Error(`Customer login should succeed: ${auth.error}`);
+}
 
 const state = getState();
 const venues = publicBusinesses(state);
 assert.ok(venues.length > 0, "Approved businesses should be visible");
 
-const service = state.services.find((s) => s.businessId === venues[0].id && s.active);
-const employee = state.employees.find((e) => e.businessId === venues[0].id);
-assert.ok(service && employee, "Seed venue should have an active service and employee");
+const service = state.services.find((s) => s.businessId === venues[0]!.id && s.active);
+const employee = state.employees.find((e) => e.businessId === venues[0]!.id);
+if (!service || !employee) {
+  throw new Error("Seed venue should have an active service and employee");
+}
 
 const booked = createAppointment({
   customerId: auth.data.userId,
@@ -21,7 +25,9 @@ const booked = createAppointment({
   date: "2026-11-20",
   time: "11:00",
 });
-assert.equal(booked.ok, true, "Booking creation should succeed");
+if (!booked.ok) {
+  throw new Error(`Booking creation should succeed: ${booked.error}`);
+}
 
 const orderResult = checkout({
   userId: auth.data.userId,
@@ -29,6 +35,8 @@ const orderResult = checkout({
   deliveryMethod: "standard",
   paymentMethod: "wallet",
 });
-assert.equal(orderResult.ok, true, "Marketplace checkout should succeed");
+if (!orderResult.ok) {
+  throw new Error(`Marketplace checkout should succeed: ${orderResult.error}`);
+}
 
 console.log(`BookIt API smoke test passed (${venues.length} public venues, booking ${booked.data.id}, ${orderResult.data.orderIds.length} orders).`);

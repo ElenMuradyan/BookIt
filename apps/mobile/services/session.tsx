@@ -14,6 +14,7 @@ import {
 import type { User, Workspace } from "@bookit/types";
 import { readSession } from "@bookit/utils";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { clearSecureTokens, deleteSecureToken, getSecureToken, setSecureToken } from "./tokenStorage";
 
 const TOKEN_KEY = "bookit.mobile.token";
 const ACCESS_TOKEN_KEY = "bookit.mobile.access";
@@ -58,14 +59,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       refreshRef.current = refreshToken;
       setToken(accessToken);
       if (accessToken) {
-        await AsyncStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+        await setSecureToken(ACCESS_TOKEN_KEY, accessToken);
       } else {
-        await AsyncStorage.removeItem(ACCESS_TOKEN_KEY);
+        await deleteSecureToken(ACCESS_TOKEN_KEY);
       }
       if (refreshToken) {
-        await AsyncStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+        await setSecureToken(REFRESH_TOKEN_KEY, refreshToken);
       } else {
-        await AsyncStorage.removeItem(REFRESH_TOKEN_KEY);
+        await deleteSecureToken(REFRESH_TOKEN_KEY);
       }
     },
     [],
@@ -75,7 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let mounted = true;
     if (mockMode) {
       Promise.all([
-        AsyncStorage.getItem(TOKEN_KEY),
+        getSecureToken(TOKEN_KEY),
         AsyncStorage.getItem(WORKSPACE_KEY),
         AsyncStorage.getItem(THEME_KEY),
       ])
@@ -111,8 +112,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     Promise.all([
-      AsyncStorage.getItem(ACCESS_TOKEN_KEY),
-      AsyncStorage.getItem(REFRESH_TOKEN_KEY),
+      getSecureToken(ACCESS_TOKEN_KEY),
+      getSecureToken(REFRESH_TOKEN_KEY),
       AsyncStorage.getItem(WORKSPACE_KEY),
       AsyncStorage.getItem(THEME_KEY),
     ])
@@ -158,7 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const workspace = workspaces.find((ws) => ws.businessId === workspaceId) ?? workspaces[0];
 
   const signInWithToken = async (nextToken: string) => {
-    await AsyncStorage.setItem(TOKEN_KEY, nextToken);
+    await setSecureToken(TOKEN_KEY, nextToken);
     setToken(nextToken);
     const parsed = readSession(nextToken);
     if (parsed) {
@@ -196,7 +197,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await persistRemoteTokens(null, null);
       setRemoteSession(null);
     }
-    await AsyncStorage.multiRemove([TOKEN_KEY, ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, WORKSPACE_KEY]);
+    await clearSecureTokens([TOKEN_KEY, ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY]);
+    await AsyncStorage.removeItem(WORKSPACE_KEY);
     setToken(null);
     setWorkspaceIdState(null);
     if (!mockMode) {

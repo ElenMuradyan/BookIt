@@ -148,7 +148,18 @@ class AuthSessionOut(CamelModel):
 
 
 class VerifyContactIn(CamelModel):
-    code: str = Field(min_length=6, max_length=6)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    identifier: str | None = Field(default=None, min_length=3, max_length=255)
+    email: EmailStr | None = None
+
+
+class VerifyTokenIn(CamelModel):
+    token: str = Field(min_length=20, max_length=256)
+
+
+class VerifyResendIn(CamelModel):
+    identifier: str | None = Field(default=None, min_length=3, max_length=255)
+    email: EmailStr | None = None
 
 
 class PasswordResetRequestIn(CamelModel):

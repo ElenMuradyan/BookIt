@@ -51,7 +51,10 @@ export function apiBaseUrl(): string {
       "EXPO_PUBLIC_BOOKIT_API_URL is required when EXPO_PUBLIC_BOOKIT_USE_MOCKS=false (set your LAN IP or HTTPS backend URL; localhost on a phone points to the device itself).",
     );
   }
-  return "http://localhost:8000";
+  if (!isReactNative && typeof window !== "undefined") {
+    return "";
+  }
+  return process.env.BOOKIT_INTERNAL_API_URL?.trim().replace(/\/+$/, "") || "http://127.0.0.1:8000";
 }
 
 function readCookie(name: string): string | null {

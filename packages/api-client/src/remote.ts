@@ -113,14 +113,48 @@ export async function submitBusinessApplicationRemote(
   };
 }
 
-export async function verifyContactRemote(code: string): Promise<ActionResult> {
+export async function verifyContactRemote(code: string, identifier?: string): Promise<ActionResult> {
+  const cleanedIdentifier = identifier?.trim();
+  const payload: Record<string, string> = { code: code.trim() };
+  if (cleanedIdentifier) {
+    payload.identifier = cleanedIdentifier;
+  }
   const res = await apiJson("/api/v1/auth/verify", {
     method: "POST",
-    body: JSON.stringify({ code }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   await hydrateFromBackend();
   return { ok: true, data: undefined };
+}
+
+export async function verifyEmailTokenRemote(token: string): Promise<ActionResult> {
+  const res = await apiJson("/api/v1/auth/verify-token", {
+    method: "POST",
+    body: JSON.stringify({ token: token.trim() }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function resendVerificationRemote(
+  identifier?: string,
+): Promise<ActionResult<{ message: string }>> {
+  const cleaned = identifier?.trim();
+  const res = await apiJson<{ ok: boolean; message?: string }>("/api/v1/auth/verify/request", {
+    method: "POST",
+    body: cleaned ? JSON.stringify({ identifier: cleaned }) : undefined,
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return {
+    ok: true,
+    data: {
+      message:
+        res.data.message ||
+        "If an unverified account matches that email, verification instructions have been sent.",
+    },
+  };
 }
 
 export async function requestPasswordResetRemote(identifier: string): Promise<ActionResult<{ message: string }>> {

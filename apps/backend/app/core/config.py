@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,9 +23,18 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://bookit:bookit_dev_password@localhost:5432/bookit",
         description="Async SQLAlchemy PostgreSQL connection string",
     )
+    direct_database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DIRECT_DATABASE_URL", "DIRECT_URL"),
+        description="Optional direct (unpooled) PostgreSQL URL for Alembic migrations (e.g. Neon direct host)",
+    )
     test_database_url: str = Field(
         default="postgresql+asyncpg://bookit:bookit_dev_password@localhost:5432/bookit_test",
     )
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_recycle: int = 300
+    db_use_null_pool: bool = False
 
     jwt_secret_key: str = "dev-only-jwt-secret-change-in-production-32bytes"
     jwt_algorithm: str = "HS256"
@@ -38,24 +47,29 @@ class Settings(BaseSettings):
     cookie_domain: str | None = None
 
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    frontend_base_url: str = "http://localhost:3000"
 
     auth_rate_limit_max_attempts: int = 15
     auth_rate_limit_window_seconds: int = 60
+    verification_resend_cooldown_seconds: int = 60
     trust_proxy_headers: bool = False
 
     payment_provider: Literal["sandbox_unconfigured", "sandbox", "stripe"] = "sandbox_unconfigured"
     payment_webhook_secret: str = "dev-only-webhook-secret-change-in-production"
     stripe_secret_key: str | None = None
 
-    email_provider: Literal["log_only", "smtp"] = "log_only"
+    email_provider: Literal["log_only", "smtp", "resend"] = "log_only"
+    email_from: str = "BookIt <no-reply@bookit.local>"
     push_provider: Literal["log_only", "fcm"] = "log_only"
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_user: str | None = None
     smtp_password: str | None = None
+    smtp_use_tls: bool = True
+    resend_api_key: str | None = None
     fcm_server_key: str | None = None
 
-    @field_validator("cookie_domain", mode="before")
+    @field_validator("cookie_domain", "direct_database_url", mode="before")
     @classmethod
     def empty_str_to_none(cls, value: str | None) -> str | None:
         if value is not None and value.strip() == "":
