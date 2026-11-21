@@ -29,7 +29,7 @@ def upgrade() -> None:
             created_at, updated_at
         )
         SELECT
-            'bcfg_' || md5(b.id || ':appointment'),
+            'bcfg_' || md5(b.id || chr(58) || 'appointment'),
             b.id,
             'appointment',
             true,

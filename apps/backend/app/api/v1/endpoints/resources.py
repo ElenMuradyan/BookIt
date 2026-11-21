@@ -18,7 +18,12 @@ from app.schemas.booking import (
     ResourceOut,
     ResourceUpdateIn,
 )
-from app.services.rbac import ensure_business_visible, require_business_permission
+from app.services.rbac import (
+    ensure_business_visible,
+    get_active_membership,
+    has_permission,
+    require_business_permission,
+)
 from app.services.resource_service import compute_resource_availability
 
 router = APIRouter(tags=["resources"])
@@ -58,15 +63,30 @@ async def list_resources(
     include_inactive: bool = Query(default=False, alias="includeInactive"),
 ):
     business, is_member = await ensure_business_visible(db, business_id, user)
+
     stmt = select(Resource).where(Resource.business_id == business.id)
-    if not (include_inactive and is_member):
+
+    can_view_inactive = False
+
+    if include_inactive and user:
+        if user.is_platform_admin or business.owner_user_id == user.id:
+            can_view_inactive = True
+        else:
+            membership = await get_active_membership(db, user.id, business.id)
+            can_view_inactive = bool(
+                membership and has_permission(membership.role, "resources.manage")
+            )
+
+    if not can_view_inactive:
         stmt = stmt.where(Resource.active.is_(True))
+
     if resource_type:
         stmt = stmt.where(Resource.resource_type == resource_type)
+
     stmt = stmt.order_by(Resource.name.asc())
+
     rows = (await db.execute(stmt)).scalars().all()
     return [serialize_resource(r) for r in rows]
-
 
 @router.post("/businesses/{business_id}/resources", response_model=ResourceOut, status_code=status.HTTP_201_CREATED)
 async def create_resource(

@@ -251,3 +251,38 @@ async def test_bootstrap_inactive_inventory_rbac_and_cross_business_isolation(
     assert all_inactive_res.issubset(admin_res)
     assert all_inactive_evt.issubset(admin_evt)
 
+@pytest.mark.asyncio
+async def test_employee_cannot_view_inactive_inventory(client: AsyncClient):
+    owner = await login_as(client, "business@bookit.demo")
+    owner_headers = {"Authorization": f"Bearer {owner['accessToken']}"}
+
+    employee = await login_as(client, "employee@bookit.demo")
+    employee_headers = {"Authorization": f"Bearer {employee['accessToken']}"}
+
+    created = await client.post(
+        "/api/v1/businesses/biz_aura/offerings",
+        headers=owner_headers,
+        json={
+            "bookingModel": "ticket",
+            "category": "Test",
+            "title": "Inactive Test Event",
+            "active": False,
+        },
+    )
+    assert created.status_code == 201, created.text
+    offering_id = created.json()["id"]
+
+    # Employee must not see inactive offering
+    response = await client.get(
+        "/api/v1/businesses/biz_aura/offerings?includeInactive=true",
+        headers=employee_headers,
+    )
+    assert response.status_code == 200
+    assert offering_id not in [item["id"] for item in response.json()]
+
+    # Owner must see inactive offering
+    response = await client.get(
+        "/api/v1/businesses/biz_aura/offerings?includeInactive=true",
+        headers=owner_headers,
+    )
+    assert offering_id in [item["id"] for item in response.json()]

@@ -19,8 +19,12 @@ from app.schemas.booking import (
     EventSessionUpdateIn,
     TicketTierOut,
 )
-from app.services.rbac import ensure_business_visible, require_business_permission
-
+from app.services.rbac import (
+    ensure_business_visible,
+    get_active_membership,
+    has_permission,
+    require_business_permission,
+)
 router = APIRouter(tags=["events"])
 
 
@@ -88,20 +92,34 @@ async def list_offerings(
     booking_model: str | None = Query(default=None, alias="bookingModel"),
     include_inactive: bool = Query(default=False, alias="includeInactive"),
 ):
-    business, is_member = await ensure_business_visible(db, business_id, user)
+    business, _ = await ensure_business_visible(db, business_id, user)
     stmt = (
         select(EventOffering)
         .options(selectinload(EventOffering.sessions).selectinload(EventSession.tiers))
         .where(EventOffering.business_id == business.id)
     )
-    if not (include_inactive and is_member):
+
+    can_view_inactive = False
+
+    if include_inactive and user:
+        if user.is_platform_admin or business.owner_user_id == user.id:
+            can_view_inactive = True
+        else:
+            membership = await get_active_membership(db, user.id, business.id)
+            can_view_inactive = bool(
+                membership and has_permission(membership.role, "events.manage")
+            )
+
+    if not can_view_inactive:
         stmt = stmt.where(EventOffering.active.is_(True))
+
     if booking_model:
         stmt = stmt.where(EventOffering.booking_model == booking_model)
+
     stmt = stmt.order_by(EventOffering.created_at.desc())
+
     rows = (await db.execute(stmt)).scalars().all()
     return [serialize_offering(o) for o in rows]
-
 
 @router.post("/businesses/{business_id}/offerings", response_model=EventOfferingOut, status_code=status.HTTP_201_CREATED)
 async def create_offering(
