@@ -101,3 +101,153 @@ async def test_rbac_and_idor_boundaries(client: AsyncClient):
     )
     assert review.status_code == 200
     assert review.json()["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_inactive_inventory_rbac_and_cross_business_isolation(
+    client: AsyncClient, session_factory
+):
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from app.models.booking import EventOffering, Resource
+    from app.models.business import Membership
+
+    factory: async_sessionmaker[AsyncSession] = session_factory
+    async with factory() as session:
+        session.add_all([
+            Resource(
+                id="res_aura_active",
+                business_id="biz_aura",
+                name="Active Styling Chair",
+                resource_type="custom",
+                active=True,
+            ),
+            Resource(
+                id="res_aura_inactive",
+                business_id="biz_aura",
+                name="Archived Styling Suite",
+                resource_type="custom",
+                active=False,
+            ),
+            Resource(
+                id="res_opal_inactive",
+                business_id="biz_opal",
+                name="Archived Dental Operatory",
+                resource_type="custom",
+                active=False,
+            ),
+            Resource(
+                id="res_apex_inactive",
+                business_id="biz_apex",
+                name="Archived Squat Rack",
+                resource_type="equipment",
+                active=False,
+            ),
+            Resource(
+                id="res_crown_inactive",
+                business_id="biz_crown",
+                name="Archived Barber Chair",
+                resource_type="custom",
+                active=False,
+            ),
+            EventOffering(
+                id="evt_aura_inactive",
+                business_id="biz_aura",
+                booking_model="ticket",
+                category="workshop",
+                title="Archived Hair Showcase",
+                active=False,
+            ),
+            EventOffering(
+                id="evt_opal_inactive",
+                business_id="biz_opal",
+                booking_model="capacity",
+                category="class",
+                title="Archived Hygiene Q&A",
+                active=False,
+            ),
+            EventOffering(
+                id="evt_apex_inactive",
+                business_id="biz_apex",
+                booking_model="capacity",
+                category="class",
+                title="Archived Mobility Clinic",
+                active=False,
+            ),
+            EventOffering(
+                id="evt_crown_inactive",
+                business_id="biz_crown",
+                booking_model="ticket",
+                category="workshop",
+                title="Archived Shave Workshop",
+                active=False,
+            ),
+            # Give biz_apex owner (usr_liam) an employee role in biz_aura to prove cross-business isolation
+            Membership(
+                id="mem_liam_aura_emp",
+                user_id="usr_liam",
+                business_id="biz_aura",
+                role="employee",
+                status="active",
+                title="Guest Coach",
+            ),
+        ])
+        await session.commit()
+
+    def _ids(payload: dict) -> tuple[set[str], set[str]]:
+        return (
+            {r["id"] for r in payload["resources"]},
+            {o["id"] for o in payload["eventOfferings"]},
+        )
+
+    all_inactive_res = {"res_aura_inactive", "res_opal_inactive", "res_apex_inactive", "res_crown_inactive"}
+    all_inactive_evt = {"evt_aura_inactive", "evt_opal_inactive", "evt_apex_inactive", "evt_crown_inactive"}
+
+    # 1. Public (unauthenticated) users only receive active inventory
+    pub_resp = await client.get("/api/v1/bootstrap")
+    assert pub_resp.status_code == 200
+    pub_res, pub_evt = _ids(pub_resp.json())
+    assert "res_aura_active" in pub_res
+    assert "evt_aura_masterclass" in pub_evt
+    assert pub_res.isdisjoint(all_inactive_res)
+    assert pub_evt.isdisjoint(all_inactive_evt)
+
+    # 2. Employee / Receptionist (usr_elena_vance: employee at biz_aura, receptionist at biz_crown)
+    #    must only receive active inventory
+    emp = await login_as(client, "employee@bookit.demo")
+    emp_resp = await client.get("/api/v1/bootstrap", headers={"Authorization": f"Bearer {emp['accessToken']}"})
+    assert emp_resp.status_code == 200
+    emp_res, emp_evt = _ids(emp_resp.json())
+    assert "res_aura_active" in emp_res
+    assert "evt_aura_masterclass" in emp_evt
+    assert emp_res.isdisjoint(all_inactive_res)
+    assert emp_evt.isdisjoint(all_inactive_evt)
+
+    # 3. Owner (biz_aura) & Manager (biz_opal) receive inactive inventory ONLY for their authorized businesses
+    owner = await login_as(client, "business@bookit.demo")
+    owner_resp = await client.get("/api/v1/bootstrap", headers={"Authorization": f"Bearer {owner['accessToken']}"})
+    assert owner_resp.status_code == 200
+    owner_res, owner_evt = _ids(owner_resp.json())
+    assert {"res_aura_active", "res_aura_inactive", "res_opal_inactive"}.issubset(owner_res)
+    assert {"evt_aura_masterclass", "evt_aura_inactive", "evt_opal_inactive"}.issubset(owner_evt)
+    assert {"res_apex_inactive", "res_crown_inactive"}.isdisjoint(owner_res)
+    assert {"evt_apex_inactive", "evt_crown_inactive"}.isdisjoint(owner_evt)
+
+    # 4. Business-specific permission: owner of biz_apex + employee of biz_aura sees inactive in biz_apex ONLY
+    liam = await login_as(client, "liam.patel@bookit.demo")
+    liam_resp = await client.get("/api/v1/bootstrap", headers={"Authorization": f"Bearer {liam['accessToken']}"})
+    assert liam_resp.status_code == 200
+    liam_res, liam_evt = _ids(liam_resp.json())
+    assert "res_apex_inactive" in liam_res
+    assert "evt_apex_inactive" in liam_evt
+    assert "res_aura_inactive" not in liam_res
+    assert "evt_aura_inactive" not in liam_evt
+
+    # 5. Platform admin sees all inactive inventory
+    admin = await login_as(client, "admin@bookit.demo")
+    admin_resp = await client.get("/api/v1/bootstrap", headers={"Authorization": f"Bearer {admin['accessToken']}"})
+    assert admin_resp.status_code == 200
+    admin_res, admin_evt = _ids(admin_resp.json())
+    assert all_inactive_res.issubset(admin_res)
+    assert all_inactive_evt.issubset(admin_evt)
+

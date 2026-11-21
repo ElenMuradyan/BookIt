@@ -53,6 +53,7 @@ from app.api.v1.endpoints.events import serialize_offering
 from app.api.v1.endpoints.resources import serialize_resource
 from app.api.v1.endpoints.universal_bookings import serialize_universal_booking
 from app.services.auth_service import serialize_profile
+from app.services.rbac import has_permission
 
 router = APIRouter(tags=["bootstrap"])
 
@@ -175,13 +176,24 @@ async def bootstrap_state(
             c for c in booking_configs if c.enabled or c.business_id in user_business_ids
         ]
 
+    owned_business_ids: set[str] = {b.id for b in businesses if user and b.owner_user_id == user.id}
+    active_memberships = [
+        m for m in memberships if user and m.user_id == user.id and m.status == "active"
+    ]
+    resource_manage_business_ids: set[str] = owned_business_ids | {
+        m.business_id for m in active_memberships if has_permission(m.role, "resources.manage")
+    }
+    event_manage_business_ids: set[str] = owned_business_ids | {
+        m.business_id for m in active_memberships if has_permission(m.role, "events.manage")
+    }
+
     resources = list(
         (
             await db.execute(select(Resource).where(Resource.business_id.in_(visible_biz_ids)))
         ).scalars().all()
     ) if visible_biz_ids else []
     if not is_admin:
-        resources = [r for r in resources if r.active or r.business_id in user_business_ids]
+        resources = [r for r in resources if r.active or r.business_id in resource_manage_business_ids]
 
     event_offerings = list(
         (
@@ -193,7 +205,7 @@ async def bootstrap_state(
         ).scalars().all()
     ) if visible_biz_ids else []
     if not is_admin:
-        event_offerings = [o for o in event_offerings if o.active or o.business_id in user_business_ids]
+        event_offerings = [o for o in event_offerings if o.active or o.business_id in event_manage_business_ids]
 
     # Authenticated user-scoped / workspace-scoped records
     profiles_out: list[CustomerProfileOut] = []
