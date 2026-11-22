@@ -24,7 +24,7 @@ def _application_payload(
         "city": "Seattle",
         "address": "1205 Western Ave",
         "phone": "+1 206 555 0188",
-        "email": "hello@cascadesound.test",
+        "email": "hello@example.com",
         "website": "",
         "description": "Boutique studio offering custom sound and beauty treatments by appointment.",
         "ownerName": "Taylor Brooks",
@@ -45,7 +45,7 @@ async def test_submit_business_application_new_owner_creates_user_profile_cart_a
 ):
     res = await client.post(
         "/api/v1/businesses/applications",
-        json=_application_payload(owner_email="new.owner@cascadesound.test"),
+        json=_application_payload(owner_email="new.owner@example.com"),
     )
     assert res.status_code == 201, res.text
     body = res.json()
@@ -56,7 +56,7 @@ async def test_submit_business_application_new_owner_creates_user_profile_cart_a
     async with session_factory() as db:
         owner = await db.get(User, owner_id)
         assert owner is not None
-        assert owner.email == "new.owner@cascadesound.test"
+        assert owner.email == "new.owner@example.com"
 
         profile = await db.get(CustomerProfile, owner_id)
         assert profile is not None
@@ -101,7 +101,7 @@ async def test_submit_business_application_new_owner_creates_user_profile_cart_a
     login_res = await client.post(
         "/api/v1/auth/login/business",
         json={
-            "identifier": "new.owner@cascadesound.test",
+            "identifier": "new.owner@example.com",
             "password": "StrongOwnerPass1!",
             "remember": True,
         },
@@ -208,7 +208,7 @@ async def test_submit_business_application_authenticated_user_uses_existing_acco
         "/api/v1/businesses/applications",
         headers={"Authorization": f"Bearer {liam['accessToken']}"},
         json=_application_payload(
-            owner_email="different.form.email@cascadesound.test",
+            owner_email="different.form.email@example.com",
             owner_password="",
             owner_confirm_password="",
         ),
@@ -226,43 +226,46 @@ async def test_submit_business_application_validates_owner_password_and_avoids_o
     async with session_factory() as db:
         users_before = int((await db.execute(select(func.count(User.id)))).scalar_one())
         carts_before = int((await db.execute(select(func.count(Cart.id)))).scalar_one())
-        profiles_before = int((await db.execute(select(func.count(CustomerProfile.id)))).scalar_one())
+        profiles_before = int((await db.execute(select(func.count(CustomerProfile.user_id)))).scalar_one())
         biz_before = int((await db.execute(select(func.count(Business.id)))).scalar_one())
 
     missing_pw = await client.post(
         "/api/v1/businesses/applications",
         json=_application_payload(
-            owner_email="missing.pw@cascadesound.test",
+            owner_email="missing.pw@example.com",
             owner_password="",
             owner_confirm_password="",
         ),
     )
     assert missing_pw.status_code == 422, missing_pw.text
+    assert "password" in missing_pw.json()["detail"].lower()
 
     mismatch_pw = await client.post(
         "/api/v1/businesses/applications",
         json=_application_payload(
-            owner_email="mismatch.pw@cascadesound.test",
+            owner_email="mismatch.pw@example.com",
             owner_password="StrongOwnerPass1!",
             owner_confirm_password="DifferentPass1!",
         ),
     )
     assert mismatch_pw.status_code == 422, mismatch_pw.text
+    assert "match" in mismatch_pw.json()["detail"].lower()
 
     weak_pw = await client.post(
         "/api/v1/businesses/applications",
         json=_application_payload(
-            owner_email="weak.pw@cascadesound.test",
+            owner_email="weak.pw@example.com",
             owner_password="weak",
             owner_confirm_password="weak",
         ),
     )
     assert weak_pw.status_code == 422, weak_pw.text
+    assert "8 characters" in weak_pw.json()["detail"].lower()
 
     async with session_factory() as db:
         assert int((await db.execute(select(func.count(User.id)))).scalar_one()) == users_before
         assert int((await db.execute(select(func.count(Cart.id)))).scalar_one()) == carts_before
-        assert int((await db.execute(select(func.count(CustomerProfile.id)))).scalar_one()) == profiles_before
+        assert int((await db.execute(select(func.count(CustomerProfile.user_id)))).scalar_one()) == profiles_before
         assert int((await db.execute(select(func.count(Business.id)))).scalar_one()) == biz_before
 
 
@@ -273,23 +276,26 @@ async def test_submit_business_application_duplicate_unauthenticated_submission_
 ):
     first = await client.post(
         "/api/v1/businesses/applications",
-        json=_application_payload(owner_email="repeat.owner@cascadesound.test"),
+        json=_application_payload(owner_email="repeat.owner@example.com"),
     )
     assert first.status_code == 201, first.text
 
     async with session_factory() as db:
         users_after_first = int((await db.execute(select(func.count(User.id)))).scalar_one())
         carts_after_first = int((await db.execute(select(func.count(Cart.id)))).scalar_one())
+        profiles_after_first = int((await db.execute(select(func.count(CustomerProfile.user_id)))).scalar_one())
         biz_after_first = int((await db.execute(select(func.count(Business.id)))).scalar_one())
 
     second = await client.post(
         "/api/v1/businesses/applications",
-        json=_application_payload(owner_email="repeat.owner@cascadesound.test"),
+        json=_application_payload(owner_email="repeat.owner@example.com"),
     )
     assert second.status_code == 401, second.text
+    assert "sign in first" in second.json()["detail"].lower()
 
     async with session_factory() as db:
         assert int((await db.execute(select(func.count(User.id)))).scalar_one()) == users_after_first
         assert int((await db.execute(select(func.count(Cart.id)))).scalar_one()) == carts_after_first
+        assert int((await db.execute(select(func.count(CustomerProfile.user_id)))).scalar_one()) == profiles_after_first
         assert int((await db.execute(select(func.count(Business.id)))).scalar_one()) == biz_after_first
 
