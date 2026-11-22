@@ -97,7 +97,7 @@ export async function registerCustomerRemote(input: RegisterInput): Promise<Acti
 
 export async function submitBusinessApplicationRemote(
   input: BusinessApplicationInput & { applicantUserId?: string },
-): Promise<ActionResult<{ businessId: string; userId: string; session?: RemoteAuthSession }>> {
+): Promise<ActionResult<{ businessId: string; userId: string; session?: RemoteAuthSession; autoLoginError?: string }>> {
   const parsed = businessApplicationSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Check the form", fieldErrors: fieldErrors(parsed.error) };
 
@@ -109,13 +109,18 @@ export async function submitBusinessApplicationRemote(
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors, status: res.status };
 
   let session: RemoteAuthSession | undefined;
+  let autoLoginError: string | undefined;
   if (!input.applicantUserId && parsed.data.ownerPassword) {
     const logged = await loginBusinessRemote({
       identifier: parsed.data.ownerEmail,
       password: parsed.data.ownerPassword,
       remember: true,
     });
-    if (logged.ok) session = logged.data;
+    if (logged.ok) {
+      session = logged.data;
+    } else {
+      autoLoginError = logged.error;
+    }
   } else {
     await hydrateFromBackend();
   }
@@ -126,6 +131,7 @@ export async function submitBusinessApplicationRemote(
       businessId: res.data.businessId,
       userId: res.data.applicantUserId,
       session,
+      autoLoginError,
     },
   };
 }

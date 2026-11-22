@@ -272,27 +272,69 @@ export function Chip({
 export function InputField({
   label,
   error,
+  secureTextEntry,
+  style,
   ...props
 }: TextInputProps & { label: string; error?: string }) {
   const { colors } = useThemePalette();
+  const [revealed, setRevealed] = useState(false);
+  const isPasswordField = Boolean(secureTextEntry) && !props.multiline;
+
   return (
     <View style={{ gap: 6 }}>
       <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "600" }}>{label}</Text>
-      <TextInput
-        placeholderTextColor={colors.muted}
-        {...props}
-        style={[
-          styles.input,
-          {
-            backgroundColor: colors.bgElevated,
-            borderColor: error ? colors.danger : colors.line,
-            color: colors.text,
-            minHeight: props.multiline ? 88 : 44,
-            textAlignVertical: props.multiline ? "top" : "center",
-          },
-          props.style,
-        ]}
-      />
+      {isPasswordField ? (
+        <View
+          style={[
+            styles.passwordWrap,
+            {
+              backgroundColor: colors.bgElevated,
+              borderColor: error ? colors.danger : colors.line,
+            },
+          ]}
+        >
+          <TextInput
+            placeholderTextColor={colors.muted}
+            {...props}
+            secureTextEntry={!revealed}
+            style={[
+              styles.passwordInput,
+              { color: colors.text },
+              style,
+            ]}
+          />
+          <Pressable
+            onPress={() => setRevealed((prev) => !prev)}
+            accessibilityRole="button"
+            accessibilityLabel={revealed ? `Hide ${label}` : `Show ${label}`}
+            hitSlop={6}
+            style={styles.passwordToggleBtn}
+          >
+            <Ionicons
+              name={revealed ? "eye-off-outline" : "eye-outline"}
+              size={20}
+              color={colors.muted}
+            />
+          </Pressable>
+        </View>
+      ) : (
+        <TextInput
+          placeholderTextColor={colors.muted}
+          {...props}
+          secureTextEntry={secureTextEntry}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.bgElevated,
+              borderColor: error ? colors.danger : colors.line,
+              color: colors.text,
+              minHeight: props.multiline ? 88 : 44,
+              textAlignVertical: props.multiline ? "top" : "center",
+            },
+            style,
+          ]}
+        />
+      )}
       {error ? <Text style={{ color: colors.danger, fontSize: 12 }}>{error}</Text> : null}
     </View>
   );
@@ -622,6 +664,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 14,
+  },
+  passwordWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 12,
+    borderWidth: 1,
+    minHeight: 46,
+    paddingLeft: 12,
+    paddingRight: 4,
+  },
+  passwordInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingVertical: 10,
+  },
+  passwordToggleBtn: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
   },
   searchBox: {
     flexDirection: "row",

@@ -208,10 +208,88 @@ async def test_submit_business_application_authenticated_user_uses_existing_acco
         "/api/v1/businesses/applications",
         headers={"Authorization": f"Bearer {liam['accessToken']}"},
         json=_application_payload(
-            owner_email="liam.patel@bookit.demo",
+            owner_email="different.form.email@cascadesound.test",
             owner_password="",
             owner_confirm_password="",
         ),
     )
     assert bearer_res.status_code == 201, bearer_res.text
+    # Must bind to authenticated user identity, not unverified form ownerEmail
     assert bearer_res.json()["applicantUserId"] == "usr_liam"
+
+
+@pytest.mark.asyncio
+async def test_submit_business_application_validates_owner_password_and_avoids_orphan_records(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    async with session_factory() as db:
+        users_before = int((await db.execute(select(func.count(User.id)))).scalar_one())
+        carts_before = int((await db.execute(select(func.count(Cart.id)))).scalar_one())
+        profiles_before = int((await db.execute(select(func.count(CustomerProfile.id)))).scalar_one())
+        biz_before = int((await db.execute(select(func.count(Business.id)))).scalar_one())
+
+    missing_pw = await client.post(
+        "/api/v1/businesses/applications",
+        json=_application_payload(
+            owner_email="missing.pw@cascadesound.test",
+            owner_password="",
+            owner_confirm_password="",
+        ),
+    )
+    assert missing_pw.status_code == 422, missing_pw.text
+
+    mismatch_pw = await client.post(
+        "/api/v1/businesses/applications",
+        json=_application_payload(
+            owner_email="mismatch.pw@cascadesound.test",
+            owner_password="StrongOwnerPass1!",
+            owner_confirm_password="DifferentPass1!",
+        ),
+    )
+    assert mismatch_pw.status_code == 422, mismatch_pw.text
+
+    weak_pw = await client.post(
+        "/api/v1/businesses/applications",
+        json=_application_payload(
+            owner_email="weak.pw@cascadesound.test",
+            owner_password="weak",
+            owner_confirm_password="weak",
+        ),
+    )
+    assert weak_pw.status_code == 422, weak_pw.text
+
+    async with session_factory() as db:
+        assert int((await db.execute(select(func.count(User.id)))).scalar_one()) == users_before
+        assert int((await db.execute(select(func.count(Cart.id)))).scalar_one()) == carts_before
+        assert int((await db.execute(select(func.count(CustomerProfile.id)))).scalar_one()) == profiles_before
+        assert int((await db.execute(select(func.count(Business.id)))).scalar_one()) == biz_before
+
+
+@pytest.mark.asyncio
+async def test_submit_business_application_duplicate_unauthenticated_submission_requires_sign_in(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    first = await client.post(
+        "/api/v1/businesses/applications",
+        json=_application_payload(owner_email="repeat.owner@cascadesound.test"),
+    )
+    assert first.status_code == 201, first.text
+
+    async with session_factory() as db:
+        users_after_first = int((await db.execute(select(func.count(User.id)))).scalar_one())
+        carts_after_first = int((await db.execute(select(func.count(Cart.id)))).scalar_one())
+        biz_after_first = int((await db.execute(select(func.count(Business.id)))).scalar_one())
+
+    second = await client.post(
+        "/api/v1/businesses/applications",
+        json=_application_payload(owner_email="repeat.owner@cascadesound.test"),
+    )
+    assert second.status_code == 401, second.text
+
+    async with session_factory() as db:
+        assert int((await db.execute(select(func.count(User.id)))).scalar_one()) == users_after_first
+        assert int((await db.execute(select(func.count(Cart.id)))).scalar_one()) == carts_after_first
+        assert int((await db.execute(select(func.count(Business.id)))).scalar_one()) == biz_after_first
+

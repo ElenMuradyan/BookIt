@@ -277,46 +277,51 @@ export function submitBusinessApplication(
 
   if (!ownerId) {
     const existing = state.users.find((user) => user.email.toLowerCase() === ownerEmail);
-    if (!existing && !parsed.data.ownerPassword) {
+    if (existing) {
+      return {
+        ok: false,
+        error: "An account already exists for that owner email. Please sign in first.",
+        status: 401,
+      };
+    }
+    if (!parsed.data.ownerPassword) {
       return fail("Create an owner password to sign in to your business workspace", {
         ownerPassword: "Create an owner password (8+ characters with upper, lower, number, symbol)",
       });
     }
-    ownerId = existing?.id ?? nid("usr");
-    if (!existing) {
-      createdNewAccount = true;
-      const [firstName, ...rest] = parsed.data.ownerName.trim().split(" ");
-      draft((next) => {
-        next.users.push({
-          id: ownerId!,
-          firstName: firstName || "Owner",
-          lastName: rest.join(" ") || "Account",
-          username: `owner_${seq}`,
-          email: ownerEmail,
-          phone: parsed.data.ownerPhone,
-          language: "English",
-          interests: [],
-          emailVerified: false,
-          phoneVerified: false,
-          status: "active",
-          isPlatformAdmin: false,
-          createdAt: now,
-          updatedAt: now,
-        });
-        next.customerProfiles.push({
-          userId: ownerId!,
-          interests: [],
-          language: "English",
-          marketingOptIn: false,
-          personalizationConsent: false,
-          spendingVisibility: "recorded_only",
-          theme: "dark",
-          notificationPreferences: { booking: true, order: true, promotion: false, message: true, security: true },
-        });
-        next.carts.push({ id: nid("cart"), userId: ownerId!, items: [], updatedAt: now });
+    ownerId = nid("usr");
+    createdNewAccount = true;
+    const [firstName, ...rest] = parsed.data.ownerName.trim().split(" ");
+    draft((next) => {
+      next.users.push({
+        id: ownerId!,
+        firstName: firstName || "Owner",
+        lastName: rest.join(" ") || "Account",
+        username: `owner_${seq}`,
+        email: ownerEmail,
+        phone: parsed.data.ownerPhone,
+        language: "English",
+        interests: [],
+        emailVerified: false,
+        phoneVerified: false,
+        status: "active",
+        isPlatformAdmin: false,
+        createdAt: now,
+        updatedAt: now,
       });
-      passwords.set(ownerEmail, parsed.data.ownerPassword!);
-    }
+      next.customerProfiles.push({
+        userId: ownerId!,
+        interests: [],
+        language: "English",
+        marketingOptIn: false,
+        personalizationConsent: false,
+        spendingVisibility: "recorded_only",
+        theme: "dark",
+        notificationPreferences: { booking: true, order: true, promotion: false, message: true, security: true },
+      });
+      next.carts.push({ id: nid("cart"), userId: ownerId!, items: [], updatedAt: now });
+    });
+    passwords.set(ownerEmail, parsed.data.ownerPassword!);
   }
   draft((next) => {
     next.businesses.push({

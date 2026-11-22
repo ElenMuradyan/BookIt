@@ -7,9 +7,11 @@ import {
   demoPasswordHint,
   getState,
   login,
+  loginBusiness,
   publicBusinesses,
   resetDemoState,
   setUniversalBookingStatus,
+  submitBusinessApplication,
 } from "./index";
 
 resetDemoState();
@@ -86,6 +88,55 @@ const orderResult = checkout({
 });
 if (!orderResult.ok) {
   throw new Error(`Marketplace checkout should succeed: ${orderResult.error}`);
+}
+
+const existingEmailBiz = submitBusinessApplication({
+  businessName: "Duplicate Check Studio",
+  legalName: "Duplicate Check Studio LLC",
+  category: "beauty",
+  country: "United States",
+  city: "Seattle",
+  address: "1200 Western Ave",
+  phone: "+1 206 555 0111",
+  email: "hello@duplicate.test",
+  website: "",
+  description: "Testing existing email sign-in enforcement during business onboarding.",
+  ownerName: "Elena",
+  ownerEmail: "customer@bookit.demo",
+  ownerPhone: "+1 206 555 0112",
+  ownerPassword: "StrongOwnerPass1!",
+  ownerConfirmPassword: "StrongOwnerPass1!",
+});
+assert.equal(existingEmailBiz.ok, false, "Existing unauthenticated owner email must require sign-in");
+if (!existingEmailBiz.ok) {
+  assert.equal(existingEmailBiz.status, 401);
+}
+
+const newOwnerBiz = submitBusinessApplication({
+  businessName: "Rainier Sound Lab",
+  legalName: "Rainier Sound Lab LLC",
+  category: "beauty",
+  country: "United States",
+  city: "Seattle",
+  address: "1400 Pike St",
+  phone: "+1 206 555 0144",
+  email: "hello@rainiersound.test",
+  website: "",
+  description: "Boutique studio accepting appointments and capacity workshops.",
+  ownerName: "Taylor Brooks",
+  ownerEmail: "taylor.brooks@rainiersound.test",
+  ownerPhone: "+1 206 555 0145",
+  ownerPassword: "StrongOwnerPass1!",
+  ownerConfirmPassword: "StrongOwnerPass1!",
+});
+assert.equal(newOwnerBiz.ok, true, "New unauthenticated owner application should succeed");
+if (newOwnerBiz.ok) {
+  const bizLogin = loginBusiness({
+    identifier: "taylor.brooks@rainiersound.test",
+    password: "StrongOwnerPass1!",
+    remember: true,
+  });
+  assert.equal(bizLogin.ok, true, "New business owner should be able to sign in immediately");
 }
 
 console.log(
