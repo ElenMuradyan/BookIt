@@ -5,14 +5,18 @@ import {
   checkInUniversalQrRemote,
   displayUser,
   rescheduleAppointment,
+  rescheduleAppointmentRemote,
+  resourcesForBusiness,
   setAppointmentStatus,
+  setAppointmentStatusRemote,
   setUniversalBookingStatus,
   setUniversalBookingStatusRemote,
   updateAppointmentNotes,
+  updateAppointmentNotesRemote,
   useBookItState,
   usingMocks,
 } from "@bookit/api-client";
-import type { Appointment, UniversalBookingStatus } from "@bookit/types";
+import type { Appointment, AppointmentStatus, UniversalBookingStatus } from "@bookit/types";
 import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
 import { addDays, availableSlots, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
 import React, { useState } from "react";
@@ -35,12 +39,14 @@ export default function WorkspaceBookingsScreen() {
   const [time, setTime] = useState("10:00");
   const [checkInCode, setCheckInCode] = useState("");
   const [checkInMsg, setCheckInMsg] = useState<{ err?: boolean; text: string } | null>(null);
-  const [checkingIn, setCheckingIn] = useState(false);
+  const [modalError, setModalError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace || !auth.userId) return null;
   const bizId = auth.workspace.businessId;
   const actorId = auth.userId;
   const biz = state.businesses.find((b) => b.id === bizId);
+  const resources = resourcesForBusiness(state, bizId, true);
   const canManage = can(auth.workspace.role, "bookings.manage");
   const canViewCustomers = can(auth.workspace.role, "customers.view");
   const rows = businessAppointments(state, bizId).filter((a) => filter === "all" || a.status === filter);
@@ -64,14 +70,30 @@ export default function WorkspaceBookingsScreen() {
         })
       : [];
 
-  const handleUniversalStatus = async (bookingId: string, status: UniversalBookingStatus) => {
-    if (usingMocks()) {
-      const res = setUniversalBookingStatus(bookingId, status, actorId);
+  const handleAppointmentStatus = async (appointmentId: string, status: AppointmentStatus) => {
+    setCheckInMsg(null);
+    setBusy(true);
+    try {
+      const res = usingMocks()
+        ? setAppointmentStatus(appointmentId, status, actorId)
+        : await setAppointmentStatusRemote(appointmentId, status);
       if (!res.ok) setCheckInMsg({ err: true, text: res.error });
-      return;
+    } finally {
+      setBusy(false);
     }
-    const res = await setUniversalBookingStatusRemote(bookingId, status);
-    if (!res.ok) setCheckInMsg({ err: true, text: res.error });
+  };
+
+  const handleUniversalStatus = async (bookingId: string, status: UniversalBookingStatus) => {
+    setCheckInMsg(null);
+    setBusy(true);
+    try {
+      const res = usingMocks()
+        ? setUniversalBookingStatus(bookingId, status, actorId)
+        : await setUniversalBookingStatusRemote(bookingId, status);
+      if (!res.ok) setCheckInMsg({ err: true, text: res.error });
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -89,11 +111,11 @@ export default function WorkspaceBookingsScreen() {
             autoCapitalize="characters"
           />
           <Button
-            label={checkingIn ? "Checking in..." : "Check In Guest"}
-            disabled={checkingIn || !checkInCode.trim()}
+            label={busy ? "Working..." : "Check In Guest"}
+            disabled={busy || !checkInCode.trim()}
             small
             onPress={async () => {
-              setCheckingIn(true);
+              setBusy(true);
               setCheckInMsg(null);
               try {
                 const res = usingMocks()
@@ -108,7 +130,7 @@ export default function WorkspaceBookingsScreen() {
                 });
                 setCheckInCode("");
               } finally {
-                setCheckingIn(false);
+                setBusy(false);
               }
             }}
           />
@@ -133,6 +155,8 @@ export default function WorkspaceBookingsScreen() {
           {universalRows.map((ub) => {
             const customer = state.users.find((u) => u.id === ub.customerId);
             const meta = universalBookingStatus(ub.status);
+            const alloc = ub.resourceAllocations[0];
+            const res = alloc ? resources.find((r) => r.id === alloc.resourceId) : undefined;
             return (
               <Card key={ub.id} style={{ gap: 6 }}>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
@@ -145,7 +169,7 @@ export default function WorkspaceBookingsScreen() {
                   </Text>
                 </View>
                 <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>
-                  {displayUser(state, ub.customerId)} · {ub.title}
+                  {displayUser(state, ub.customerId)} · {res?.name ?? ub.title}
                 </Text>
                 {canViewCustomers && customer ? (
                   <Text style={{ color: colors.muted, fontSize: 12 }}>
@@ -153,7 +177,9 @@ export default function WorkspaceBookingsScreen() {
                   </Text>
                 ) : null}
                 <Text style={{ color: colors.muted, fontSize: 12 }}>
-                  {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)} · {ub.quantity}x
+                  {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)}
+                  {ub.endAt && ub.bookingModel === "resource" ? ` → ${formatDateTime(ub.endAt)}` : ""} · {ub.quantity}x
+                  {alloc?.partySize ? ` · ${alloc.partySize} guests` : ""}
                 </Text>
                 {ub.checkInCode ? (
                   <Text style={{ color: colors.lavender, fontSize: 12, fontVariant: ["tabular-nums"] }}>
@@ -165,15 +191,15 @@ export default function WorkspaceBookingsScreen() {
                   <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
                     {ub.status === "pending" || ub.status === "held" ? (
                       <>
-                        <Button label="Approve" tone="soft" small onPress={() => void handleUniversalStatus(ub.id, "confirmed")} />
-                        <Button label="Reject" tone="danger" small onPress={() => void handleUniversalStatus(ub.id, "rejected")} />
+                        <Button label="Approve" tone="soft" small disabled={busy} onPress={() => void handleUniversalStatus(ub.id, "confirmed")} />
+                        <Button label="Reject" tone="danger" small disabled={busy} onPress={() => void handleUniversalStatus(ub.id, "rejected")} />
                       </>
                     ) : null}
                     {ub.status === "confirmed" ? (
                       <>
-                        <Button label="Complete" tone="soft" small onPress={() => void handleUniversalStatus(ub.id, "completed")} />
-                        <Button label="No-show" tone="ghost" small onPress={() => void handleUniversalStatus(ub.id, "no_show")} />
-                        <Button label="Cancel" tone="danger" small onPress={() => void handleUniversalStatus(ub.id, "cancelled")} />
+                        <Button label="Complete" tone="soft" small disabled={busy} onPress={() => void handleUniversalStatus(ub.id, "completed")} />
+                        <Button label="No-show" tone="ghost" small disabled={busy} onPress={() => void handleUniversalStatus(ub.id, "no_show")} />
+                        <Button label="Cancel" tone="danger" small disabled={busy} onPress={() => void handleUniversalStatus(ub.id, "cancelled")} />
                       </>
                     ) : null}
                   </View>
@@ -209,14 +235,14 @@ export default function WorkspaceBookingsScreen() {
                   <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
                     {apt.status === "pending" ? (
                       <>
-                        <Button label="Approve" tone="soft" small onPress={() => setAppointmentStatus(apt.id, "confirmed", actorId)} />
-                        <Button label="Reject" tone="danger" small onPress={() => setAppointmentStatus(apt.id, "rejected", actorId)} />
+                        <Button label="Approve" tone="soft" small disabled={busy} onPress={() => void handleAppointmentStatus(apt.id, "confirmed")} />
+                        <Button label="Reject" tone="danger" small disabled={busy} onPress={() => void handleAppointmentStatus(apt.id, "rejected")} />
                       </>
                     ) : null}
                     {apt.status === "confirmed" ? (
                       <>
-                        <Button label="Complete" tone="soft" small onPress={() => setAppointmentStatus(apt.id, "completed", actorId)} />
-                        <Button label="No-show" tone="ghost" small onPress={() => setAppointmentStatus(apt.id, "no_show", actorId)} />
+                        <Button label="Complete" tone="soft" small disabled={busy} onPress={() => void handleAppointmentStatus(apt.id, "completed")} />
+                        <Button label="No-show" tone="ghost" small disabled={busy} onPress={() => void handleAppointmentStatus(apt.id, "no_show")} />
                       </>
                     ) : null}
                     {apt.status === "pending" || apt.status === "confirmed" ? (
@@ -229,9 +255,10 @@ export default function WorkspaceBookingsScreen() {
                             setRescheduleTarget(apt);
                             setDate(apt.start.slice(0, 10));
                             setTime(apt.start.slice(11, 16));
+                            setModalError("");
                           }}
                         />
-                        <Button label="Cancel" tone="danger" small onPress={() => setAppointmentStatus(apt.id, "cancelled", actorId)} />
+                        <Button label="Cancel" tone="danger" small disabled={busy} onPress={() => void handleAppointmentStatus(apt.id, "cancelled")} />
                       </>
                     ) : null}
                     <Button
@@ -241,6 +268,7 @@ export default function WorkspaceBookingsScreen() {
                       onPress={() => {
                         setNotesTarget(apt);
                         setNoteText(apt.notes ?? "");
+                        setModalError("");
                       }}
                     />
                   </View>
@@ -265,14 +293,28 @@ export default function WorkspaceBookingsScreen() {
                 multiline
                 placeholder="Preparation details, customer requests, or staff notes"
               />
+              {modalError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{modalError}</Text> : null}
               <View style={{ flexDirection: "row", gap: 10 }}>
                 <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setNotesTarget(null)} />
                 <Button
-                  label="Save"
+                  label={busy ? "Saving..." : "Save"}
                   style={{ flex: 1 }}
-                  onPress={() => {
-                    updateAppointmentNotes(bizId, notesTarget.id, noteText);
-                    setNotesTarget(null);
+                  disabled={busy}
+                  onPress={async () => {
+                    setModalError("");
+                    setBusy(true);
+                    try {
+                      const res = usingMocks()
+                        ? updateAppointmentNotes(bizId, notesTarget.id, noteText)
+                        : await updateAppointmentNotesRemote(notesTarget.id, noteText);
+                      if (!res.ok) {
+                        setModalError(res.error);
+                        return;
+                      }
+                      setNotesTarget(null);
+                    } finally {
+                      setBusy(false);
+                    }
                   }}
                 />
               </View>
@@ -300,14 +342,28 @@ export default function WorkspaceBookingsScreen() {
                 <Text style={{ color: colors.muted, fontSize: 12 }}>No standard open slots on {date}; enter override time below.</Text>
               )}
               <InputField label="Time (HH:MM)" value={time} onChangeText={setTime} />
+              {modalError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{modalError}</Text> : null}
               <View style={{ flexDirection: "row", gap: 10 }}>
                 <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setRescheduleTarget(null)} />
                 <Button
-                  label="Update"
+                  label={busy ? "Updating..." : "Update"}
                   style={{ flex: 1 }}
-                  onPress={() => {
-                    rescheduleAppointment(rescheduleTarget.id, date, time, actorId);
-                    setRescheduleTarget(null);
+                  disabled={busy}
+                  onPress={async () => {
+                    setModalError("");
+                    setBusy(true);
+                    try {
+                      const res = usingMocks()
+                        ? rescheduleAppointment(rescheduleTarget.id, date, time, actorId)
+                        : await rescheduleAppointmentRemote(rescheduleTarget.id, date, time);
+                      if (!res.ok) {
+                        setModalError(res.error);
+                        return;
+                      }
+                      setRescheduleTarget(null);
+                    } finally {
+                      setBusy(false);
+                    }
                   }}
                 />
               </View>

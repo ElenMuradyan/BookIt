@@ -9,7 +9,7 @@ import {
   useBookItState,
 } from "@bookit/api-client";
 import type { BookingModel, BusinessCategory } from "@bookit/types";
-import { categoryLabels, exploreFilterHints } from "@bookit/ui";
+import { categoryLabels, exploreFilterHints, primaryCtaLabelForBusiness } from "@bookit/ui";
 import { bookingModelLabel, formatDateTime, formatMoney } from "@bookit/utils";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -24,8 +24,8 @@ function ExploreContent() {
   const auth = useAuth();
   const state = useBookItState();
   const params = useSearchParams();
-  const [tab, setTab] = useState<"businesses" | "services" | "events" | "products">(
-    (params.get("tab") as "businesses" | "services" | "events" | "products") || "businesses",
+  const [tab, setTab] = useState<"businesses" | "spaces" | "services" | "events" | "products">(
+    (params.get("tab") as "businesses" | "spaces" | "services" | "events" | "products") || "businesses",
   );
   const [q, setQ] = useState(params.get("q") ?? "");
   const [category, setCategory] = useState(params.get("category") ?? "");
@@ -43,6 +43,24 @@ function ExploreContent() {
   }).filter((biz) => {
     if (!modelFilter) return true;
     return enabledModelsForBusiness(state, biz.id).includes(modelFilter);
+  });
+
+  const spaces = (state.resources ?? []).filter((res) => {
+    if (!res.active) return false;
+    const biz = state.businesses.find((b) => b.id === res.businessId && b.isPublic && b.status === "approved");
+    if (!biz) return false;
+    if (category && biz.category !== category) return false;
+    if (modelFilter && modelFilter !== "resource") return false;
+    if (maxPrice !== undefined && res.basePrice > maxPrice) return false;
+    if (
+      q.trim() &&
+      !`${res.name} ${res.description} ${res.resourceType} ${biz.name} ${biz.city}`
+        .toLowerCase()
+        .includes(q.trim().toLowerCase())
+    ) {
+      return false;
+    }
+    return true;
   });
 
   const services = searchServices(state, { q, category: category || undefined, maxPrice });
@@ -72,13 +90,14 @@ function ExploreContent() {
         <div>
           <h1 style={{ margin: 0 }}>Explore BookIt</h1>
           <p className="muted" style={{ margin: "4px 0 0" }}>
-            Discover approved businesses, bookable spaces, events, classes, services, and products.
+            Discover restaurants, hotels, courts, clinics, salons, live events, classes, and local retail.
           </p>
         </div>
         <div className="tabs">
           {(
             [
               ["businesses", "Businesses"],
+              ["spaces", "Rooms, Tables & Courts"],
               ["services", "Services"],
               ["events", "Events & Classes"],
               ["products", "Products"],
@@ -95,7 +114,7 @@ function ExploreContent() {
         <div className="grid-4" style={{ gridTemplateColumns: "2fr 1fr 1fr 1fr" }}>
           <label className="field">
             <span>Search</span>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Salon, dining table, workshop, pottery..." />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Restaurant, hotel room, court, salon, concert..." />
           </label>
           <label className="field">
             <span>Category</span>
@@ -149,7 +168,7 @@ function ExploreContent() {
                   <option value="">Any</option>
                   <option value="50">Under $50</option>
                   <option value="100">Under $100</option>
-                  <option value="200">Under $200</option>
+                  <option value="250">Under $250</option>
                 </select>
               </label>
             ) : null}
@@ -167,6 +186,7 @@ function ExploreContent() {
             {businesses.map((biz) => {
               const models = enabledModelsForBusiness(state, biz.id);
               const primaryModel = models[0] ?? "appointment";
+              const ctaLabel = primaryCtaLabelForBusiness(biz.category, models);
               return (
                 <article key={biz.id} className="card">
                   <Link href={`/business/${biz.id}`}>
@@ -195,7 +215,43 @@ function ExploreContent() {
                         Profile
                       </Link>
                       <Link href={`/book/${biz.id}?model=${primaryModel}`} className="btn small">
-                        Book now
+                        {ctaLabel}
+                      </Link>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )
+      ) : null}
+
+      {tab === "spaces" ? (
+        spaces.length === 0 ? (
+          <Empty title="No matching rooms, tables, or spaces" body="Adjust your category or search query." />
+        ) : (
+          <div className="grid-3">
+            {spaces.map((res) => {
+              const biz = state.businesses.find((b) => b.id === res.businessId);
+              return (
+                <article key={res.id} className="card">
+                  <div className="body stack" style={{ gap: 6 }}>
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <Badge tone="brand">{res.resourceType.replaceAll("_", " ")}</Badge>
+                      <span className="tiny">{biz?.city}</span>
+                    </div>
+                    <h3>{res.name}</h3>
+                    <span className="tiny">{biz?.name}</span>
+                    <p className="tiny" style={{ margin: 0 }}>{res.description}</p>
+                    <span className="tiny">
+                      Up to {res.capacityPeople} guests · {res.unitsTotal} total unit(s)
+                    </span>
+                    <div className="row" style={{ justifyContent: "space-between", marginTop: 6 }}>
+                      <strong className="tabular">
+                        {res.basePrice === 0 ? "Free reservation" : `${formatMoney(res.basePrice)} (${res.pricingUnit.replaceAll("_", " ")})`}
+                      </strong>
+                      <Link href={`/book/${res.businessId}?model=resource&resource=${res.id}`} className="btn small">
+                        Reserve
                       </Link>
                     </div>
                   </div>

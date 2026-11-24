@@ -10,21 +10,25 @@ from app.models.base import new_id
 from app.models.booking import Resource, ResourceBlock
 from app.models.user import User
 from app.schemas.booking import (
+    HotelStayAvailabilityOut,
+    HotelStayOptionOut,
     ResourceAvailabilityOut,
     ResourceAvailabilitySlotOut,
     ResourceBlockIn,
     ResourceBlockOut,
     ResourceIn,
     ResourceOut,
+    ResourceSearchItemOut,
     ResourceUpdateIn,
 )
+from app.schemas.common import OkResponse
 from app.services.rbac import (
     ensure_business_visible,
     get_active_membership,
     has_permission,
     require_business_permission,
 )
-from app.services.resource_service import compute_resource_availability
+from app.services.resource_service import compute_resource_availability, search_hotel_stays_availability
 
 router = APIRouter(tags=["resources"])
 
@@ -149,6 +153,113 @@ async def update_resource(
     return serialize_resource(res)
 
 
+@router.get("/businesses/{business_id}/resources/search", response_model=list[ResourceSearchItemOut])
+async def search_resources_availability(
+    business_id: str,
+    user: Annotated[User | None, Depends(get_optional_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    date: str = Query(pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    time: str | None = Query(default=None, pattern=r"^\d{2}:\d{2}$"),
+    guests: int = Query(default=1, ge=1, le=500),
+    area: str | None = Query(default=None),
+    resource_type: str | None = Query(default=None, alias="resourceType"),
+):
+    business, _ = await ensure_business_visible(db, business_id, user)
+    stmt = select(Resource).where(
+        Resource.business_id == business.id,
+        Resource.active.is_(True),
+        Resource.capacity_people >= guests,
+    )
+    if resource_type:
+        stmt = stmt.where(Resource.resource_type == resource_type)
+    stmt = stmt.order_by(Resource.capacity_people.asc(), Resource.name.asc())
+    resources = list((await db.execute(stmt)).scalars().all())
+
+    results: list[ResourceSearchItemOut] = []
+    area_clean = area.strip().lower() if area and area.strip() else None
+    for res in resources:
+        if area_clean:
+            res_area = str((res.attributes or {}).get("area") or "").strip().lower()
+            if res_area != area_clean:
+                continue
+        slots = await compute_resource_availability(db, business=business, resource=res, date_str=date)
+        matches_time = any(s["time"] == time for s in slots) if time else None
+        results.append(
+            ResourceSearchItemOut(
+                resource=serialize_resource(res),
+                date=date,
+                timezone=res.timezone or business.timezone,
+                available_at_requested_time=matches_time,
+                slots=[ResourceAvailabilitySlotOut(**s) for s in slots],
+            )
+        )
+    return results
+
+
+@router.get("/businesses/{business_id}/stays/availability", response_model=HotelStayAvailabilityOut)
+async def get_hotel_stays_availability(
+    business_id: str,
+    user: Annotated[User | None, Depends(get_optional_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    check_in: str = Query(alias="checkIn", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    check_out: str = Query(alias="checkOut", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    guests: int = Query(default=1, ge=1, le=100),
+    room_type: str | None = Query(default=None, alias="roomType"),
+):
+    business, _ = await ensure_business_visible(db, business_id, user)
+    data = await search_hotel_stays_availability(
+        db,
+        business=business,
+        check_in_date=check_in,
+        check_out_date=check_out,
+        guests=guests,
+        room_type=room_type,
+    )
+    return HotelStayAvailabilityOut(
+        business_id=data["business_id"],
+        check_in=data["check_in"],
+        check_out=data["check_out"],
+        check_in_time=data["check_in_time"],
+        check_out_time=data["check_out_time"],
+        nights=data["nights"],
+        guests=data["guests"],
+        timezone=data["timezone"],
+        options=[
+            HotelStayOptionOut(
+                resource=serialize_resource(opt["resource"]),
+                check_in_at=opt["check_in_at"],
+                check_out_at=opt["check_out_at"],
+                nights=opt["nights"],
+                remaining_units=opt["remaining_units"],
+                nightly_rate=opt["nightly_rate"],
+                total_price=opt["total_price"],
+                deposit_due=opt["deposit_due"],
+            )
+            for opt in data["options"]
+        ],
+    )
+
+
+@router.get("/businesses/{business_id}/resource-blocks", response_model=list[ResourceBlockOut])
+async def list_resource_blocks(
+    business_id: str,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    resource_id: str | None = Query(default=None, alias="resourceId"),
+):
+    await require_business_permission(db, user, business_id, "resources.manage")
+    stmt = (
+        select(ResourceBlock)
+        .join(Resource, Resource.id == ResourceBlock.resource_id)
+        .where(Resource.business_id == business_id)
+    )
+    if resource_id:
+        stmt = stmt.where(ResourceBlock.resource_id == resource_id)
+    stmt = stmt.order_by(ResourceBlock.start_at.asc())
+    rows = (await db.execute(stmt)).scalars().all()
+    return [ResourceBlockOut.model_validate(b) for b in rows]
+
+
 @router.post(
     "/businesses/{business_id}/resources/{resource_id}/blocks",
     response_model=ResourceBlockOut,
@@ -183,6 +294,33 @@ async def create_resource_block(
     await db.commit()
     await db.refresh(blk)
     return ResourceBlockOut.model_validate(blk)
+
+
+@router.delete("/businesses/{business_id}/resources/{resource_id}/blocks/{block_id}", response_model=OkResponse)
+async def delete_resource_block(
+    business_id: str,
+    resource_id: str,
+    block_id: str,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "resources.manage")
+    blk = (
+        await db.execute(
+            select(ResourceBlock)
+            .join(Resource, Resource.id == ResourceBlock.resource_id)
+            .where(
+                ResourceBlock.id == block_id,
+                ResourceBlock.resource_id == resource_id,
+                Resource.business_id == business_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not blk:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource block not found")
+    await db.delete(blk)
+    await db.commit()
+    return OkResponse(ok=True, message="Resource block removed")
 
 
 @router.get("/businesses/{business_id}/resources/{resource_id}/availability", response_model=ResourceAvailabilityOut)

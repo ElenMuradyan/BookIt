@@ -299,3 +299,79 @@ async def test_submit_business_application_duplicate_unauthenticated_submission_
         assert int((await db.execute(select(func.count(CustomerProfile.user_id)))).scalar_one()) == profiles_after_first
         assert int((await db.execute(select(func.count(Business.id)))).scalar_one()) == biz_after_first
 
+
+@pytest.mark.asyncio
+async def test_submit_business_application_seeds_category_configs_and_issues_owner_verification(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    from app.models.booking import BusinessBookingConfig
+    from app.models.user import VerificationToken
+    from app.services.notification_service import clear_test_email_outbox, get_test_email_outbox
+
+    clear_test_email_outbox()
+    try:
+        rest_payload = _application_payload(owner_email="bistro.owner@example.com")
+        rest_payload["businessName"] = "Cedar & Hearth Bistro"
+        rest_payload["legalName"] = "Cedar & Hearth Bistro LLC"
+        rest_payload["category"] = "restaurant"
+
+        rest_res = await client.post("/api/v1/businesses/applications", json=rest_payload)
+        assert rest_res.status_code == 201, rest_res.text
+        rest_body = rest_res.json()
+        assert "verificationCode" not in rest_body
+        assert "token" not in rest_body
+
+        hotel_payload = _application_payload(owner_email="inn.owner@example.com")
+        hotel_payload["businessName"] = "Soundview Boutique Inn"
+        hotel_payload["legalName"] = "Soundview Boutique Inn LLC"
+        hotel_payload["category"] = "hotel"
+
+        hotel_res = await client.post("/api/v1/businesses/applications", json=hotel_payload)
+        assert hotel_res.status_code == 201, hotel_res.text
+
+        outbox = get_test_email_outbox()
+        assert len(outbox) == 2
+        assert {msg.to_email for msg in outbox} == {"bistro.owner@example.com", "inn.owner@example.com"}
+
+        async with session_factory() as db:
+            rest_cfgs = (
+                await db.execute(
+                    select(BusinessBookingConfig).where(BusinessBookingConfig.business_id == rest_body["businessId"])
+                )
+            ).scalars().all()
+            by_model_rest = {c.booking_model: c for c in rest_cfgs}
+            assert "resource" in by_model_rest and by_model_rest["resource"].enabled is True
+            assert by_model_rest["resource"].settings.get("slotIntervalMinutes") == 30
+            assert "Main Dining" in (by_model_rest["resource"].settings.get("seatingAreas") or [])
+            assert by_model_rest["appointment"].enabled is False
+
+            hotel_cfgs = (
+                await db.execute(
+                    select(BusinessBookingConfig).where(
+                        BusinessBookingConfig.business_id == hotel_res.json()["businessId"]
+                    )
+                )
+            ).scalars().all()
+            by_model_hotel = {c.booking_model: c for c in hotel_cfgs}
+            assert "resource" in by_model_hotel and by_model_hotel["resource"].enabled is True
+            assert by_model_hotel["resource"].settings.get("checkInTime") == "15:00"
+            assert by_model_hotel["resource"].settings.get("checkOutTime") == "11:00"
+
+            owner = await db.get(User, rest_body["applicantUserId"])
+            assert owner is not None
+            assert owner.email_verified is False
+
+            tokens = (
+                await db.execute(
+                    select(VerificationToken).where(
+                        VerificationToken.user_id == owner.id,
+                        VerificationToken.consumed_at.is_(None),
+                    )
+                )
+            ).scalars().all()
+            assert {t.purpose for t in tokens} == {"email_verify", "email_verify_link"}
+    finally:
+        clear_test_email_outbox()
+
+

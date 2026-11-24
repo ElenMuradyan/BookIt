@@ -1,4 +1,14 @@
-import { displayUser, inviteMember, setMemberRole, updateEmployeeAvailability, useBookItState } from "@bookit/api-client";
+import {
+  displayUser,
+  inviteMember,
+  inviteMemberRemote,
+  setMemberRole,
+  setMemberRoleRemote,
+  updateEmployeeAvailability,
+  updateEmployeeAvailabilityRemote,
+  useBookItState,
+  usingMocks,
+} from "@bookit/api-client";
 import type { Employee, MembershipRole } from "@bookit/types";
 import { roleLabels } from "@bookit/ui";
 import { can } from "@bookit/utils";
@@ -21,6 +31,8 @@ export default function WorkspaceTeamScreen() {
   const [title, setTitle] = useState("Specialist");
   const [role, setRole] = useState<MembershipRole>("employee");
   const [error, setError] = useState("");
+  const [pageError, setPageError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -36,10 +48,11 @@ export default function WorkspaceTeamScreen() {
     <Screen>
       <BrandHeader
         mode="workspace"
-        right={canManage ? <Button label="+ Invite" small onPress={() => setShowInvite(true)} /> : undefined}
+        right={canManage ? <Button label="+ Invite" small onPress={() => { setError(""); setShowInvite(true); }} /> : undefined}
       />
 
       <SearchBar value={q} onChangeText={setQ} placeholder="Search staff & roles…" />
+      {pageError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{pageError}</Text> : null}
 
       {filtered.map((mem) => {
         const user = state.users.find((u) => u.id === mem.userId);
@@ -77,7 +90,13 @@ export default function WorkspaceTeamScreen() {
                       key={st}
                       label={st.replaceAll("_", " ")}
                       active={emp.status === st}
-                      onPress={() => updateEmployeeAvailability(bizId, emp.id, { status: st })}
+                      onPress={async () => {
+                        setPageError("");
+                        const res = usingMocks()
+                          ? updateEmployeeAvailability(bizId, emp.id, { status: st })
+                          : await updateEmployeeAvailabilityRemote(bizId, emp.id, { status: st });
+                        if (!res.ok) setPageError(res.error);
+                      }}
                     />
                   ))}
                 </View>
@@ -92,7 +111,13 @@ export default function WorkspaceTeamScreen() {
                       key={r}
                       label={roleLabels[r]}
                       active={mem.role === r}
-                      onPress={() => setMemberRole(bizId, mem.id, r)}
+                      onPress={async () => {
+                        setPageError("");
+                        const res = usingMocks()
+                          ? setMemberRole(bizId, mem.id, r)
+                          : await setMemberRoleRemote(bizId, mem.id, r);
+                        if (!res.ok) setPageError(res.error);
+                      }}
                     />
                   ))}
                 </View>
@@ -117,16 +142,25 @@ export default function WorkspaceTeamScreen() {
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowInvite(false)} />
               <Button
-                label="Send Invite"
+                label={busy ? "Sending..." : "Send Invite"}
                 style={{ flex: 1 }}
-                onPress={() => {
-                  const res = inviteMember(bizId, email, role, title);
-                  if (!res.ok) {
-                    setError(res.error);
-                    return;
+                disabled={busy}
+                onPress={async () => {
+                  setError("");
+                  setBusy(true);
+                  try {
+                    const res = usingMocks()
+                      ? inviteMember(bizId, email, role, title)
+                      : await inviteMemberRemote(bizId, email, role, title);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setShowInvite(false);
+                    setEmail("");
+                  } finally {
+                    setBusy(false);
                   }
-                  setShowInvite(false);
-                  setEmail("");
                 }}
               />
             </View>

@@ -11,6 +11,37 @@ import { useAuth } from "@/lib/session";
 
 const categories = Object.keys(categoryLabels) as BusinessCategory[];
 
+const CATEGORY_PREVIEW: Partial<Record<BusinessCategory, { models: string; summary: string }>> = {
+  restaurant: {
+    models: "Tables & Dining Spaces",
+    summary: "Auto-enables table inventory, seating areas, party-size search, and configurable turn times.",
+  },
+  hotel: {
+    models: "Rooms & Multi-Night Stays",
+    summary: "Auto-enables room pools, per-night rates, guest counts, and check-in/check-out windows.",
+  },
+  events: {
+    models: "Tickets & Capacity Sessions",
+    summary: "Auto-enables multi-tier ticketed events, QR passes, attendee rosters, and group experiences.",
+  },
+  travel: {
+    models: "Tours, Tickets & Group Passes",
+    summary: "Auto-enables scheduled departures, passenger limits, and scannable boarding passes.",
+  },
+  sports: {
+    models: "Courts, Coaching & Clinics",
+    summary: "Auto-enables hourly court bookings alongside private coaching and group clinics.",
+  },
+  fitness: {
+    models: "Sessions & Group Classes",
+    summary: "Auto-enables 1-on-1 personal training appointments and limited-capacity classes.",
+  },
+  wellness: {
+    models: "Treatments & Workshops",
+    summary: "Auto-enables spa appointments, private suites, and group wellness sessions.",
+  },
+};
+
 export default function BusinessRegisterPage() {
   const auth = useAuth();
   const state = useBookItState();
@@ -85,6 +116,9 @@ export default function BusinessRegisterPage() {
             <p className="muted" style={{ margin: 0 }}>
               Your business workspace is active so you can set up services, staff schedules, and working hours right away. Public booking goes live once a platform admin approves your verification packet.
             </p>
+            <div className="notice">
+              Check <strong>{form.ownerEmail}</strong> for a 6-digit code and verification link to verify your owner account.
+            </div>
             {autoLoginNotice ? (
               <div className="notice">
                 Your application was saved, but automatic workspace sign-in could not complete ({autoLoginNotice}). Use Business Sign In below to open your workspace.
@@ -96,6 +130,9 @@ export default function BusinessRegisterPage() {
                   Open Business Workspace
                 </Link>
               ) : null}
+              <Link className="btn ghost" href={`/verify?email=${encodeURIComponent(form.ownerEmail)}`}>
+                Verify Owner Email
+              </Link>
               <Link className={auth.user ? "btn ghost" : "btn"} href="/login/business">
                 Business Sign In
               </Link>
@@ -224,6 +261,18 @@ export default function BusinessRegisterPage() {
               </select>
               {errors.category ? <small>{errors.category}</small> : null}
             </label>
+            {(() => {
+              const preview = CATEGORY_PREVIEW[form.category as BusinessCategory] ?? {
+                models: "Appointments & Staff Scheduling",
+                summary: "Auto-enables appointment services, staff assignment, and live slot availability.",
+              };
+              return (
+                <div className="notice stack" style={{ gap: 2 }}>
+                  <strong>Default booking setup: {preview.models}</strong>
+                  <span className="tiny">{preview.summary}</span>
+                </div>
+              );
+            })()}
             <label className="field">
               <span>Description</span>
               <textarea

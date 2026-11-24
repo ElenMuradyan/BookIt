@@ -7,14 +7,18 @@ import {
   checkInUniversalQrRemote,
   displayUser,
   rescheduleAppointment,
+  rescheduleAppointmentRemote,
+  resourcesForBusiness,
   setAppointmentStatus,
+  setAppointmentStatusRemote,
   setUniversalBookingStatus,
   setUniversalBookingStatusRemote,
   updateAppointmentNotes,
+  updateAppointmentNotesRemote,
   useBookItState,
   usingMocks,
 } from "@bookit/api-client";
-import type { Appointment, UniversalBookingStatus } from "@bookit/types";
+import type { Appointment, AppointmentStatus, UniversalBookingStatus } from "@bookit/types";
 import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
 import { addDays, availableSlots, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
 import { useState } from "react";
@@ -34,12 +38,14 @@ export default function WorkspaceBookingsPage() {
   const [time, setTime] = useState("10:00");
   const [checkInCode, setCheckInCode] = useState("");
   const [checkInFeedback, setCheckInFeedback] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
-  const [checkingIn, setCheckingIn] = useState(false);
+  const [modalError, setModalError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace || !auth.userId) return null;
   const bizId = auth.workspace.businessId;
   const actorId = auth.userId;
   const biz = state.businesses.find((b) => b.id === bizId);
+  const resources = resourcesForBusiness(state, bizId, true);
   const canManage = can(auth.workspace.role, "bookings.manage");
   const canViewCustomers = can(auth.workspace.role, "customers.view");
   const rows = businessAppointments(state, bizId).filter((a) => tab === "all" || a.status === tab);
@@ -47,6 +53,15 @@ export default function WorkspaceBookingsPage() {
     if (ub.bookingModel === "appointment" && ub.legacyAppointmentId) return false;
     return tab === "all" || ub.status === tab;
   });
+
+  const headingTitle =
+    biz?.category === "restaurant"
+      ? "Reservations Management"
+      : biz?.category === "hotel"
+        ? "Stays & Guests"
+        : biz?.category === "events" || biz?.category === "travel"
+          ? "Ticket & Tour Orders"
+          : "Bookings Management";
 
   const rescheduleSvc = rescheduleTarget ? state.services.find((s) => s.id === rescheduleTarget.serviceId) : undefined;
   const openSlots =
@@ -63,23 +78,47 @@ export default function WorkspaceBookingsPage() {
         })
       : [];
 
-  async function handleUniversalStatus(bookingId: string, status: UniversalBookingStatus) {
-    if (usingMocks()) {
-      const res = setUniversalBookingStatus(bookingId, status, actorId);
-      if (!res.ok) setCheckInFeedback({ tone: "err", text: res.error });
-      return;
+  async function handleAppointmentStatus(appointmentId: string, status: AppointmentStatus) {
+    setCheckInFeedback(null);
+    setBusy(true);
+    try {
+      const res = usingMocks()
+        ? setAppointmentStatus(appointmentId, status, actorId)
+        : await setAppointmentStatusRemote(appointmentId, status);
+      if (!res.ok) {
+        setCheckInFeedback({ tone: "err", text: res.error });
+        return;
+      }
+      setCheckInFeedback({ tone: "ok", text: `Appointment updated to ${status.replaceAll("_", " ")}.` });
+    } finally {
+      setBusy(false);
     }
-    const res = await setUniversalBookingStatusRemote(bookingId, status);
-    if (!res.ok) setCheckInFeedback({ tone: "err", text: res.error });
+  }
+
+  async function handleUniversalStatus(bookingId: string, status: UniversalBookingStatus) {
+    setCheckInFeedback(null);
+    setBusy(true);
+    try {
+      const res = usingMocks()
+        ? setUniversalBookingStatus(bookingId, status, actorId)
+        : await setUniversalBookingStatusRemote(bookingId, status);
+      if (!res.ok) {
+        setCheckInFeedback({ tone: "err", text: res.error });
+        return;
+      }
+      setCheckInFeedback({ tone: "ok", text: `Booking updated to ${status.replaceAll("_", " ")}.` });
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <div className="stack" style={{ gap: 18 }}>
       <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
         <div>
-          <h1 style={{ margin: 0 }}>Bookings Management</h1>
+          <h1 style={{ margin: 0 }}>{headingTitle}</h1>
           <p className="muted" style={{ margin: "4px 0 0" }}>
-            Approval mode: <strong>{biz?.bookingApproval ?? "automatic"}</strong>.
+            Approval mode: <strong>{biz?.bookingApproval ?? "automatic"}</strong> · Use check-in codes or ticket passes at arrival.
           </p>
         </div>
       </div>
@@ -91,7 +130,7 @@ export default function WorkspaceBookingsPage() {
           onSubmit={async (e) => {
             e.preventDefault();
             if (!checkInCode.trim()) return;
-            setCheckingIn(true);
+            setBusy(true);
             setCheckInFeedback(null);
             try {
               const res = usingMocks()
@@ -107,7 +146,7 @@ export default function WorkspaceBookingsPage() {
               });
               setCheckInCode("");
             } finally {
-              setCheckingIn(false);
+              setBusy(false);
             }
           }}
         >
@@ -120,11 +159,14 @@ export default function WorkspaceBookingsPage() {
               />
             </Field>
           </div>
-          <Button type="submit" disabled={checkingIn || !checkInCode.trim()}>
-            {checkingIn ? "Checking in..." : "Check In Guest"}
+          <Button type="submit" disabled={busy || !checkInCode.trim()}>
+            {busy ? "Working..." : "Check In Guest"}
           </Button>
           {checkInFeedback ? (
-            <p className={checkInFeedback.tone === "err" ? "error" : "tiny"} style={{ width: "100%", margin: 0, color: checkInFeedback.tone === "ok" ? "var(--lavender)" : undefined }}>
+            <p
+              className={checkInFeedback.tone === "err" ? "error" : "tiny"}
+              style={{ width: "100%", margin: 0, color: checkInFeedback.tone === "ok" ? "var(--lavender)" : undefined }}
+            >
               {checkInFeedback.text}
             </p>
           ) : null}
@@ -140,7 +182,7 @@ export default function WorkspaceBookingsPage() {
       </div>
 
       {rows.length === 0 && universalRows.length === 0 ? (
-        <Empty title="No bookings in this view" body="Switch status tabs or create an appointment from the calendar." />
+        <Empty title="No bookings in this view" body="Switch status tabs or create a booking from your catalog or calendar." />
       ) : (
         <div className="stack" style={{ gap: 18 }}>
           {rows.length > 0 ? (
@@ -149,9 +191,9 @@ export default function WorkspaceBookingsPage() {
                 <thead>
                   <tr>
                     <th>Customer</th>
-                    <th>Service & Notes</th>
+                    <th>Service &amp; Notes</th>
                     <th>Employee</th>
-                    <th>Date & Time</th>
+                    <th>Date &amp; Time</th>
                     <th>Price</th>
                     <th>Status</th>
                     {canManage ? <th>Actions</th> : null}
@@ -188,20 +230,20 @@ export default function WorkspaceBookingsPage() {
                             <div className="row" style={{ flexWrap: "wrap" }}>
                               {apt.status === "pending" ? (
                                 <>
-                                  <Button tone="soft" small onClick={() => setAppointmentStatus(apt.id, "confirmed", actorId)}>
+                                  <Button tone="soft" small disabled={busy} onClick={() => void handleAppointmentStatus(apt.id, "confirmed")}>
                                     Confirm
                                   </Button>
-                                  <Button tone="danger" small onClick={() => setAppointmentStatus(apt.id, "rejected", actorId)}>
+                                  <Button tone="danger" small disabled={busy} onClick={() => void handleAppointmentStatus(apt.id, "rejected")}>
                                     Reject
                                   </Button>
                                 </>
                               ) : null}
                               {apt.status === "confirmed" ? (
                                 <>
-                                  <Button tone="soft" small onClick={() => setAppointmentStatus(apt.id, "completed", actorId)}>
+                                  <Button tone="soft" small disabled={busy} onClick={() => void handleAppointmentStatus(apt.id, "completed")}>
                                     Complete
                                   </Button>
-                                  <Button tone="ghost" small onClick={() => setAppointmentStatus(apt.id, "no_show", actorId)}>
+                                  <Button tone="ghost" small disabled={busy} onClick={() => void handleAppointmentStatus(apt.id, "no_show")}>
                                     No-show
                                   </Button>
                                 </>
@@ -214,6 +256,7 @@ export default function WorkspaceBookingsPage() {
                                     setRescheduleTarget(apt);
                                     setDate(apt.start.slice(0, 10));
                                     setTime(apt.start.slice(11, 16));
+                                    setModalError("");
                                   }}
                                 >
                                   Reschedule
@@ -225,6 +268,7 @@ export default function WorkspaceBookingsPage() {
                                 onClick={() => {
                                   setNotesTarget(apt);
                                   setNoteText(apt.notes ?? "");
+                                  setModalError("");
                                 }}
                               >
                                 Notes
@@ -243,20 +287,26 @@ export default function WorkspaceBookingsPage() {
           {universalRows.length > 0 ? (
             <div className="panel stack" style={{ overflowX: "auto" }}>
               <div>
-                <h2 style={{ margin: 0 }}>Spaces, Events &amp; Class Bookings</h2>
+                <h2 style={{ margin: 0 }}>
+                  {biz?.category === "restaurant"
+                    ? "Table Reservations"
+                    : biz?.category === "hotel"
+                      ? "Room Stays & Guests"
+                      : "Spaces, Events & Class Bookings"}
+                </h2>
                 <p className="tiny" style={{ margin: "2px 0 0" }}>
-                  Resource reservations, issued event tickets, and capacity class spots.
+                  Resource allocations, issued event tickets, party sizes, and check-in codes.
                 </p>
               </div>
               <table className="table">
                 <thead>
                   <tr>
                     <th>Customer</th>
-                    <th>Booking</th>
+                    <th>Booking / Space</th>
                     <th>Model</th>
-                    <th>Schedule &amp; Qty</th>
+                    <th>Schedule &amp; Guests</th>
                     <th>Codes &amp; Passes</th>
-                    <th>Total</th>
+                    <th>Total / Deposit</th>
                     <th>Status</th>
                     {canManage ? <th>Actions</th> : null}
                   </tr>
@@ -265,6 +315,8 @@ export default function WorkspaceBookingsPage() {
                   {universalRows.map((ub) => {
                     const customer = state.users.find((u) => u.id === ub.customerId);
                     const st = universalBookingStatus(ub.status);
+                    const alloc = ub.resourceAllocations[0];
+                    const res = alloc ? resources.find((r) => r.id === alloc.resourceId) : undefined;
                     return (
                       <tr key={ub.id}>
                         <td>
@@ -276,14 +328,21 @@ export default function WorkspaceBookingsPage() {
                           ) : null}
                         </td>
                         <td>
-                          <strong>{ub.title}</strong>
+                          <strong>{res?.name ?? ub.title}</strong>
+                          {res && ub.title !== res.name ? <div className="tiny">{ub.title}</div> : null}
                           {ub.notes ? <div className="tiny">Note: {ub.notes}</div> : null}
                         </td>
                         <td>
                           <Badge tone="brand">{bookingModelLabel(ub.bookingModel)}</Badge>
                         </td>
                         <td className="tiny tabular">
-                          {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)} · {ub.quantity}x
+                          <div>
+                            {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)}
+                            {ub.endAt && ub.bookingModel === "resource" ? ` → ${formatDateTime(ub.endAt)}` : ""}
+                          </div>
+                          <div>
+                            {ub.quantity}x{alloc?.partySize ? ` · ${alloc.partySize} guests` : ""}
+                          </div>
                         </td>
                         <td className="tiny tabular">
                           {ub.checkInCode ? <div>{ub.checkInCode}</div> : null}
@@ -294,7 +353,12 @@ export default function WorkspaceBookingsPage() {
                           ))}
                           {ub.ticketPasses.length > 3 ? <div>+{ub.ticketPasses.length - 3} more</div> : null}
                         </td>
-                        <td className="tabular">{formatMoney(ub.totalAmount)}</td>
+                        <td className="tabular">
+                          <div>{formatMoney(ub.totalAmount)}</div>
+                          {ub.depositDueAmount > 0 ? (
+                            <div className="tiny">Dep: {formatMoney(ub.depositDueAmount)}</div>
+                          ) : null}
+                        </td>
                         <td>
                           <Badge tone={st.tone}>{st.label}</Badge>
                         </td>
@@ -303,23 +367,23 @@ export default function WorkspaceBookingsPage() {
                             <div className="row" style={{ flexWrap: "wrap" }}>
                               {ub.status === "pending" || ub.status === "held" ? (
                                 <>
-                                  <Button tone="soft" small onClick={() => void handleUniversalStatus(ub.id, "confirmed")}>
+                                  <Button tone="soft" small disabled={busy} onClick={() => void handleUniversalStatus(ub.id, "confirmed")}>
                                     Confirm
                                   </Button>
-                                  <Button tone="danger" small onClick={() => void handleUniversalStatus(ub.id, "rejected")}>
+                                  <Button tone="danger" small disabled={busy} onClick={() => void handleUniversalStatus(ub.id, "rejected")}>
                                     Reject
                                   </Button>
                                 </>
                               ) : null}
                               {ub.status === "confirmed" ? (
                                 <>
-                                  <Button tone="soft" small onClick={() => void handleUniversalStatus(ub.id, "completed")}>
+                                  <Button tone="soft" small disabled={busy} onClick={() => void handleUniversalStatus(ub.id, "completed")}>
                                     Complete
                                   </Button>
-                                  <Button tone="ghost" small onClick={() => void handleUniversalStatus(ub.id, "no_show")}>
+                                  <Button tone="ghost" small disabled={busy} onClick={() => void handleUniversalStatus(ub.id, "no_show")}>
                                     No-show
                                   </Button>
-                                  <Button tone="danger" small onClick={() => void handleUniversalStatus(ub.id, "cancelled")}>
+                                  <Button tone="danger" small disabled={busy} onClick={() => void handleUniversalStatus(ub.id, "cancelled")}>
                                     Cancel
                                   </Button>
                                 </>
@@ -341,10 +405,23 @@ export default function WorkspaceBookingsPage() {
         <Modal title="Reschedule Booking" onClose={() => setRescheduleTarget(null)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              rescheduleAppointment(rescheduleTarget.id, date, time, actorId);
-              setRescheduleTarget(null);
+              setModalError("");
+              setBusy(true);
+              try {
+                const res = usingMocks()
+                  ? rescheduleAppointment(rescheduleTarget.id, date, time, actorId)
+                  : await rescheduleAppointmentRemote(rescheduleTarget.id, date, time);
+                if (!res.ok) {
+                  setModalError(res.error);
+                  return;
+                }
+                setRescheduleTarget(null);
+                setCheckInFeedback({ tone: "ok", text: `Rescheduled to ${date} at ${time}.` });
+              } finally {
+                setBusy(false);
+              }
             }}
           >
             <Field label="Date">
@@ -372,7 +449,10 @@ export default function WorkspaceBookingsPage() {
             <Field label="Time">
               <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
             </Field>
-            <Button type="submit">Update booking</Button>
+            {modalError ? <p className="error">{modalError}</p> : null}
+            <Button type="submit" disabled={busy}>
+              {busy ? "Updating..." : "Update booking"}
+            </Button>
           </form>
         </Modal>
       ) : null}
@@ -381,10 +461,23 @@ export default function WorkspaceBookingsPage() {
         <Modal title={`Notes — ${displayUser(state, notesTarget.customerId)}`} onClose={() => setNotesTarget(null)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              updateAppointmentNotes(bizId, notesTarget.id, noteText);
-              setNotesTarget(null);
+              setModalError("");
+              setBusy(true);
+              try {
+                const res = usingMocks()
+                  ? updateAppointmentNotes(bizId, notesTarget.id, noteText)
+                  : await updateAppointmentNotesRemote(notesTarget.id, noteText);
+                if (!res.ok) {
+                  setModalError(res.error);
+                  return;
+                }
+                setNotesTarget(null);
+                setCheckInFeedback({ tone: "ok", text: "Appointment notes saved." });
+              } finally {
+                setBusy(false);
+              }
             }}
           >
             <Field label="Appointment notes">
@@ -395,7 +488,10 @@ export default function WorkspaceBookingsPage() {
                 placeholder="Preparation details, customer requests, or staff notes"
               />
             </Field>
-            <Button type="submit">Save notes</Button>
+            {modalError ? <p className="error">{modalError}</p> : null}
+            <Button type="submit" disabled={busy}>
+              {busy ? "Saving..." : "Save notes"}
+            </Button>
           </form>
         </Modal>
       ) : null}

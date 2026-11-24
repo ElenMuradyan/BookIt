@@ -6,16 +6,21 @@ import {
   saveBookingConfig,
   updateBusiness,
   updateBusinessHours,
+  updateBusinessHoursRemote,
+  updateBusinessRemote,
+  upsertBookingConfigRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
-import type { BookingModel, DepositMode, WeeklyHours } from "@bookit/types";
-import { businessSettingSections, roleLabels } from "@bookit/ui";
+import type { BookingModel, BusinessCategory, DepositMode, WeeklyHours } from "@bookit/types";
+import { businessSettingSections, categoryLabels, roleLabels } from "@bookit/ui";
 import { bookingModelLabel, can, formatDate, formatMoney, permissionsFor, WEEKDAY_ORDER } from "@bookit/utils";
 import { useEffect, useState } from "react";
 import { Badge, Button, Field } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
 const BOOKING_MODELS: BookingModel[] = ["appointment", "resource", "ticket", "capacity"];
+const CATEGORIES = Object.keys(categoryLabels) as BusinessCategory[];
 
 const EMPTY_HOURS: WeeklyHours = {
   mon: { closed: false, open: "09:00", close: "18:00" },
@@ -32,6 +37,8 @@ export default function WorkspaceSettingsPage() {
   const state = useBookItState();
   const [section, setSection] = useState("profile");
   const [notice, setNotice] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [saving, setSaving] = useState(false);
   const [activeModel, setActiveModel] = useState<BookingModel>("appointment");
 
   const bizId = auth.workspace?.businessId ?? "";
@@ -42,6 +49,8 @@ export default function WorkspaceSettingsPage() {
 
   const [form, setForm] = useState({
     name: biz?.name ?? "",
+    category: (biz?.category ?? "other") as BusinessCategory,
+    timezone: biz?.timezone ?? "America/Los_Angeles",
     description: biz?.description ?? "",
     phone: biz?.phone ?? "",
     email: biz?.email ?? "",
@@ -63,12 +72,21 @@ export default function WorkspaceSettingsPage() {
     depositMode: (currentModelCfg?.depositMode ?? "none") as DepositMode,
     depositValue: String(currentModelCfg?.depositValue ?? 0),
     cancellationPolicyText: currentModelCfg?.cancellationPolicyText ?? biz?.cancellationPolicy ?? "Free cancellation up to 24 hours before start.",
+    slotIntervalMinutes: String((currentModelCfg?.settings?.slotIntervalMinutes as number | undefined) ?? 30),
+    turnDurationMinutes: String((currentModelCfg?.settings?.turnDurationMinutes as number | undefined) ?? 90),
+    seatingAreas: Array.isArray(currentModelCfg?.settings?.seatingAreas)
+      ? (currentModelCfg.settings?.seatingAreas as string[]).join(", ")
+      : "Main Dining, Patio, Counter",
+    checkInTime: String((currentModelCfg?.settings?.checkInTime as string | undefined) ?? "15:00"),
+    checkOutTime: String((currentModelCfg?.settings?.checkOutTime as string | undefined) ?? "11:00"),
   });
 
   useEffect(() => {
     if (!biz) return;
     setForm({
       name: biz.name,
+      category: biz.category,
+      timezone: biz.timezone ?? "America/Los_Angeles",
       description: biz.description,
       phone: biz.phone,
       email: biz.email,
@@ -84,6 +102,7 @@ export default function WorkspaceSettingsPage() {
   useEffect(() => {
     if (!biz) return;
     const found = modelConfigs.find((c) => c.bookingModel === activeModel);
+    const settings = found?.settings ?? {};
     setCfgForm({
       enabled: found?.enabled ?? activeModel === "appointment",
       displayLabel: found?.displayLabel ?? bookingModelLabel(activeModel),
@@ -95,6 +114,13 @@ export default function WorkspaceSettingsPage() {
       depositMode: found?.depositMode ?? "none",
       depositValue: String(found?.depositValue ?? 0),
       cancellationPolicyText: found?.cancellationPolicyText ?? biz.cancellationPolicy ?? "Free cancellation up to 24 hours before start.",
+      slotIntervalMinutes: String((settings.slotIntervalMinutes as number | undefined) ?? 30),
+      turnDurationMinutes: String((settings.turnDurationMinutes as number | undefined) ?? 90),
+      seatingAreas: Array.isArray(settings.seatingAreas)
+        ? (settings.seatingAreas as string[]).join(", ")
+        : "Main Dining, Patio, Counter",
+      checkInTime: String((settings.checkInTime as string | undefined) ?? "15:00"),
+      checkOutTime: String((settings.checkOutTime as string | undefined) ?? "11:00"),
     });
   }, [activeModel, bizId, currentModelCfg]);
 
@@ -104,9 +130,9 @@ export default function WorkspaceSettingsPage() {
   return (
     <div className="stack" style={{ gap: 18 }}>
       <div>
-        <h1 style={{ margin: 0 }}>Business Settings & Subscription</h1>
+        <h1 style={{ margin: 0 }}>Business Settings &amp; Subscription</h1>
         <p className="muted" style={{ margin: "4px 0 0" }}>
-          Configure workspace details, booking rules, permissions, and plan subscription.
+          Configure workspace category, booking models, operating rules, permissions, and plan subscription.
         </p>
       </div>
 
@@ -118,7 +144,11 @@ export default function WorkspaceSettingsPage() {
               type="button"
               className={`side-link ${section === item.id ? "active" : ""}`}
               style={{ background: section === item.id ? undefined : "transparent", border: 0, textAlign: "left", cursor: "pointer" }}
-              onClick={() => setSection(item.id)}
+              onClick={() => {
+                setSection(item.id);
+                setNotice("");
+                setErrorMsg("");
+              }}
             >
               {item.label}
             </button>
@@ -127,20 +157,63 @@ export default function WorkspaceSettingsPage() {
 
         <section className="panel stack">
           {notice ? <div className="notice">{notice}</div> : null}
+          {errorMsg ? <p className="error">{errorMsg}</p> : null}
 
           {section === "profile" || section === "locations" ? (
             <form
               className="stack"
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
-                updateBusiness(bizId, form);
-                setNotice("Business profile updated.");
+                setNotice("");
+                setErrorMsg("");
+                setSaving(true);
+                try {
+                  const res = usingMocks()
+                    ? updateBusiness(bizId, form)
+                    : await updateBusinessRemote(bizId, {
+                        name: form.name,
+                        category: form.category,
+                        timezone: form.timezone,
+                        description: form.description,
+                        phone: form.phone,
+                        email: form.email,
+                        website: form.website || undefined,
+                        address: form.address,
+                        city: form.city,
+                      });
+                  if (!res.ok) {
+                    setErrorMsg(res.error);
+                    return;
+                  }
+                  setNotice("Business profile updated.");
+                } finally {
+                  setSaving(false);
+                }
               }}
             >
               <h2 style={{ margin: 0 }}>{section === "locations" ? "Locations" : "Business Profile"}</h2>
               <div className="grid-2">
                 <Field label="Business name">
                   <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+                </Field>
+                <Field label="Primary Category">
+                  <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value as BusinessCategory })}>
+                    {CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {categoryLabels[cat]}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Timezone">
+                  <select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })}>
+                    <option value="America/Los_Angeles">Pacific (America/Los_Angeles)</option>
+                    <option value="America/Denver">Mountain (America/Denver)</option>
+                    <option value="America/Chicago">Central (America/Chicago)</option>
+                    <option value="America/New_York">Eastern (America/New_York)</option>
+                    <option value="Europe/London">London (Europe/London)</option>
+                    <option value="UTC">UTC</option>
+                  </select>
                 </Field>
                 <Field label="Phone">
                   <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
@@ -162,7 +235,9 @@ export default function WorkspaceSettingsPage() {
                 <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
               </Field>
               <div>
-                <Button type="submit">Save profile</Button>
+                <Button type="submit" disabled={saving}>
+                  {saving ? "Saving..." : "Save profile"}
+                </Button>
               </div>
             </form>
           ) : null}
@@ -170,10 +245,23 @@ export default function WorkspaceSettingsPage() {
           {section === "hours" ? (
             <form
               className="stack"
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
-                updateBusinessHours(bizId, hours);
-                setNotice("Working hours updated.");
+                setNotice("");
+                setErrorMsg("");
+                setSaving(true);
+                try {
+                  const res = usingMocks()
+                    ? updateBusinessHours(bizId, hours)
+                    : await updateBusinessHoursRemote(bizId, hours);
+                  if (!res.ok) {
+                    setErrorMsg(res.error);
+                    return;
+                  }
+                  setNotice("Working hours updated.");
+                } finally {
+                  setSaving(false);
+                }
               }}
             >
               <h2 style={{ margin: 0 }}>Working Hours</h2>
@@ -235,7 +323,9 @@ export default function WorkspaceSettingsPage() {
               })}
               {can(role, "settings.profile") ? (
                 <div>
-                  <Button type="submit">Save working hours</Button>
+                  <Button type="submit" disabled={saving}>
+                    {saving ? "Saving..." : "Save working hours"}
+                  </Button>
                 </div>
               ) : null}
             </form>
@@ -245,16 +335,30 @@ export default function WorkspaceSettingsPage() {
             <div className="stack" style={{ gap: 20 }}>
               <form
                 className="stack"
-                onSubmit={(e) => {
+                onSubmit={async (e) => {
                   e.preventDefault();
-                  updateBusiness(bizId, {
-                    bookingApproval: form.bookingApproval,
-                    cancellationPolicy: form.cancellationPolicy,
-                  });
-                  setNotice("Default venue policies updated.");
+                  setNotice("");
+                  setErrorMsg("");
+                  setSaving(true);
+                  try {
+                    const patch = {
+                      bookingApproval: form.bookingApproval,
+                      cancellationPolicy: form.cancellationPolicy,
+                    };
+                    const res = usingMocks()
+                      ? updateBusiness(bizId, patch)
+                      : await updateBusinessRemote(bizId, patch);
+                    if (!res.ok) {
+                      setErrorMsg(res.error);
+                      return;
+                    }
+                    setNotice("Default venue policies updated.");
+                  } finally {
+                    setSaving(false);
+                  }
                 }}
               >
-                <h2 style={{ margin: 0 }}>Booking & Cancellation Policies</h2>
+                <h2 style={{ margin: 0 }}>Booking &amp; Cancellation Policies</h2>
                 <Field label="Default confirmation mode">
                   <select
                     value={form.bookingApproval}
@@ -268,7 +372,9 @@ export default function WorkspaceSettingsPage() {
                   <textarea value={form.cancellationPolicy} onChange={(e) => setForm({ ...form, cancellationPolicy: e.target.value })} />
                 </Field>
                 <div>
-                  <Button type="submit">Save venue policy</Button>
+                  <Button type="submit" disabled={saving}>
+                    {saving ? "Saving..." : "Save venue policy"}
+                  </Button>
                 </div>
               </form>
 
@@ -276,7 +382,7 @@ export default function WorkspaceSettingsPage() {
                 <div>
                   <h3 style={{ margin: 0 }}>Per-Model Booking Rules</h3>
                   <p className="tiny" style={{ margin: "2px 0 0" }}>
-                    Enable models and configure cutoff hours, deposits, and notice windows independently.
+                    Enable models and configure cutoff hours, deposits, seating windows, and hotel check-in times.
                   </p>
                 </div>
                 <div className="tabs">
@@ -285,7 +391,11 @@ export default function WorkspaceSettingsPage() {
                       key={m}
                       type="button"
                       className={`tab ${activeModel === m ? "on" : ""}`}
-                      onClick={() => setActiveModel(m)}
+                      onClick={() => {
+                        setActiveModel(m);
+                        setNotice("");
+                        setErrorMsg("");
+                      }}
                     >
                       {bookingModelLabel(m)}
                     </button>
@@ -293,14 +403,63 @@ export default function WorkspaceSettingsPage() {
                 </div>
                 <form
                   className="stack"
-                  onSubmit={(e) => {
+                  onSubmit={async (e) => {
                     e.preventDefault();
-                    const res = saveBookingConfig(bizId, activeModel, cfgForm);
-                    if (!res.ok) {
-                      setNotice(res.error);
-                      return;
+                    setNotice("");
+                    setErrorMsg("");
+                    setSaving(true);
+                    try {
+                      const nextSettings: Record<string, unknown> = { ...(currentModelCfg?.settings ?? {}) };
+                      if (activeModel === "resource") {
+                        if (biz.category === "hotel") {
+                          nextSettings.checkInTime = cfgForm.checkInTime || "15:00";
+                          nextSettings.checkOutTime = cfgForm.checkOutTime || "11:00";
+                        } else {
+                          nextSettings.slotIntervalMinutes = Math.max(15, Number(cfgForm.slotIntervalMinutes) || 30);
+                          nextSettings.turnDurationMinutes = Math.max(30, Number(cfgForm.turnDurationMinutes) || 90);
+                          nextSettings.seatingAreas = cfgForm.seatingAreas
+                            .split(",")
+                            .map((s) => s.trim())
+                            .filter(Boolean);
+                        }
+                      }
+
+                      if (usingMocks()) {
+                        const res = saveBookingConfig(bizId, activeModel, {
+                          ...cfgForm,
+                          settings: nextSettings,
+                        });
+                        if (!res.ok) {
+                          setErrorMsg(res.error);
+                          return;
+                        }
+                      } else {
+                        const res = await upsertBookingConfigRemote(bizId, activeModel, {
+                          enabled: cfgForm.enabled,
+                          displayLabel: cfgForm.displayLabel.trim() || bookingModelLabel(activeModel),
+                          approvalMode: cfgForm.approvalMode,
+                          minNoticeMinutes: Math.max(0, Number(cfgForm.minNoticeMinutes) || 0),
+                          maxAdvanceDays: Math.max(1, Number(cfgForm.maxAdvanceDays) || 90),
+                          bufferBeforeMinutes: currentModelCfg?.bufferBeforeMinutes ?? 0,
+                          bufferAfterMinutes: currentModelCfg?.bufferAfterMinutes ?? 0,
+                          cancellationCutoffHours: Math.max(0, Number(cfgForm.cancellationCutoffHours) || 0),
+                          cancellationFeePercent: Math.min(100, Math.max(0, Number(cfgForm.cancellationFeePercent) || 0)),
+                          cancellationPolicyText: cfgForm.cancellationPolicyText,
+                          depositMode: cfgForm.depositMode,
+                          depositValue: Math.max(0, Number(cfgForm.depositValue) || 0),
+                          holdTtlMinutes: currentModelCfg?.holdTtlMinutes ?? 15,
+                          allowOverbooking: currentModelCfg?.allowOverbooking ?? false,
+                          settings: nextSettings,
+                        });
+                        if (!res.ok) {
+                          setErrorMsg(res.error);
+                          return;
+                        }
+                      }
+                      setNotice(`${bookingModelLabel(activeModel)} configuration saved.`);
+                    } finally {
+                      setSaving(false);
                     }
-                    setNotice(`${bookingModelLabel(activeModel)} configuration saved.`);
                   }}
                 >
                   <label className="row" style={{ gap: 8, fontSize: 14 }}>
@@ -351,12 +510,40 @@ export default function WorkspaceSettingsPage() {
                       <input type="number" value={cfgForm.depositValue} onChange={(e) => setCfgForm({ ...cfgForm, depositValue: e.target.value })} />
                     </Field>
                   </div>
+
+                  {activeModel === "resource" && biz.category === "hotel" ? (
+                    <div className="grid-2">
+                      <Field label="Standard Check-In Time">
+                        <input type="time" value={cfgForm.checkInTime} onChange={(e) => setCfgForm({ ...cfgForm, checkInTime: e.target.value })} />
+                      </Field>
+                      <Field label="Standard Check-Out Time">
+                        <input type="time" value={cfgForm.checkOutTime} onChange={(e) => setCfgForm({ ...cfgForm, checkOutTime: e.target.value })} />
+                      </Field>
+                    </div>
+                  ) : null}
+
+                  {activeModel === "resource" && biz.category !== "hotel" ? (
+                    <div className="grid-2">
+                      <Field label="Reservation Slot Interval (min)">
+                        <input type="number" value={cfgForm.slotIntervalMinutes} onChange={(e) => setCfgForm({ ...cfgForm, slotIntervalMinutes: e.target.value })} />
+                      </Field>
+                      <Field label="Default Turn / Stay Duration (min)">
+                        <input type="number" value={cfgForm.turnDurationMinutes} onChange={(e) => setCfgForm({ ...cfgForm, turnDurationMinutes: e.target.value })} />
+                      </Field>
+                      <Field label="Seating / Space Areas (comma-separated)">
+                        <input value={cfgForm.seatingAreas} onChange={(e) => setCfgForm({ ...cfgForm, seatingAreas: e.target.value })} placeholder="Main Dining, Patio, Bar" />
+                      </Field>
+                    </div>
+                  ) : null}
+
                   <Field label="Model Cancellation Policy Copy">
                     <textarea value={cfgForm.cancellationPolicyText} onChange={(e) => setCfgForm({ ...cfgForm, cancellationPolicyText: e.target.value })} />
                   </Field>
                   {can(role, "settings.policies") ? (
                     <div>
-                      <Button type="submit">Save {bookingModelLabel(activeModel)} Rules</Button>
+                      <Button type="submit" disabled={saving}>
+                        {saving ? "Saving..." : `Save ${bookingModelLabel(activeModel)} Rules`}
+                      </Button>
                     </div>
                   ) : null}
                 </form>
@@ -367,7 +554,7 @@ export default function WorkspaceSettingsPage() {
           {section === "permissions" ? (
             <div className="stack">
               <h2 style={{ margin: 0 }}>Team Permissions</h2>
-              <p className="muted">Permissions are enforced per workspace role. FastAPI will validate these server-side.</p>
+              <p className="muted">Permissions are enforced per workspace role server-side.</p>
               {(["owner", "admin", "manager", "employee", "receptionist", "accountant"] as const).map((r) => (
                 <div key={r} className="select-card stack" style={{ gap: 6 }}>
                   <strong>{roleLabels[r]}</strong>

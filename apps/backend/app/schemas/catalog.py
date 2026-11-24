@@ -17,6 +17,21 @@ class ServiceIn(CamelModel):
     image_url: str | None = None
     requires_approval: bool = False
     deposit_amount: float | None = Field(default=None, ge=0)
+    employee_ids: list[str] | None = None
+
+
+class ServiceUpdateIn(CamelModel):
+    name: str | None = Field(default=None, min_length=2, max_length=200)
+    description: str | None = Field(default=None, min_length=8)
+    category: str | None = Field(default=None, min_length=2, max_length=80)
+    price: float | None = Field(default=None, ge=0)
+    duration_minutes: int | None = Field(default=None, gt=0, le=1440)
+    cancellation_policy: str | None = Field(default=None, min_length=4)
+    image_url: str | None = None
+    requires_approval: bool | None = None
+    deposit_amount: float | None = Field(default=None, ge=0)
+    active: bool | None = None
+    employee_ids: list[str] | None = None
 
 
 class ServiceActiveIn(CamelModel):

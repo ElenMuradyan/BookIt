@@ -4,12 +4,27 @@ import {
   addReview,
   displayUser,
   rescheduleAppointment,
+  rescheduleAppointmentRemote,
+  resourcesForBusiness,
   sendBusinessMessage,
   setAppointmentStatus,
+  setAppointmentStatusRemote,
+  setUniversalBookingStatus,
+  setUniversalBookingStatusRemote,
+  universalBookingById,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
-import { appointmentStatus } from "@bookit/ui";
-import { addDays, availableSlots, bookingTotals, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
+import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
+import {
+  addDays,
+  availableSlots,
+  bookingModelLabel,
+  bookingTotals,
+  DEMO_TODAY,
+  formatDateTime,
+  formatMoney,
+} from "@bookit/utils";
 import Link from "next/link";
 import { use, useMemo, useState } from "react";
 import { Badge, Button, Empty, Field, Modal } from "@/components/ui";
@@ -20,6 +35,7 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
   const auth = useAuth();
   const state = useBookItState();
   const apt = state.appointments.find((a) => a.id === id);
+  const ub = universalBookingById(state, id);
 
   const [showReschedule, setShowReschedule] = useState(false);
   const [newDate, setNewDate] = useState(apt ? apt.start.slice(0, 10) : addDays(DEMO_TODAY, 1));
@@ -31,10 +47,14 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
   const [showMessage, setShowMessage] = useState(false);
   const [messageBody, setMessageBody] = useState("");
   const [notice, setNotice] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const biz = apt ? state.businesses.find((b) => b.id === apt.businessId) : undefined;
+  const bizId = apt?.businessId ?? ub?.businessId ?? "";
+  const biz = bizId ? state.businesses.find((b) => b.id === bizId) : undefined;
   const svc = apt ? state.services.find((s) => s.id === apt.serviceId) : undefined;
   const emp = apt ? state.employees.find((e) => e.id === apt.employeeId) : undefined;
+  const resources = bizId ? resourcesForBusiness(state, bizId, true) : [];
 
   const openSlots = useMemo(() => {
     if (!apt || !biz || !svc) return [];
@@ -49,6 +69,162 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
       employeeId: apt.employeeId,
     });
   }, [apt, biz, svc, newDate, state.employees, state.appointments]);
+
+  // Universal booking detail view (hotel stay, restaurant table, event tickets, class)
+  if (!apt && ub) {
+    if (auth.userId && ub.customerId !== auth.userId && !auth.user?.isPlatformAdmin) {
+      return <Empty title="Booking not found" body="Check your bookings list for active reservations." />;
+    }
+    const st = universalBookingStatus(ub.status);
+    const alloc = ub.resourceAllocations[0];
+    const res = alloc ? resources.find((r) => r.id === alloc.resourceId) : undefined;
+    return (
+      <div className="panel stack" style={{ maxWidth: 680, gap: 14 }}>
+        <Link href="/bookings" className="tiny">
+          ← Back to My Bookings
+        </Link>
+        <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+          <div>
+            <span className="tiny tabular">Booking #{ub.id}</span>
+            <h1 style={{ margin: "2px 0 0" }}>{ub.title}</h1>
+          </div>
+          <div className="row">
+            <Badge tone="brand">{bookingModelLabel(ub.bookingModel)}</Badge>
+            <Badge tone={st.tone}>{st.label}</Badge>
+          </div>
+        </div>
+        {notice ? <div className="notice">{notice}</div> : null}
+        {errorMsg ? <p className="error">{errorMsg}</p> : null}
+
+        <div className="stack" style={{ gap: 6 }}>
+          <div>
+            <span className="muted">Business:</span>{" "}
+            <Link href={`/business/${ub.businessId}`} style={{ fontWeight: 600 }}>
+              {biz?.name ?? ub.businessId}
+            </Link>
+          </div>
+          {res ? (
+            <div>
+              <span className="muted">Space / Resource:</span> {res.name}
+            </div>
+          ) : null}
+          {ub.startAt ? (
+            <div className="tabular">
+              <span className="muted">Schedule:</span> {formatDateTime(ub.startAt)}
+              {ub.endAt ? ` → ${formatDateTime(ub.endAt)}` : ""} ({ub.timezone})
+            </div>
+          ) : null}
+          {alloc ? (
+            <div>
+              <span className="muted">Party / Units:</span> {alloc.partySize} guest(s) · {alloc.quantityUnits} unit(s)
+            </div>
+          ) : null}
+          {ub.checkInCode ? (
+            <div className="select-card stack" style={{ gap: 4, marginTop: 6 }}>
+              <span className="tiny">Front-Desk Check-In Code</span>
+              <strong className="tabular" style={{ fontSize: 18 }}>{ub.checkInCode}</strong>
+            </div>
+          ) : null}
+          {ub.ticketPasses.length > 0 ? (
+            <div className="stack" style={{ gap: 8, marginTop: 6 }}>
+              <strong style={{ fontSize: 14 }}>Ticket Passes ({ub.ticketPasses.length})</strong>
+              {ub.ticketPasses.map((pass) => (
+                <div key={pass.id} className="select-card row" style={{ justifyContent: "space-between" }}>
+                  <div>
+                    <strong className="tabular">{pass.passCode}</strong>
+                    <div className="tiny">
+                      {pass.attendeeName || "Guest"} · {formatMoney(pass.unitPrice)}
+                    </div>
+                  </div>
+                  <Badge tone={pass.status === "checked_in" ? "info" : pass.status === "valid" ? "success" : "neutral"}>
+                    {pass.status}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="tabular" style={{ marginTop: 6 }}>
+            <span className="muted">Subtotal:</span> {formatMoney(ub.subtotalAmount)} + Tax {formatMoney(ub.taxAmount)} ={" "}
+            <strong>{formatMoney(ub.totalAmount)}</strong> ({ub.paymentStatus}
+            {ub.paymentMethod ? ` · ${ub.paymentMethod.replaceAll("_", " ")}` : ""})
+          </div>
+          {ub.depositDueAmount > 0 ? (
+            <div className="tabular">
+              <span className="muted">Deposit required:</span> {formatMoney(ub.depositDueAmount)}
+            </div>
+          ) : null}
+          {ub.cancellationCutoffAt ? (
+            <div className="tiny tabular">
+              Free cancellation before: {formatDateTime(ub.cancellationCutoffAt)}
+            </div>
+          ) : null}
+          {ub.notes ? (
+            <div>
+              <span className="muted">Notes:</span> {ub.notes}
+            </div>
+          ) : null}
+          <div className="tiny">{ub.cancellationPolicySnapshot ?? biz?.cancellationPolicy}</div>
+        </div>
+
+        <div className="row" style={{ flexWrap: "wrap" }}>
+          {["held", "pending", "confirmed"].includes(ub.status) && auth.userId ? (
+            <Button
+              tone="danger"
+              disabled={busy}
+              onClick={async () => {
+                setErrorMsg("");
+                setNotice("");
+                setBusy(true);
+                try {
+                  const resCancel = usingMocks()
+                    ? setUniversalBookingStatus(ub.id, "cancelled", auth.userId!)
+                    : await setUniversalBookingStatusRemote(ub.id, "cancelled", "Customer cancelled");
+                  if (!resCancel.ok) {
+                    setErrorMsg(resCancel.error);
+                    return;
+                  }
+                  setNotice("Booking cancelled.");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? "Cancelling..." : "Cancel booking"}
+            </Button>
+          ) : null}
+          <Button tone="ghost" onClick={() => setShowMessage(true)}>
+            Contact business
+          </Button>
+          <Link href={`/book/${ub.businessId}?model=${ub.bookingModel}`} className="btn ghost">
+            Book again
+          </Link>
+        </div>
+
+        {showMessage ? (
+          <Modal title={`Message ${biz?.name ?? "business"}`} onClose={() => setShowMessage(false)}>
+            <form
+              className="stack"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!auth.userId) return;
+                const resMsg = sendBusinessMessage(auth.userId, ub.businessId, messageBody);
+                if (resMsg.ok) {
+                  setNotice("Message sent to business.");
+                  setMessageBody("");
+                  setShowMessage(false);
+                }
+              }}
+            >
+              <Field label="Message">
+                <textarea value={messageBody} onChange={(e) => setMessageBody(e.target.value)} placeholder="Question or update..." />
+              </Field>
+              <Button type="submit">Send message</Button>
+            </form>
+          </Modal>
+        ) : null}
+      </div>
+    );
+  }
 
   if (!apt || (auth.userId && apt.customerId !== auth.userId && !auth.user?.isPlatformAdmin)) {
     return <Empty title="Booking not found" body="Check your bookings list for active appointments." />;
@@ -71,6 +247,7 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
         <Badge tone={st.tone}>{st.label}</Badge>
       </div>
       {notice ? <div className="notice">{notice}</div> : null}
+      {errorMsg ? <p className="error">{errorMsg}</p> : null}
       <div className="stack" style={{ gap: 6 }}>
         <div>
           <span className="muted">Business:</span>{" "}
@@ -84,6 +261,11 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
         <div className="tabular">
           <span className="muted">When:</span> {formatDateTime(apt.start)}
         </div>
+        {apt.checkInCode ? (
+          <div className="tabular">
+            <span className="muted">Check-in Code:</span> <strong>{apt.checkInCode}</strong>
+          </div>
+        ) : null}
         <div className="tabular">
           <span className="muted">Service Fee:</span> {formatMoney(totals.subtotal)} + Est. Tax {formatMoney(totals.tax)} ={" "}
           <strong>{formatMoney(totals.total)}</strong> ({apt.paymentStatus}
@@ -102,6 +284,7 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
             <Button
               tone="soft"
               onClick={() => {
+                setErrorMsg("");
                 setNewDate(apt.start.slice(0, 10) || addDays(DEMO_TODAY, 1));
                 setShowReschedule(true);
               }}
@@ -110,12 +293,26 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
             </Button>
             <Button
               tone="danger"
-              onClick={() => {
-                setAppointmentStatus(apt.id, "cancelled", auth.userId!);
-                setNotice("Appointment cancelled.");
+              disabled={busy}
+              onClick={async () => {
+                setErrorMsg("");
+                setNotice("");
+                setBusy(true);
+                try {
+                  const resCancel = usingMocks()
+                    ? setAppointmentStatus(apt.id, "cancelled", auth.userId!)
+                    : await setAppointmentStatusRemote(apt.id, "cancelled", "Customer cancelled");
+                  if (!resCancel.ok) {
+                    setErrorMsg(resCancel.error);
+                    return;
+                  }
+                  setNotice("Appointment cancelled.");
+                } finally {
+                  setBusy(false);
+                }
               }}
             >
-              Cancel booking
+              {busy ? "Cancelling..." : "Cancel booking"}
             </Button>
           </>
         ) : null}
@@ -136,13 +333,23 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
         <Modal title="Reschedule appointment" onClose={() => setShowReschedule(false)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               if (!auth.userId || !selectedSlot) return;
-              const res = rescheduleAppointment(apt.id, newDate, selectedSlot, auth.userId);
-              if (res.ok) {
+              setErrorMsg("");
+              setBusy(true);
+              try {
+                const resMove = usingMocks()
+                  ? rescheduleAppointment(apt.id, newDate, selectedSlot, auth.userId)
+                  : await rescheduleAppointmentRemote(apt.id, newDate, selectedSlot);
+                if (!resMove.ok) {
+                  setErrorMsg(resMove.error);
+                  return;
+                }
                 setNotice(`Rescheduled to ${newDate} at ${selectedSlot}.`);
                 setShowReschedule(false);
+              } finally {
+                setBusy(false);
               }
             }}
           >
@@ -175,8 +382,9 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
                 </div>
               )}
             </div>
-            <Button type="submit" disabled={!selectedSlot}>
-              Save new time
+            {errorMsg ? <p className="error">{errorMsg}</p> : null}
+            <Button type="submit" disabled={busy || !selectedSlot}>
+              {busy ? "Saving..." : "Save new time"}
             </Button>
           </form>
         </Modal>
@@ -250,4 +458,3 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
     </div>
   );
 }
-

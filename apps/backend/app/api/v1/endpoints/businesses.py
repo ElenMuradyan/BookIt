@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +26,8 @@ from app.schemas.business import (
     PublicBusinessOut,
     WeeklyHoursSchema,
 )
-from app.services.auth_service import record_audit
+from app.services.auth_service import enqueue_verification_email, issue_email_verification, record_audit
+from app.services.booking_config_service import seed_booking_configs_for_category
 from app.services.rbac import ensure_business_visible, require_business_permission
 
 router = APIRouter(prefix="/businesses", tags=["businesses"])
@@ -112,6 +113,7 @@ async def get_business(
 async def submit_business_application(
     payload: BusinessApplicationCreateIn,
     request: Request,
+    background_tasks: BackgroundTasks,
     _: Annotated[None, Depends(verify_csrf_if_cookie_auth)],
     current_user: Annotated[User | None, Depends(get_optional_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -128,6 +130,7 @@ async def submit_business_application(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    created_new_owner = False
     owner: User | None = current_user
     owner_email = payload.owner_email.strip().lower()
     if not owner:
@@ -169,6 +172,7 @@ async def submit_business_application(
         db.add(CustomerProfile(user_id=owner.id))
         db.add(Cart(id=new_id("cart"), user_id=owner.id))
         await db.flush()
+        created_new_owner = True
 
     business = Business(
         id=new_id("biz"),
@@ -198,6 +202,10 @@ async def submit_business_application(
         status="submitted",
         is_public=False,
     )
+    db.add(business)
+    await db.flush()
+    await seed_booking_configs_for_category(db, business, commit=False)
+
     application = BusinessApplication(
         id=new_id("app"),
         business_id=business.id,
@@ -220,10 +228,18 @@ async def submit_business_application(
         business_id=business.id,
         category="message",
         title="Business application submitted",
-        body=f"{business.name} is queued for platform review. You can configure services and hours now.",
+        body=f"{business.name} is queued for platform review. You can configure your booking setup and hours now.",
         href="/workspace/settings",
     )
-    db.add_all([business, application, membership, notification])
+    db.add_all([application, membership, notification])
+    verification_issued: tuple[str, str] | None = None
+    if created_new_owner or not owner.email_verified:
+        verification_issued = await issue_email_verification(
+            db,
+            owner,
+            enforce_cooldown_error=False,
+            commit=False,
+        )
     await record_audit(
         db,
         actor_user_id=owner.id,
@@ -239,6 +255,13 @@ async def submit_business_application(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account already exists for that owner email. Please sign in first.",
         ) from exc
+    if verification_issued:
+        enqueue_verification_email(
+            background_tasks,
+            to_email=owner.email,
+            code=verification_issued[0],
+            link_token=verification_issued[1],
+        )
     await db.refresh(application)
     return BusinessApplicationOut.model_validate(application)
 

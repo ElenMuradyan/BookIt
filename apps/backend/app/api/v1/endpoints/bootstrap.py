@@ -15,6 +15,7 @@ from app.models.booking import (
     EventOffering,
     EventSession,
     Resource,
+    ResourceBlock,
 )
 from app.models.business import Business, BusinessApplication, Membership
 from app.models.catalog import Employee, Product, ProductCategory, Service
@@ -22,7 +23,7 @@ from app.models.commerce import Cart, Expense, Invoice, Order, Payment, Plan, Su
 from app.models.engagement import Advertisement, Campaign, Favorite, Notification, PromoCode, Report, Review
 from app.models.user import Address, CustomerProfile, User
 from app.schemas.auth import AddressOut, CustomerProfileOut, UserOut
-from app.schemas.booking import AppointmentOut, CustomerNoteOut
+from app.schemas.booking import AppointmentOut, CustomerNoteOut, ResourceBlockOut
 from app.schemas.business import BusinessApplicationOut, BusinessOut, MembershipOut
 from app.schemas.catalog import EmployeeOut, ProductCategoryOut, ProductOut, ProductVariantOut, ServiceOut
 from app.schemas.commerce import (
@@ -194,6 +195,13 @@ async def bootstrap_state(
     ) if visible_biz_ids else []
     if not is_admin:
         resources = [r for r in resources if r.active or r.business_id in resource_manage_business_ids]
+
+    resource_blocks: list[ResourceBlock] = []
+    if user and (is_admin or resource_manage_business_ids):
+        rb_stmt = select(ResourceBlock).join(Resource, Resource.id == ResourceBlock.resource_id)
+        if not is_admin:
+            rb_stmt = rb_stmt.where(Resource.business_id.in_(resource_manage_business_ids))
+        resource_blocks = list((await db.execute(rb_stmt.order_by(ResourceBlock.start_at.asc()))).scalars().all())
 
     event_offerings = list(
         (
@@ -482,6 +490,7 @@ async def bootstrap_state(
         ],
         booking_configs=[serialize_booking_config(c) for c in booking_configs],
         resources=[serialize_resource(r) for r in resources],
+        resource_blocks=[ResourceBlockOut.model_validate(rb) for rb in resource_blocks],
         event_offerings=[serialize_offering(o) for o in event_offerings],
         bookings=[serialize_universal_booking(b) for b in universal_bookings],
         reviews=[ReviewOut.model_validate(r) for r in reviews],

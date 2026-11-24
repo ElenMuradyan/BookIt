@@ -1,7 +1,7 @@
 "use client";
 
-import { useBookItState } from "@bookit/api-client";
-import { adminNav, customerNav, customerSecondary, roleLabels, workspaceNav } from "@bookit/ui";
+import { bookingConfigsForBusiness, useBookItState } from "@bookit/api-client";
+import { adminNav, customerNav, customerSecondary, roleLabels, workspaceNavForBusiness } from "@bookit/ui";
 import { can, fullName, initials } from "@bookit/utils";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -103,8 +103,12 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
   }
   const role = auth.workspace.role;
   const bizId = auth.workspace.businessId;
+  const biz = state.businesses.find((b) => b.id === bizId);
+  const configs = bookingConfigsForBusiness(state, bizId);
   const unreadBiz = state.notifications.filter((n) => n.businessId === bizId && !n.read).length;
-  const links = workspaceNav.filter((item) => !item.permission || can(role, item.permission));
+  const links = workspaceNavForBusiness(biz?.category ?? auth.workspace.category, configs).filter(
+    (item) => !item.permission || can(role, item.permission),
+  );
   return (
     <div className="shell">
       <aside className="sidebar">

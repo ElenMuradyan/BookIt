@@ -3,9 +3,13 @@
 import {
   displayUser,
   inviteMember,
+  inviteMemberRemote,
   setMemberRole,
+  setMemberRoleRemote,
   updateEmployeeAvailability,
+  updateEmployeeAvailabilityRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import type { Employee, MembershipRole } from "@bookit/types";
 import { roleLabels } from "@bookit/ui";
@@ -25,9 +29,11 @@ export default function WorkspaceTeamPage() {
   const [showInvite, setShowInvite] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<MembershipRole>("employee");
-  const [inviteTitle, setInviteTitle] = useState("Stylist");
+  const [inviteTitle, setInviteTitle] = useState("Specialist");
   const [notice, setNotice] = useState("");
+  const [pageError, setPageError] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -47,12 +53,21 @@ export default function WorkspaceTeamPage() {
     <div className="stack" style={{ gap: 18 }}>
       <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
         <div>
-          <h1 style={{ margin: 0 }}>Employee Management</h1>
+          <h1 style={{ margin: 0 }}>Team &amp; Staff Management</h1>
           <p className="muted" style={{ margin: "4px 0 0" }}>
             Manage team members, work schedules, roles, and assigned service tiers.
           </p>
         </div>
-        {canManage ? <Button onClick={() => setShowInvite(true)}>+ Add Employee</Button> : null}
+        {canManage ? (
+          <Button
+            onClick={() => {
+              setError("");
+              setShowInvite(true);
+            }}
+          >
+            + Add Employee
+          </Button>
+        ) : null}
       </div>
 
       <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
@@ -79,6 +94,7 @@ export default function WorkspaceTeamPage() {
       </div>
 
       {notice ? <div className="notice">{notice}</div> : null}
+      {pageError ? <p className="error">{pageError}</p> : null}
 
       <div className="grid-3">
         {visibleEmployees.map((emp) => {
@@ -105,11 +121,15 @@ export default function WorkspaceTeamPage() {
               <div>
                 <div className="tiny" style={{ marginBottom: 6 }}>Assigned Services</div>
                 <div className="chips">
-                  {empServices.map((s) => (
-                    <span key={s.id} className="badge tone-brand">
-                      {s.name}
-                    </span>
-                  ))}
+                  {empServices.length === 0 ? (
+                    <span className="tiny">No specific services assigned</span>
+                  ) : (
+                    empServices.map((s) => (
+                      <span key={s.id} className="badge tone-brand">
+                        {s.name}
+                      </span>
+                    ))
+                  )}
                 </div>
               </div>
               <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -120,9 +140,24 @@ export default function WorkspaceTeamPage() {
                   <select
                     aria-label={`${name} shift status`}
                     value={emp.status}
-                    onChange={(e) => {
-                      updateEmployeeAvailability(bizId, emp.id, { status: e.target.value as Employee["status"] });
-                      setNotice(`Updated shift status for ${name}.`);
+                    disabled={busy}
+                    onChange={async (e) => {
+                      const nextStatus = e.target.value as Employee["status"];
+                      setPageError("");
+                      setNotice("");
+                      setBusy(true);
+                      try {
+                        const res = usingMocks()
+                          ? updateEmployeeAvailability(bizId, emp.id, { status: nextStatus })
+                          : await updateEmployeeAvailabilityRemote(bizId, emp.id, { status: nextStatus });
+                        if (!res.ok) {
+                          setPageError(res.error);
+                          return;
+                        }
+                        setNotice(`Updated shift status for ${name}.`);
+                      } finally {
+                        setBusy(false);
+                      }
                     }}
                     style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 8px", fontSize: 12 }}
                   >
@@ -140,7 +175,7 @@ export default function WorkspaceTeamPage() {
       </div>
 
       <section className="panel stack">
-        <h3 style={{ margin: 0 }}>Workspace Members & Roles</h3>
+        <h3 style={{ margin: 0 }}>Workspace Members &amp; Roles</h3>
         <table className="table">
           <thead>
             <tr>
@@ -162,7 +197,25 @@ export default function WorkspaceTeamPage() {
                   {canManage && m.role !== "owner" ? (
                     <select
                       value={m.role}
-                      onChange={(e) => setMemberRole(bizId, m.id, e.target.value as MembershipRole)}
+                      disabled={busy}
+                      onChange={async (e) => {
+                        const nextRole = e.target.value as MembershipRole;
+                        setPageError("");
+                        setNotice("");
+                        setBusy(true);
+                        try {
+                          const res = usingMocks()
+                            ? setMemberRole(bizId, m.id, nextRole)
+                            : await setMemberRoleRemote(bizId, m.id, nextRole);
+                          if (!res.ok) {
+                            setPageError(res.error);
+                            return;
+                          }
+                          setNotice(`Updated member role to ${roleLabels[nextRole]}.`);
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
                       style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 8px" }}
                     >
                       {ROLES.filter((r) => r !== "owner").map((r) => (
@@ -185,21 +238,29 @@ export default function WorkspaceTeamPage() {
         <Modal title="Invite Employee" onClose={() => setShowInvite(false)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              const res = inviteMember(bizId, inviteEmail, inviteRole, inviteTitle);
-              if (!res.ok) {
-                setError(res.error);
-                return;
-              }
-              setNotice(`Invitation sent to ${inviteEmail}`);
-              setInviteEmail("");
               setError("");
-              setShowInvite(false);
+              setBusy(true);
+              try {
+                const res = usingMocks()
+                  ? inviteMember(bizId, inviteEmail, inviteRole, inviteTitle)
+                  : await inviteMemberRemote(bizId, inviteEmail, inviteRole, inviteTitle);
+                if (!res.ok) {
+                  setError(res.error);
+                  return;
+                }
+                setNotice(`Invitation sent to ${inviteEmail}`);
+                setInviteEmail("");
+                setError("");
+                setShowInvite(false);
+              } finally {
+                setBusy(false);
+              }
             }}
           >
             <Field label="Existing BookIt account email">
-              <input value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="customer@bookit.demo" />
+              <input value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="member@bookit.demo" />
             </Field>
             <Field label="Role">
               <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as MembershipRole)}>
@@ -214,7 +275,9 @@ export default function WorkspaceTeamPage() {
               <input value={inviteTitle} onChange={(e) => setInviteTitle(e.target.value)} />
             </Field>
             {error ? <p className="error">{error}</p> : null}
-            <Button type="submit">Send invite</Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? "Sending..." : "Send invite"}
+            </Button>
           </form>
         </Modal>
       ) : null}

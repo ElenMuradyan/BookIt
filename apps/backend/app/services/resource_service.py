@@ -61,7 +61,34 @@ async def expire_stale_resource_holds(db: AsyncSession, *, resource_id: str, now
         )
 
 
-def compute_resource_price(resource: Resource, start_at: datetime, end_at: datetime, quantity_units: int) -> float:
+def max_concurrent_units(intervals: list[tuple[datetime, datetime, int]]) -> int:
+    events: list[tuple[datetime, int, int]] = []
+    for start_at, end_at, qty in intervals:
+        if end_at <= start_at or qty <= 0:
+            continue
+        events.append((start_at, 1, qty))
+        events.append((end_at, -1, qty))
+    if not events:
+        return 0
+    # Process end events (-1) before start events (+1) on equal timestamps
+    events.sort(key=lambda e: (e[0], e[1]))
+    current = 0
+    peak = 0
+    for _, kind, qty in events:
+        current += kind * qty
+        if current > peak:
+            peak = current
+    return peak
+
+
+def compute_resource_price(
+    resource: Resource,
+    start_at: datetime,
+    end_at: datetime,
+    quantity_units: int,
+    *,
+    business_timezone: str | None = None,
+) -> float:
     duration_minutes = max(1.0, (end_at - start_at).total_seconds() / 60.0)
     unit = resource.pricing_unit
     base = float(resource.base_price)
@@ -70,7 +97,13 @@ def compute_resource_price(resource: Resource, start_at: datetime, end_at: datet
         multiplier = max(1, math.ceil(duration_minutes / slot_mins))
     elif unit == "per_hour":
         multiplier = duration_minutes / 60.0
-    elif unit in ("per_day", "per_night"):
+    elif unit == "per_night":
+        tz = get_zone_info(resource.timezone or business_timezone or "UTC")
+        start_local_date = start_at.astimezone(tz).date()
+        end_local_date = end_at.astimezone(tz).date()
+        nights = (end_local_date - start_local_date).days
+        multiplier = max(1, nights)
+    elif unit == "per_day":
         multiplier = max(1, math.ceil(duration_minutes / (24.0 * 60.0)))
     else:
         multiplier = 1.0
@@ -112,7 +145,13 @@ async def compute_resource_availability(
     max_allowed = ref_now + timedelta(days=policy.max_advance_days)
 
     slot_mins = resource.slot_duration_minutes or resource.min_duration_minutes or 60
-    step_mins = slot_mins if resource.pricing_unit == "per_slot" else min(60, slot_mins)
+    raw_interval = policy.settings.get("slotIntervalMinutes") if isinstance(policy.settings, dict) else None
+    if isinstance(raw_interval, (int, float)) and 15 <= int(raw_interval) <= 240 and (
+        resource.resource_type == "restaurant_table" or resource.pricing_unit != "per_slot"
+    ):
+        step_mins = int(raw_interval)
+    else:
+        step_mins = slot_mins if resource.pricing_unit == "per_slot" else min(60, slot_mins)
     slot_delta = timedelta(minutes=slot_mins)
     step_delta = timedelta(minutes=step_mins)
 
@@ -279,41 +318,90 @@ async def reserve_resource_transactional(
 
     await expire_stale_resource_holds(db, resource_id=resource.id, now_utc=ref_now)
 
-    # Check overlapping allocations (using buffer around stored range when single unit or checking sum)
+    # Check overlapping allocations & maintenance blocks
     eff_start = start_at - timedelta(minutes=policy.buffer_before_minutes)
     eff_end = end_at + timedelta(minutes=max(resource.buffer_minutes, policy.buffer_after_minutes))
 
-    used_units = int(
-        (
-            await db.execute(
-                select(func.coalesce(func.sum(ResourceAllocation.quantity_units), 0)).where(
-                    ResourceAllocation.resource_id == resource.id,
-                    ResourceAllocation.status.in_(ACTIVE_ALLOCATION_STATUSES),
-                    ResourceAllocation.end_at > eff_start,
-                    ResourceAllocation.start_at < eff_end,
+    if resource.pricing_unit == "per_night":
+        overlapping_allocs = list(
+            (
+                await db.execute(
+                    select(ResourceAllocation).where(
+                        ResourceAllocation.resource_id == resource.id,
+                        ResourceAllocation.status.in_(ACTIVE_ALLOCATION_STATUSES),
+                        ResourceAllocation.end_at > eff_start,
+                        ResourceAllocation.start_at < eff_end,
+                    )
                 )
             )
-        ).scalar_one()
-    )
-    blocked_units = int(
-        (
-            await db.execute(
-                select(func.coalesce(func.sum(ResourceBlock.units_blocked), 0)).where(
-                    ResourceBlock.resource_id == resource.id,
-                    ResourceBlock.end_at > start_at,
-                    ResourceBlock.start_at < end_at,
+            .scalars()
+            .all()
+        )
+        overlapping_blocks = list(
+            (
+                await db.execute(
+                    select(ResourceBlock).where(
+                        ResourceBlock.resource_id == resource.id,
+                        ResourceBlock.end_at > start_at,
+                        ResourceBlock.start_at < end_at,
+                    )
                 )
             )
-        ).scalar_one()
-    )
-
-    if not policy.allow_overbooking and (used_units + blocked_units + quantity_units > resource.units_total):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Selected resource is unavailable for the requested time window",
+            .scalars()
+            .all()
+        )
+        intervals: list[tuple[datetime, datetime, int]] = [
+            (max(eff_start, a.start_at), min(eff_end, a.end_at), a.quantity_units)
+            for a in overlapping_allocs
+        ]
+        intervals.extend(
+            (max(start_at, b.start_at), min(end_at, b.end_at), b.units_blocked)
+            for b in overlapping_blocks
+        )
+        peak_occupied = max_concurrent_units(intervals)
+        if not policy.allow_overbooking and (peak_occupied + quantity_units > resource.units_total):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Selected room type has no remaining availability for those dates",
+            )
+    else:
+        used_units = int(
+            (
+                await db.execute(
+                    select(func.coalesce(func.sum(ResourceAllocation.quantity_units), 0)).where(
+                        ResourceAllocation.resource_id == resource.id,
+                        ResourceAllocation.status.in_(ACTIVE_ALLOCATION_STATUSES),
+                        ResourceAllocation.end_at > eff_start,
+                        ResourceAllocation.start_at < eff_end,
+                    )
+                )
+            ).scalar_one()
+        )
+        blocked_units = int(
+            (
+                await db.execute(
+                    select(func.coalesce(func.sum(ResourceBlock.units_blocked), 0)).where(
+                        ResourceBlock.resource_id == resource.id,
+                        ResourceBlock.end_at > start_at,
+                        ResourceBlock.start_at < end_at,
+                    )
+                )
+            ).scalar_one()
         )
 
-    subtotal = compute_resource_price(resource, start_at, end_at, quantity_units)
+        if not policy.allow_overbooking and (used_units + blocked_units + quantity_units > resource.units_total):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Selected resource is unavailable for the requested time window",
+            )
+
+    subtotal = compute_resource_price(
+        resource,
+        start_at,
+        end_at,
+        quantity_units,
+        business_timezone=business.timezone,
+    )
     deposit_due = compute_deposit_amount(
         total_amount=subtotal,
         policy=policy,
@@ -429,3 +517,164 @@ async def reserve_resource_transactional(
 
     await db.refresh(booking)
     return booking
+
+
+async def search_hotel_stays_availability(
+    db: AsyncSession,
+    *,
+    business: Business,
+    check_in_date: str,
+    check_out_date: str,
+    guests: int = 1,
+    room_type: str | None = None,
+    now_utc: datetime | None = None,
+    enforce_advance_window: bool = True,
+) -> dict:
+    in_date = date.fromisoformat(check_in_date)
+    out_date = date.fromisoformat(check_out_date)
+    if out_date <= in_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Check-out date must be after check-in date",
+        )
+    nights = (out_date - in_date).days
+    ref_now = now_utc or utc_now()
+
+    policy = await get_effective_booking_config(db, business=business, booking_model="resource")
+    settings_dict = policy.settings if isinstance(policy.settings, dict) else {}
+    check_in_time_str = str(settings_dict.get("checkInTime") or "15:00")
+    check_out_time_str = str(settings_dict.get("checkOutTime") or "11:00")
+    ci_h, ci_m = map(int, check_in_time_str.split(":"))
+    co_h, co_m = map(int, check_out_time_str.split(":"))
+
+    resources = list(
+        (
+            await db.execute(
+                select(Resource)
+                .where(
+                    Resource.business_id == business.id,
+                    Resource.active.is_(True),
+                    Resource.resource_type == "hotel_room",
+                    Resource.capacity_people >= guests,
+                )
+                .order_by(Resource.base_price.asc(), Resource.name.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    holiday_dates = {h.get("date") for h in (business.holidays or []) if h.get("date")}
+    stay_dates = {(in_date + timedelta(days=offset)).isoformat() for offset in range(nights)}
+    if holiday_dates & stay_dates:
+        return {
+            "business_id": business.id,
+            "check_in": check_in_date,
+            "check_out": check_out_date,
+            "check_in_time": check_in_time_str,
+            "check_out_time": check_out_time_str,
+            "nights": nights,
+            "guests": guests,
+            "timezone": business.timezone,
+            "options": [],
+        }
+
+    options: list[dict] = []
+    for res in resources:
+        attrs = res.attributes or {}
+        if room_type and str(attrs.get("roomType") or "").lower() != room_type.strip().lower():
+            continue
+
+        tz = get_zone_info(res.timezone or business.timezone)
+        start_at = datetime.combine(in_date, time(hour=ci_h, minute=ci_m), tzinfo=tz).astimezone(UTC)
+        end_at = datetime.combine(out_date, time(hour=co_h, minute=co_m), tzinfo=tz).astimezone(UTC)
+        duration_minutes = (end_at - start_at).total_seconds() / 60.0
+        if duration_minutes < res.min_duration_minutes:
+            continue
+        if res.max_duration_minutes and duration_minutes > res.max_duration_minutes:
+            continue
+        if enforce_advance_window:
+            if start_at < ref_now + timedelta(minutes=policy.min_notice_minutes):
+                continue
+            if start_at > ref_now + timedelta(days=policy.max_advance_days):
+                continue
+
+        eff_start = start_at - timedelta(minutes=policy.buffer_before_minutes)
+        eff_end = end_at + timedelta(minutes=max(res.buffer_minutes, policy.buffer_after_minutes))
+        allocs = list(
+            (
+                await db.execute(
+                    select(ResourceAllocation, Booking.hold_expires_at)
+                    .join(Booking, Booking.id == ResourceAllocation.booking_id)
+                    .where(
+                        ResourceAllocation.resource_id == res.id,
+                        ResourceAllocation.status.in_(ACTIVE_ALLOCATION_STATUSES),
+                        ResourceAllocation.end_at > eff_start,
+                        ResourceAllocation.start_at < eff_end,
+                    )
+                )
+            ).all()
+        )
+        blocks = list(
+            (
+                await db.execute(
+                    select(ResourceBlock).where(
+                        ResourceBlock.resource_id == res.id,
+                        ResourceBlock.end_at > start_at,
+                        ResourceBlock.start_at < end_at,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        intervals: list[tuple[datetime, datetime, int]] = [
+            (max(eff_start, alloc.start_at), min(eff_end, alloc.end_at), alloc.quantity_units)
+            for alloc, hold_exp in allocs
+            if not (alloc.status == "held" and hold_exp is not None and hold_exp <= ref_now)
+        ]
+        intervals.extend(
+            (max(start_at, blk.start_at), min(end_at, blk.end_at), blk.units_blocked)
+            for blk in blocks
+        )
+        peak_used = max_concurrent_units(intervals)
+        remaining = max(0, res.units_total - peak_used)
+        if remaining <= 0 and not policy.allow_overbooking:
+            continue
+
+        total_price = compute_resource_price(
+            res,
+            start_at,
+            end_at,
+            1,
+            business_timezone=business.timezone,
+        )
+        deposit_due = compute_deposit_amount(
+            total_amount=total_price,
+            policy=policy,
+            override_deposit=float(res.deposit_amount) if res.deposit_amount is not None else None,
+        )
+        options.append(
+            {
+                "resource": res,
+                "check_in_at": start_at,
+                "check_out_at": end_at,
+                "nights": nights,
+                "remaining_units": remaining if remaining > 0 else 1,
+                "nightly_rate": float(res.base_price),
+                "total_price": total_price,
+                "deposit_due": deposit_due,
+            }
+        )
+
+    return {
+        "business_id": business.id,
+        "check_in": check_in_date,
+        "check_out": check_out_date,
+        "check_in_time": check_in_time_str,
+        "check_out_time": check_out_time_str,
+        "nights": nights,
+        "guests": guests,
+        "timezone": business.timezone,
+        "options": options,
+    }

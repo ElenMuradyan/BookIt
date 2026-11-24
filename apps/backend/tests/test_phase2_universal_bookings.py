@@ -532,3 +532,318 @@ async def test_legacy_appointment_dual_write_and_qr_compatibility(client: AsyncC
     refreshed_appt = await client.get(f"/api/v1/bookings/{appt_data['id']}", headers=headers)
     assert refreshed_appt.status_code == 200
     assert refreshed_appt.json()["checkedInAt"] is not None
+
+
+@pytest.mark.asyncio
+async def test_service_crud_employee_assignment_free_price_and_delete_or_archive(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+):
+    from app.models.catalog import Service
+
+    owner = await login_as(client, "business@bookit.demo")
+    ho = {"Authorization": f"Bearer {owner['accessToken']}"}
+
+    # Create free ($0) service with deposit override, manual approval, and assigned employee
+    created = await client.post(
+        "/api/v1/workspaces/biz_aura/services",
+        headers=ho,
+        json={
+            "name": "Complimentary Fringe Trim",
+            "description": "Quick maintenance fringe clean-up between full cuts.",
+            "category": "Hair",
+            "price": 0,
+            "durationMinutes": 15,
+            "depositAmount": 0,
+            "requiresApproval": True,
+            "employeeIds": ["emp_vance"],
+            "cancellationPolicy": "24 hours notice",
+        },
+    )
+    assert created.status_code == 201, created.text
+    svc = created.json()
+    assert svc["price"] == 0.0
+    assert svc["depositAmount"] == 0.0
+    assert svc["requiresApproval"] is True
+    assert svc["employeeIds"] == ["emp_vance"]
+
+    # PATCH updates pricing, deposit, and employee assignments
+    patched = await client.patch(
+        f"/api/v1/workspaces/biz_aura/services/{svc['id']}",
+        headers=ho,
+        json={
+            "price": 45,
+            "depositAmount": 15,
+            "employeeIds": ["emp_vance", "emp_marcus"],
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["price"] == 45.0
+    assert patched.json()["depositAmount"] == 15.0
+    assert set(patched.json()["employeeIds"]) == {"emp_vance", "emp_marcus"}
+
+    # Deleting an unused service removes it cleanly
+    deleted = await client.delete(f"/api/v1/workspaces/biz_aura/services/{svc['id']}", headers=ho)
+    assert deleted.status_code == 200
+    async with session_factory() as s:
+        assert await s.get(Service, svc["id"]) is None
+
+    # Deleting a service referenced by existing appointments archives it instead
+    archived = await client.delete("/api/v1/workspaces/biz_aura/services/svc_signature", headers=ho)
+    assert archived.status_code == 200
+    async with session_factory() as s:
+        sig = await s.get(Service, "svc_signature")
+        assert sig is not None and sig.active is False
+
+
+@pytest.mark.asyncio
+async def test_restaurant_table_search_and_resource_block_crud(client: AsyncClient):
+    chloe = await login_as(client, "chloe.kim@bookit.demo")
+    hc = {"Authorization": f"Bearer {chloe['accessToken']}"}
+
+    # Enable restaurant area attribute and search for 4 guests on a future non-holiday date
+    upd = await client.patch(
+        "/api/v1/businesses/biz_harbor/resources/res_harbor_patio",
+        headers=hc,
+        json={"attributes": {"area": "Patio", "seating": "outdoor", "heated": True}},
+    )
+    assert upd.status_code == 200, upd.text
+
+    target_date = (datetime.now(UTC).date() + timedelta(days=14))
+    if target_date.isoformat() == "2026-11-26":
+        target_date += timedelta(days=1)
+    date_str = target_date.isoformat()
+
+    # Search for 4 guests in Patio area at 19:00
+    found = await client.get(
+        f"/api/v1/businesses/biz_harbor/resources/search?date={date_str}&time=19:00&guests=4&area=Patio"
+    )
+    assert found.status_code == 200, found.text
+    items = found.json()
+    assert len(items) == 1
+    assert items[0]["resource"]["id"] == "res_harbor_patio"
+    assert items[0]["availableAtRequestedTime"] is True
+
+    # Find the exact UTC window for the 19:00 slot and create a maintenance ResourceBlock
+    slot_19 = next(s for s in items[0]["slots"] if s["time"] == "19:00")
+    blk = await client.post(
+        "/api/v1/businesses/biz_harbor/resources/res_harbor_patio/blocks",
+        headers=hc,
+        json={
+            "startAt": slot_19["startAt"],
+            "endAt": slot_19["endAt"],
+            "unitsBlocked": 1,
+            "reason": "Private buyout hold",
+        },
+    )
+    assert blk.status_code == 201, blk.text
+    blk_id = blk.json()["id"]
+
+    listed_blocks = await client.get(
+        "/api/v1/businesses/biz_harbor/resource-blocks?resourceId=res_harbor_patio",
+        headers=hc,
+    )
+    assert listed_blocks.status_code == 200
+    assert any(b["id"] == blk_id for b in listed_blocks.json())
+
+    # 19:00 must now be unavailable
+    blocked_search = await client.get(
+        f"/api/v1/businesses/biz_harbor/resources/search?date={date_str}&time=19:00&guests=4&area=Patio"
+    )
+    assert blocked_search.status_code == 200
+    assert blocked_search.json()[0]["availableAtRequestedTime"] is False
+
+    # Removing the block restores availability
+    removed = await client.delete(
+        f"/api/v1/businesses/biz_harbor/resources/res_harbor_patio/blocks/{blk_id}",
+        headers=hc,
+    )
+    assert removed.status_code == 200
+
+    restored_search = await client.get(
+        f"/api/v1/businesses/biz_harbor/resources/search?date={date_str}&time=19:00&guests=4&area=Patio"
+    )
+    assert restored_search.status_code == 200
+    assert restored_search.json()[0]["availableAtRequestedTime"] is True
+
+
+@pytest.mark.asyncio
+async def test_hotel_stays_availability_per_night_pricing_and_back_to_back_turnover(client: AsyncClient):
+    aria = await login_as(client, "aria.chen@bookit.demo")
+    cust = await login_as(client, "customer@bookit.demo")
+    ha = {"Authorization": f"Bearer {aria['accessToken']}"}
+    hc = {"Authorization": f"Bearer {cust['accessToken']}"}
+
+    # Configure hotel check-in/check-out rules + create a pooled hotel_room resource on biz_zenith
+    cfg = await client.put(
+        "/api/v1/businesses/biz_zenith/booking-configs/resource",
+        headers=ha,
+        json={
+            "enabled": True,
+            "displayLabel": "Rooms & Suites",
+            "approvalMode": "automatic",
+            "minNoticeMinutes": 60,
+            "maxAdvanceDays": 365,
+            "cancellationCutoffHours": 48,
+            "depositMode": "fixed",
+            "depositValue": 100,
+            "settings": {"checkInTime": "15:00", "checkOutTime": "11:00"},
+        },
+    )
+    assert cfg.status_code == 200, cfg.text
+
+    room_res = await client.post(
+        "/api/v1/businesses/biz_zenith/resources",
+        headers=ha,
+        json={
+            "name": "Deluxe Waterfront King",
+            "resourceType": "hotel_room",
+            "description": "King suite with bay view.",
+            "capacityPeople": 2,
+            "unitsTotal": 2,
+            "pricingUnit": "per_night",
+            "slotDurationMinutes": 1440,
+            "minDurationMinutes": 720,
+            "bufferMinutes": 0,
+            "basePrice": 220,
+            "depositAmount": 100,
+            "attributes": {"roomType": "Suite", "bedType": "King"},
+        },
+    )
+    assert room_res.status_code == 201, room_res.text
+    room_id = room_res.json()["id"]
+
+    d1 = datetime.now(UTC).date() + timedelta(days=14)
+    if d1.isoformat() == "2026-11-26":
+        d1 += timedelta(days=2)
+    check_in_str = d1.isoformat()
+    check_out_str = (d1 + timedelta(days=2)).isoformat()
+    next_out_str = (d1 + timedelta(days=4)).isoformat()
+
+    avail_before = await client.get(
+        f"/api/v1/businesses/biz_zenith/stays/availability?checkIn={check_in_str}&checkOut={check_out_str}&guests=2"
+    )
+    assert avail_before.status_code == 200, avail_before.text
+    stay_data = avail_before.json()
+    assert stay_data["nights"] == 2
+    assert len(stay_data["options"]) == 1
+    opt = stay_data["options"][0]
+    assert opt["resource"]["id"] == room_id
+    assert opt["remainingUnits"] == 2
+    assert opt["totalPrice"] == 440.0
+    assert opt["depositDue"] == 100.0
+
+    # Reserve 1 unit using exact checkInAt/checkOutAt from availability
+    booked = await client.post(
+        "/api/v1/bookings/universal",
+        headers=hc,
+        json={
+            "bookingModel": "resource",
+            "businessId": "biz_zenith",
+            "resourceId": room_id,
+            "startAt": opt["checkInAt"],
+            "endAt": opt["checkOutAt"],
+            "quantityUnits": 1,
+            "partySize": 2,
+            "paymentMethod": "in_person",
+        },
+    )
+    assert booked.status_code == 201, booked.text
+    assert booked.json()["totalAmount"] == 440.0
+    assert booked.json()["depositDueAmount"] == 100.0
+
+    # Same stay window now shows 1 remaining unit
+    avail_after = await client.get(
+        f"/api/v1/businesses/biz_zenith/stays/availability?checkIn={check_in_str}&checkOut={check_out_str}&guests=2"
+    )
+    assert avail_after.status_code == 200
+    assert avail_after.json()["options"][0]["remainingUnits"] == 1
+
+    # Back-to-back check-in on check_out_str (15:00) after 11:00 check-out still has 2 remaining units
+    back_to_back = await client.get(
+        f"/api/v1/businesses/biz_zenith/stays/availability?checkIn={check_out_str}&checkOut={next_out_str}&guests=2"
+    )
+    assert back_to_back.status_code == 200
+    assert back_to_back.json()["options"][0]["remainingUnits"] == 2
+
+    # Blocking the remaining 1 unit removes the room from available stay options
+    blk = await client.post(
+        f"/api/v1/businesses/biz_zenith/resources/{room_id}/blocks",
+        headers=ha,
+        json={
+            "startAt": opt["checkInAt"],
+            "endAt": opt["checkOutAt"],
+            "unitsBlocked": 1,
+            "reason": "Window seal maintenance",
+        },
+    )
+    assert blk.status_code == 201, blk.text
+
+    avail_full = await client.get(
+        f"/api/v1/businesses/biz_zenith/stays/availability?checkIn={check_in_str}&checkOut={check_out_str}&guests=2"
+    )
+    assert avail_full.status_code == 200
+    assert avail_full.json()["options"] == []
+
+
+@pytest.mark.asyncio
+async def test_event_offering_update_tier_crud_and_attendee_roster(client: AsyncClient):
+    owner = await login_as(client, "business@bookit.demo")
+    cust = await login_as(client, "customer@bookit.demo")
+    ho = {"Authorization": f"Bearer {owner['accessToken']}"}
+    hc = {"Authorization": f"Bearer {cust['accessToken']}"}
+
+    updated_off = await client.patch(
+        "/api/v1/businesses/biz_aura/offerings/evt_aura_masterclass",
+        headers=ho,
+        json={"title": "Winter Gloss & Editorial Live", "venueArea": "Studio North"},
+    )
+    assert updated_off.status_code == 200, updated_off.text
+    assert updated_off.json()["title"] == "Winter Gloss & Editorial Live"
+    assert updated_off.json()["venueArea"] == "Studio North"
+
+    added_tier = await client.post(
+        "/api/v1/businesses/biz_aura/sessions/ses_aura_live_1/tiers",
+        headers=ho,
+        json={
+            "name": "Early Bird Balcony",
+            "description": "Elevated gallery viewing seat.",
+            "price": 35,
+            "capacityLimit": 4,
+            "sortOrder": 0,
+        },
+    )
+    assert added_tier.status_code == 201, added_tier.text
+    tier_id = added_tier.json()["id"]
+
+    patched_tier = await client.patch(
+        f"/api/v1/businesses/biz_aura/sessions/ses_aura_live_1/tiers/{tier_id}",
+        headers=ho,
+        json={"price": 39, "name": "Early Bird Upper Gallery"},
+    )
+    assert patched_tier.status_code == 200, patched_tier.text
+    assert patched_tier.json()["price"] == 39.0
+    assert patched_tier.json()["name"] == "Early Bird Upper Gallery"
+
+    booked = await client.post(
+        "/api/v1/bookings/universal",
+        headers=hc,
+        json={
+            "bookingModel": "ticket",
+            "businessId": "biz_aura",
+            "sessionId": "ses_aura_live_1",
+            "tickets": [{"tierId": tier_id, "quantity": 2}],
+            "paymentMethod": "in_person",
+        },
+    )
+    assert booked.status_code == 201, booked.text
+
+    roster = await client.get(
+        "/api/v1/businesses/biz_aura/sessions/ses_aura_live_1/attendees",
+        headers=ho,
+    )
+    assert roster.status_code == 200, roster.text
+    attendees = roster.json()
+    assert len(attendees) == 2
+    assert all(a["tierId"] == tier_id and a["tierName"] == "Early Bird Upper Gallery" for a in attendees)
+    assert {a["passCode"] for a in attendees} == {p["passCode"] for p in booked.json()["ticketPasses"]}
+

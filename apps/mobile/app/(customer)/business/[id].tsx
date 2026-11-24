@@ -1,15 +1,19 @@
 import {
   addReview,
   addToCart,
+  bookingConfigsForBusiness,
   displayUser,
+  enabledModelsForBusiness,
+  offeringsForBusiness,
   publicBusinessById,
+  resourcesForBusiness,
   servicesForBusiness,
   toggleFavorite,
   useBookItState,
 } from "@bookit/api-client";
 import { brand } from "@bookit/design-system";
-import { categoryLabels } from "@bookit/ui";
-import { formatDate, formatMoney } from "@bookit/utils";
+import { categoryLabels, primaryCtaLabelForBusiness } from "@bookit/ui";
+import { formatDate, formatDateTime, formatMoney } from "@bookit/utils";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
 import { Image, Modal, Pressable, Text, View } from "react-native";
@@ -57,12 +61,28 @@ export default function BusinessProfileScreen() {
   }
 
   const services = servicesForBusiness(state, business.id);
+  const resources = resourcesForBusiness(state, business.id);
+  const offerings = offeringsForBusiness(state, business.id);
+  const configs = bookingConfigsForBusiness(state, business.id);
+  const enabledModels = enabledModelsForBusiness(state, business.id);
+  const primaryModel = enabledModels[0] ?? "appointment";
+  const ctaLabel = primaryCtaLabelForBusiness(business.category, enabledModels);
+  const resourceCfg = configs.find((c) => c.bookingModel === "resource");
   const employees = state.employees.filter((e) => e.businessId === business.id);
   const products = state.products.filter((p) => p.businessId === business.id && p.active);
   const reviews = state.reviews.filter((r) => r.businessId === business.id && r.status === "published");
   const isFav = auth.userId
     ? state.favorites.some((f) => f.userId === auth.userId && f.targetType === "business" && f.targetId === business.id)
     : false;
+
+  const spacesHeading =
+    business.category === "restaurant"
+      ? "Dining Tables & Seating"
+      : business.category === "hotel"
+        ? "Rooms & Suites"
+        : business.category === "sports"
+          ? "Courts & Fields"
+          : "Spaces & Resources";
 
   return (
     <Screen>
@@ -81,9 +101,9 @@ export default function BusinessProfileScreen() {
           </Text>
           <View style={{ flexDirection: "row", gap: 10 }}>
             <Button
-              label="Book Appointment"
+              label={ctaLabel}
               style={{ flex: 1 }}
-              onPress={() => router.push(`/(customer)/book/${business.id}`)}
+              onPress={() => router.push(`/(customer)/book/${business.id}?model=${primaryModel}`)}
             />
             <Button
               label={isFav ? "Saved" : "Save"}
@@ -100,40 +120,140 @@ export default function BusinessProfileScreen() {
         </View>
       </Card>
 
-      <Card style={{ gap: 10 }}>
-        <Text style={{ color: colors.text, fontSize: 17, fontWeight: "700" }}>Services ({services.length})</Text>
-        {services.map((svc) => (
-          <Pressable
-            key={svc.id}
-            onPress={() => router.push(`/(customer)/service/${svc.id}`)}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              paddingTop: 10,
-              borderTopWidth: 1,
-              borderTopColor: colors.line,
-              gap: 10,
-            }}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: colors.text, fontWeight: "700", fontSize: 14 }}>{svc.name}</Text>
-              <Text style={{ color: colors.muted, fontSize: 12 }}>{svc.durationMinutes} min · {svc.description}</Text>
-            </View>
-            <View style={{ alignItems: "flex-end", gap: 4 }}>
-              <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
-                {svc.price === 0 ? "Free" : formatMoney(svc.price)}
-              </Text>
-              <Button
-                label="Book"
-                tone="soft"
-                small
-                onPress={() => router.push(`/(customer)/book/${business.id}?service=${svc.id}`)}
-              />
-            </View>
-          </Pressable>
-        ))}
-      </Card>
+      {resources.length > 0 ? (
+        <Card style={{ gap: 10 }}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={{ color: colors.text, fontSize: 17, fontWeight: "700" }}>{spacesHeading}</Text>
+            <Button
+              label={business.category === "hotel" ? "Search Stays" : "Check Slots"}
+              tone="soft"
+              small
+              onPress={() => router.push(`/(customer)/book/${business.id}?model=resource`)}
+            />
+          </View>
+          {business.category === "hotel" && resourceCfg?.settings ? (
+            <Text style={{ color: colors.muted, fontSize: 12 }}>
+              Check-in {String(resourceCfg.settings.checkInTime ?? "15:00")} · Check-out {String(resourceCfg.settings.checkOutTime ?? "11:00")}
+            </Text>
+          ) : null}
+          {resources.map((res) => {
+            const area = typeof res.attributes?.area === "string" ? res.attributes.area : "";
+            return (
+              <View
+                key={res.id}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  paddingTop: 10,
+                  borderTopWidth: 1,
+                  borderTopColor: colors.line,
+                  gap: 10,
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.text, fontWeight: "700", fontSize: 14 }}>{res.name}</Text>
+                  <Text style={{ color: colors.muted, fontSize: 12 }}>
+                    Up to {res.capacityPeople} guests · {res.unitsTotal} unit(s){area ? ` · ${area}` : ""}
+                  </Text>
+                </View>
+                <View style={{ alignItems: "flex-end", gap: 4 }}>
+                  <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
+                    {res.basePrice === 0 ? "Free" : `${formatMoney(res.basePrice)}/${res.pricingUnit.replace("per_", "")}`}
+                  </Text>
+                  <Button
+                    label="Reserve"
+                    tone="soft"
+                    small
+                    onPress={() => router.push(`/(customer)/book/${business.id}?model=resource&resource=${res.id}`)}
+                  />
+                </View>
+              </View>
+            );
+          })}
+        </Card>
+      ) : null}
+
+      {offerings.length > 0 ? (
+        <Card style={{ gap: 10 }}>
+          <Text style={{ color: colors.text, fontSize: 17, fontWeight: "700" }}>Events, Tours &amp; Classes</Text>
+          {offerings.map((off) => {
+            const nextSes = off.sessions.find((s) => s.status === "on_sale" || s.status === "scheduled");
+            const minPrice = nextSes?.tiers.length ? Math.min(...nextSes.tiers.map((t) => t.price)) : 0;
+            return (
+              <View
+                key={off.id}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  paddingTop: 10,
+                  borderTopWidth: 1,
+                  borderTopColor: colors.line,
+                  gap: 10,
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.text, fontWeight: "700", fontSize: 14 }}>{off.title}</Text>
+                  {nextSes ? (
+                    <Text style={{ color: colors.muted, fontSize: 12 }}>
+                      {formatDateTime(nextSes.startAt)} · {nextSes.remainingCapacity} left
+                    </Text>
+                  ) : null}
+                </View>
+                <View style={{ alignItems: "flex-end", gap: 4 }}>
+                  <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
+                    {minPrice === 0 ? "Free" : `From ${formatMoney(minPrice)}`}
+                  </Text>
+                  <Button
+                    label={off.bookingModel === "ticket" ? "Tickets" : "Join"}
+                    tone="soft"
+                    small
+                    onPress={() => router.push(`/(customer)/book/${business.id}?model=${off.bookingModel}&offering=${off.id}`)}
+                  />
+                </View>
+              </View>
+            );
+          })}
+        </Card>
+      ) : null}
+
+      {services.length > 0 || (resources.length === 0 && offerings.length === 0) ? (
+        <Card style={{ gap: 10 }}>
+          <Text style={{ color: colors.text, fontSize: 17, fontWeight: "700" }}>Services ({services.length})</Text>
+          {services.map((svc) => (
+            <Pressable
+              key={svc.id}
+              onPress={() => router.push(`/(customer)/service/${svc.id}`)}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingTop: 10,
+                borderTopWidth: 1,
+                borderTopColor: colors.line,
+                gap: 10,
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontWeight: "700", fontSize: 14 }}>{svc.name}</Text>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>{svc.durationMinutes} min · {svc.description}</Text>
+              </View>
+              <View style={{ alignItems: "flex-end", gap: 4 }}>
+                <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
+                  {svc.price === 0 ? "Free" : formatMoney(svc.price)}
+                </Text>
+                <Button
+                  label="Book"
+                  tone="soft"
+                  small
+                  onPress={() => router.push(`/(customer)/book/${business.id}?model=appointment&service=${svc.id}`)}
+                />
+              </View>
+            </Pressable>
+          ))}
+        </Card>
+      ) : null}
 
       {employees.length > 0 ? (
         <Card style={{ gap: 10 }}>
@@ -144,7 +264,7 @@ export default function BusinessProfileScreen() {
             return (
               <Pressable
                 key={emp.id}
-                onPress={() => router.push(`/(customer)/book/${business.id}?employee=${emp.id}`)}
+                onPress={() => router.push(`/(customer)/book/${business.id}?model=appointment&employee=${emp.id}`)}
                 style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 6 }}
               >
                 <Avatar name={name} uri={person?.avatarUrl} size={42} />
@@ -185,7 +305,7 @@ export default function BusinessProfileScreen() {
       ) : null}
 
       <Card style={{ gap: 6 }}>
-        <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>Hours & Policy</Text>
+        <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>Hours &amp; Policy</Text>
         {DAYS.map(([k, label]) => {
           const row = business.hours[k];
           return (

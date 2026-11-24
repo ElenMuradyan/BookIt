@@ -463,3 +463,86 @@ async def test_dual_email_verification_unauthenticated_otp_link_and_cooldown(cli
         clear_test_email_outbox()
         await auth_rate_limiter.reset()
 
+
+@pytest.mark.asyncio
+async def test_email_verification_and_password_reset_lockout_after_five_failed_attempts(client: AsyncClient):
+    import re
+    from app.services.notification_service import clear_test_email_outbox, get_test_email_outbox
+
+    clear_test_email_outbox()
+    await auth_rate_limiter.reset()
+    try:
+        reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "firstName": "Lock",
+                "lastName": "Out",
+                "username": "lockoutuser",
+                "email": "lockout.user@example.com",
+                "phone": "+1 206 555 0149",
+                "password": "StrongPassword1!",
+                "confirmPassword": "StrongPassword1!",
+                "acceptTerms": True,
+            },
+        )
+        assert reg.status_code == 201, reg.text
+        access = reg.json()["accessToken"]
+        sent = get_test_email_outbox()[0]
+        real_otp = re.search(r"\b(\d{6})\b", sent.body).group(1)  # type: ignore[union-attr]
+        wrong_otp = "111111" if real_otp != "111111" else "222222"
+
+        # 5 wrong attempts invalidate the token even before knowing the real OTP
+        for _ in range(5):
+            bad = await client.post(
+                "/api/v1/auth/verify",
+                json={"email": "lockout.user@example.com", "code": wrong_otp},
+            )
+            assert bad.status_code == 400
+
+        # 6th attempt using the genuine OTP must now be rejected
+        locked = await client.post(
+            "/api/v1/auth/verify",
+            json={"email": "lockout.user@example.com", "code": real_otp},
+        )
+        assert locked.status_code == 400
+
+        me = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
+        assert me.status_code == 200
+        assert me.json()["user"]["emailVerified"] is False
+
+        # Password reset also locks out after 5 wrong attempts
+        clear_test_email_outbox()
+        req = await client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"identifier": "lockout.user@example.com"},
+        )
+        assert req.status_code == 200
+        reset_mail = get_test_email_outbox()[0]
+        real_reset = re.search(r"\b(\d{6})\b", reset_mail.body).group(1)  # type: ignore[union-attr]
+        wrong_reset = "333333" if real_reset != "333333" else "444444"
+
+        for _ in range(5):
+            bad_reset = await client.post(
+                "/api/v1/auth/password-reset/confirm",
+                json={
+                    "identifier": "lockout.user@example.com",
+                    "code": wrong_reset,
+                    "newPassword": "NewStrongPassword2!",
+                },
+            )
+            assert bad_reset.status_code == 400
+
+        locked_reset = await client.post(
+            "/api/v1/auth/password-reset/confirm",
+            json={
+                "identifier": "lockout.user@example.com",
+                "code": real_reset,
+                "newPassword": "NewStrongPassword2!",
+            },
+        )
+        assert locked_reset.status_code == 400
+    finally:
+        clear_test_email_outbox()
+        await auth_rate_limiter.reset()
+
+

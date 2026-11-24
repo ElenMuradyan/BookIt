@@ -9,6 +9,7 @@ import type {
   Product,
   PublicBusiness,
   Resource,
+  ResourceBlock,
   Service,
   UniversalBooking,
   Workspace,
@@ -240,4 +241,13 @@ export function businessUniversalBookings(state: AppState, businessId: string): 
 
 export function businessesSupportingModel(state: AppState, model: BookingModel): PublicBusiness[] {
   return publicBusinesses(state).filter((b) => enabledModelsForBusiness(state, b.id).includes(model));
+}
+
+export function resourceBlocksForBusiness(state: AppState, businessId: string): ResourceBlock[] {
+  const resIds = new Set(resourcesForBusiness(state, businessId, true).map((r) => r.id));
+  return (state.resourceBlocks ?? []).filter((blk) => resIds.has(blk.resourceId));
+}
+
+export function universalBookingById(state: AppState, id: string): UniversalBooking | undefined {
+  return (state.bookings ?? []).find((b) => b.id === id || b.legacyAppointmentId === id);
 }

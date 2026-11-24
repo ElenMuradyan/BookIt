@@ -1,7 +1,9 @@
 import logging
 from datetime import timedelta
+from html import escape
+from urllib.parse import urlencode
 
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,8 +31,46 @@ from app.schemas.auth import (
     UserOut,
     WorkspaceOut,
 )
+from app.services.notification_service import schedule_email_notification
 
 logger = logging.getLogger("bookit.auth")
+MAX_VERIFICATION_FAILED_ATTEMPTS = 5
+
+
+def enqueue_verification_email(
+    background_tasks: BackgroundTasks,
+    *,
+    to_email: str,
+    code: str,
+    link_token: str,
+) -> None:
+    settings = get_settings()
+    base_url = settings.frontend_base_url.rstrip("/")
+    verify_url = f"{base_url}/verify?{urlencode({'token': link_token})}"
+    text_body = (
+        f"Welcome to BookIt.\n\n"
+        f"Your 6-digit verification code is: {code}\n\n"
+        f"Or verify with a single click using this link (expires in 24 hours):\n{verify_url}\n"
+    )
+    safe_url = escape(verify_url, quote=True)
+    safe_code = escape(code)
+    html_body = (
+        "<div style=\"font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#111827;\">"
+        "<h2 style=\"margin:0 0 12px;\">Verify your BookIt email</h2>"
+        "<p style=\"margin:0 0 16px;line-height:1.5;\">Enter this 6-digit verification code in BookIt:</p>"
+        f"<p style=\"font-size:28px;font-weight:700;letter-spacing:6px;margin:0 0 20px;\">{safe_code}</p>"
+        "<p style=\"margin:0 0 16px;line-height:1.5;\">Or verify directly with the button below (valid for 24 hours, single use):</p>"
+        f"<p style=\"margin:0 0 20px;\"><a href=\"{safe_url}\" style=\"display:inline-block;padding:12px 20px;background:#6d28d9;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;\">Verify email address</a></p>"
+        f"<p style=\"font-size:12px;color:#6b7280;word-break:break-all;\">Direct link: {safe_url}</p>"
+        "</div>"
+    )
+    schedule_email_notification(
+        background_tasks,
+        to_email=to_email,
+        subject="Verify your BookIt email",
+        body=text_body,
+        html_body=html_body,
+    )
 
 
 async def record_audit(
@@ -433,20 +473,36 @@ async def verify_email_code(
 
     now = utc_now()
     digest = hash_token(f"{target_user.id}:email_verify:{code.strip()}")
-    stmt = (
+    latest_stmt = (
         select(VerificationToken)
         .where(
             VerificationToken.user_id == target_user.id,
             VerificationToken.purpose == "email_verify",
-            VerificationToken.token_hash == digest,
             VerificationToken.consumed_at.is_(None),
             VerificationToken.expires_at > now,
         )
         .order_by(VerificationToken.created_at.desc())
+        .limit(1)
         .with_for_update()
     )
-    tok = (await db.execute(stmt)).scalar_one_or_none()
+    tok = (await db.execute(latest_stmt)).scalar_one_or_none()
     if not tok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="That code does not match or has expired")
+
+    if tok.token_hash != digest:
+        tok.failed_attempts = (tok.failed_attempts or 0) + 1
+        if tok.failed_attempts >= MAX_VERIFICATION_FAILED_ATTEMPTS:
+            tok.consumed_at = now
+            await db.execute(
+                update(VerificationToken)
+                .where(
+                    VerificationToken.user_id == target_user.id,
+                    VerificationToken.purpose.in_(("email_verify", "email_verify_link")),
+                    VerificationToken.consumed_at.is_(None),
+                )
+                .values(consumed_at=now)
+            )
+        await db.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="That code does not match or has expired")
 
     tok.consumed_at = now
@@ -534,6 +590,7 @@ async def issue_email_verification(
     user: User,
     *,
     enforce_cooldown_error: bool = True,
+    commit: bool = True,
 ) -> tuple[str, str] | None:
     settings = get_settings()
     now = utc_now()
@@ -595,7 +652,8 @@ async def issue_email_verification(
         target_type="user",
         target_id=user.id,
     )
-    await db.commit()
+    if commit:
+        await db.commit()
     return code, link_token
 
 
@@ -636,20 +694,27 @@ async def confirm_password_reset_token(
     if not user:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset code")
     now = utc_now()
-    digest = hash_token(f"{user.id}:password_reset:{code}")
-    stmt = (
+    digest = hash_token(f"{user.id}:password_reset:{code.strip()}")
+    latest_stmt = (
         select(VerificationToken)
         .where(
             VerificationToken.user_id == user.id,
             VerificationToken.purpose == "password_reset",
-            VerificationToken.token_hash == digest,
             VerificationToken.consumed_at.is_(None),
             VerificationToken.expires_at > now,
         )
         .order_by(VerificationToken.created_at.desc())
+        .limit(1)
+        .with_for_update()
     )
-    tok = (await db.execute(stmt)).scalar_one_or_none()
+    tok = (await db.execute(latest_stmt)).scalar_one_or_none()
     if not tok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset code")
+    if tok.token_hash != digest:
+        tok.failed_attempts = (tok.failed_attempts or 0) + 1
+        if tok.failed_attempts >= MAX_VERIFICATION_FAILED_ATTEMPTS:
+            tok.consumed_at = now
+        await db.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset code")
     tok.consumed_at = now
     user.password_hash = hash_password(new_password)

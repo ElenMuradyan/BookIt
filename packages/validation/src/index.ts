@@ -93,12 +93,16 @@ export const resetConfirmSchema = z
   });
 
 export const serviceSchema = z.object({
-  name: z.string().min(2),
-  description: z.string().min(8),
-  category: z.string().min(2),
-  price: z.coerce.number().positive(),
-  durationMinutes: z.coerce.number().int().positive(),
-  cancellationPolicy: z.string().min(4),
+  name: z.string().min(2, "Enter a service name (2+ characters)"),
+  description: z.string().min(8, "Add a short description (8+ characters)"),
+  category: z.string().min(2, "Choose a service category"),
+  price: z.coerce.number().min(0, "Price cannot be negative"),
+  durationMinutes: z.coerce.number().int().positive("Duration must be greater than 0").max(1440),
+  cancellationPolicy: z.string().min(4, "Add a cancellation policy (4+ characters)"),
+  imageUrl: z.string().optional(),
+  depositAmount: z.coerce.number().min(0).optional(),
+  requiresApproval: z.boolean().optional(),
+  employeeIds: z.array(z.string()).optional(),
 });
 
 export const productSchema = z.object({
@@ -182,6 +186,21 @@ export const eventSessionSchema = z.object({
   maxPerBooking: z.coerce.number().int().min(1).max(100),
   tierName: z.string().min(1, "Ticket/spot tier name required").max(120),
   tierPrice: z.coerce.number().min(0).max(100000),
+});
+
+export const resourceBlockSchema = z.object({
+  startAt: z.string().min(10, "Select a start date & time"),
+  endAt: z.string().min(10, "Select an end date & time"),
+  unitsBlocked: z.coerce.number().int().min(1).max(1000).default(1),
+  reason: z.string().min(2, "Add a short reason").max(500),
+});
+
+export const ticketTierSchema = z.object({
+  name: z.string().min(1, "Tier name is required").max(120),
+  description: z.string().max(500).default(""),
+  price: z.coerce.number().min(0).max(100000),
+  capacityLimit: z.coerce.number().int().min(1).max(100000).optional(),
+  active: z.boolean().default(true),
 });
 
 export function fieldErrors(error: z.ZodError): Record<string, string> {

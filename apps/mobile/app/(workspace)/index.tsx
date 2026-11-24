@@ -1,20 +1,33 @@
 import { Ionicons } from "@expo/vector-icons";
 import {
   addBlockedSlot,
+  addBlockedSlotRemote,
   addBusinessHoliday,
+  addBusinessHolidayRemote,
   businessAppointments,
+  businessUniversalBookings,
+  createAppointmentRemote,
   createStaffAppointment,
   displayUser,
   removeBlockedSlot,
+  removeBlockedSlotRemote,
   removeBusinessHoliday,
+  removeBusinessHolidayRemote,
+  resourceBlocksForBusiness,
+  resourcesForBusiness,
   setAppointmentStatus,
+  setAppointmentStatusRemote,
+  setUniversalBookingStatus,
+  setUniversalBookingStatusRemote,
   updateAppointmentNotes,
+  updateAppointmentNotesRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { brand } from "@bookit/design-system";
-import type { Appointment } from "@bookit/types";
-import { appointmentStatus } from "@bookit/ui";
-import { addDays, can, DEMO_TODAY, formatDate, formatMoney, formatTime } from "@bookit/utils";
+import type { Appointment, AppointmentStatus, UniversalBooking, UniversalBookingStatus } from "@bookit/types";
+import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
+import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDate, formatDateTime, formatMoney, formatTime } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -32,11 +45,14 @@ export default function WorkspaceScheduleScreen() {
   const biz = state.businesses.find((b) => b.id === bizId);
   const services = state.services.filter((s) => s.businessId === bizId && s.active);
   const employees = state.employees.filter((e) => e.businessId === bizId);
+  const resources = resourcesForBusiness(state, bizId, true);
+  const resourceBlocks = resourceBlocksForBusiness(state, bizId);
   const customers = state.users.filter((u) => !u.isPlatformAdmin);
 
   const [selectedDate, setSelectedDate] = useState(DEMO_TODAY);
   const [staffId, setStaffId] = useState("all");
   const [selectedApt, setSelectedApt] = useState<Appointment | null>(null);
+  const [selectedUb, setSelectedUb] = useState<UniversalBooking | null>(null);
   const [aptNote, setAptNote] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showBlocks, setShowBlocks] = useState(false);
@@ -52,22 +68,83 @@ export default function WorkspaceScheduleScreen() {
   const [newEmployeeId, setNewEmployeeId] = useState(employees[0]?.id ?? "");
   const [newTime, setNewTime] = useState("11:00");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(DEMO_TODAY, i)), []);
 
   if (!auth.workspace || !auth.userId || !biz) return null;
+  const actorId = auth.userId;
   const canManage = can(auth.workspace.role, "calendar.manage");
   const canViewCustomers = can(auth.workspace.role, "customers.view");
   const unreadNotifs = state.notifications.filter((n) => n.businessId === bizId && !n.read).length;
   const allAppts = businessAppointments(state, bizId);
+  const allUniversal = businessUniversalBookings(state, bizId).filter(
+    (ub) => !(ub.bookingModel === "appointment" && ub.legacyAppointmentId),
+  );
+
   const dayAppts = allAppts.filter((a) => {
     if (!a.start.startsWith(selectedDate)) return false;
     if (staffId !== "all" && a.employeeId !== staffId) return false;
     return true;
   });
-  const pendingCount = allAppts.filter((a) => a.status === "pending").length;
-  const revenueToday = dayAppts.reduce((s, a) => s + a.price, 0);
+
+  const dayUniversal = allUniversal.filter((ub) => {
+    if (staffId !== "all") return false;
+    const startD = (ub.startAt ?? ub.createdAt).slice(0, 10);
+    const endD = ub.endAt ? ub.endAt.slice(0, 10) : startD;
+    if (ub.bookingModel === "resource" && endD > startD) {
+      return selectedDate >= startD && selectedDate < endD;
+    }
+    return startD === selectedDate;
+  });
+
+  const dayBlocks = resourceBlocks.filter(
+    (blk) => selectedDate >= blk.startAt.slice(0, 10) && selectedDate <= blk.endAt.slice(0, 10),
+  );
+
+  const pendingCount =
+    allAppts.filter((a) => a.status === "pending").length +
+    allUniversal.filter((u) => u.status === "pending" || u.status === "held").length;
+  const revenueToday =
+    dayAppts.reduce((s, a) => s + a.price, 0) + dayUniversal.reduce((s, u) => s + u.totalAmount, 0);
   const aptCustomer = selectedApt ? state.users.find((u) => u.id === selectedApt.customerId) : undefined;
+  const ubCustomer = selectedUb ? state.users.find((u) => u.id === selectedUb.customerId) : undefined;
+
+  async function handleAptStatus(status: AppointmentStatus) {
+    if (!selectedApt) return;
+    setError("");
+    setBusy(true);
+    try {
+      const res = usingMocks()
+        ? setAppointmentStatus(selectedApt.id, status, actorId)
+        : await setAppointmentStatusRemote(selectedApt.id, status);
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setSelectedApt(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUbStatus(status: UniversalBookingStatus) {
+    if (!selectedUb) return;
+    setError("");
+    setBusy(true);
+    try {
+      const res = usingMocks()
+        ? setUniversalBookingStatus(selectedUb.id, status, actorId)
+        : await setUniversalBookingStatusRemote(selectedUb.id, status);
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setSelectedUb(null);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Screen>
@@ -79,8 +156,8 @@ export default function WorkspaceScheduleScreen() {
               onPress={() => router.push("/(workspace)/notifications")}
               accessibilityLabel="Workspace notifications"
               style={{
-                width: 38,
-                height: 38,
+                width: 44,
+                height: 44,
                 borderRadius: 12,
                 borderWidth: 1,
                 borderColor: colors.line,
@@ -94,8 +171,8 @@ export default function WorkspaceScheduleScreen() {
                 <View
                   style={{
                     position: "absolute",
-                    top: 6,
-                    right: 6,
+                    top: 8,
+                    right: 8,
                     width: 8,
                     height: 8,
                     borderRadius: 4,
@@ -104,13 +181,15 @@ export default function WorkspaceScheduleScreen() {
                 />
               ) : null}
             </Pressable>
-            {canManage ? <Button label="+ New" small onPress={() => setShowCreate(true)} /> : null}
+            {canManage && services.length > 0 ? (
+              <Button label="+ New" small onPress={() => { setError(""); setShowCreate(true); }} />
+            ) : null}
           </View>
         }
       />
 
       <View style={{ flexDirection: "row", gap: 10 }}>
-        <StatCard label="Selected Day" value={String(dayAppts.length)} hint="Appointments" icon="calendar-outline" />
+        <StatCard label="Selected Day" value={String(dayAppts.length + dayUniversal.length)} hint="Bookings" icon="calendar-outline" />
         <StatCard label="Pending Requests" value={String(pendingCount)} hint={formatMoney(revenueToday) + " day"} icon="time-outline" />
       </View>
 
@@ -123,9 +202,11 @@ export default function WorkspaceScheduleScreen() {
               onPress={() => setSelectedDate(d)}
               style={{
                 width: 58,
+                minHeight: 52,
                 paddingVertical: 10,
                 borderRadius: 14,
                 alignItems: "center",
+                justifyContent: "center",
                 backgroundColor: on ? brand.primary : colors.card,
                 borderWidth: 1,
                 borderColor: on ? brand.primary : colors.line,
@@ -144,7 +225,7 @@ export default function WorkspaceScheduleScreen() {
 
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-          <Chip label="All Staff" active={staffId === "all"} onPress={() => setStaffId("all")} />
+          <Chip label="All Schedule" active={staffId === "all"} onPress={() => setStaffId("all")} />
           {employees.map((emp) => (
             <Chip
               key={emp.id}
@@ -159,36 +240,85 @@ export default function WorkspaceScheduleScreen() {
         ) : null}
       </View>
 
-      {dayAppts.length === 0 ? (
-        <EmptyState title="Open schedule" body="No appointments on this day for the selected filter." />
+      {dayAppts.length === 0 && dayUniversal.length === 0 && dayBlocks.length === 0 ? (
+        <EmptyState title="Open schedule" body="No bookings or blocks on this day for the selected filter." />
       ) : (
-        dayAppts.map((apt) => {
-          const svc = state.services.find((s) => s.id === apt.serviceId);
-          const emp = state.employees.find((e) => e.id === apt.employeeId);
-          const st = appointmentStatus(apt.status);
-          return (
-            <Card
-              key={apt.id}
-              onPress={() => {
-                setSelectedApt(apt);
-                setAptNote(apt.notes ?? "");
-              }}
-              style={{ gap: 6 }}
-            >
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={{ color: colors.lavender, fontWeight: "700", fontVariant: ["tabular-nums"] }}>
-                  {formatTime(apt.start)} – {formatTime(apt.end)}
+        <>
+          {dayAppts.map((apt) => {
+            const svc = state.services.find((s) => s.id === apt.serviceId);
+            const emp = state.employees.find((e) => e.id === apt.employeeId);
+            const st = appointmentStatus(apt.status);
+            return (
+              <Card
+                key={apt.id}
+                onPress={() => {
+                  setSelectedApt(apt);
+                  setAptNote(apt.notes ?? "");
+                  setError("");
+                }}
+                style={{ gap: 6 }}
+              >
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ color: colors.lavender, fontWeight: "700", fontVariant: ["tabular-nums"] }}>
+                    {formatTime(apt.start)} – {formatTime(apt.end)}
+                  </Text>
+                  <Badge label={st.label} tone={st.tone} />
+                </View>
+                <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>{displayUser(state, apt.customerId)}</Text>
+                <Text style={{ color: colors.muted, fontSize: 13 }}>
+                  {svc?.name} · {emp ? displayUser(state, emp.userId) : "Staff"}
                 </Text>
-                <Badge label={st.label} tone={st.tone} />
-              </View>
-              <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>{displayUser(state, apt.customerId)}</Text>
-              <Text style={{ color: colors.muted, fontSize: 13 }}>
-                {svc?.name} · {emp ? displayUser(state, emp.userId) : "Staff"}
-              </Text>
-              {apt.notes ? <Text style={{ color: colors.lavender, fontSize: 12 }}>Note: {apt.notes}</Text> : null}
-            </Card>
-          );
-        })
+                {apt.notes ? <Text style={{ color: colors.lavender, fontSize: 12 }}>Note: {apt.notes}</Text> : null}
+              </Card>
+            );
+          })}
+
+          {dayUniversal.map((ub) => {
+            const st = universalBookingStatus(ub.status);
+            const alloc = ub.resourceAllocations[0];
+            const res = alloc ? resources.find((r) => r.id === alloc.resourceId) : undefined;
+            return (
+              <Card
+                key={ub.id}
+                onPress={() => {
+                  setSelectedUb(ub);
+                  setError("");
+                }}
+                style={{ gap: 6 }}
+              >
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ color: colors.lavender, fontWeight: "700", fontVariant: ["tabular-nums"] }}>
+                    {ub.startAt ? formatTime(ub.startAt) : bookingModelLabel(ub.bookingModel)}
+                  </Text>
+                  <Badge label={st.label} tone={st.tone} />
+                </View>
+                <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>{displayUser(state, ub.customerId)}</Text>
+                <Text style={{ color: colors.muted, fontSize: 13 }}>
+                  {res?.name ?? ub.title} · {ub.quantity}x{alloc?.partySize ? ` · ${alloc.partySize} guests` : ""}
+                </Text>
+                {ub.checkInCode ? (
+                  <Text style={{ color: colors.lavender, fontSize: 12, fontVariant: ["tabular-nums"] }}>Code: {ub.checkInCode}</Text>
+                ) : null}
+              </Card>
+            );
+          })}
+
+          {dayBlocks.map((blk) => {
+            const res = resources.find((r) => r.id === blk.resourceId);
+            return (
+              <Card key={blk.id} style={{ gap: 4 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Badge label="Space Blocked" tone="warning" />
+                  <Text style={{ color: colors.muted, fontSize: 12 }}>{blk.unitsBlocked} unit(s)</Text>
+                </View>
+                <Text style={{ color: colors.text, fontWeight: "700" }}>{res?.name ?? blk.resourceId}</Text>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  {formatDateTime(blk.startAt)} → {formatDateTime(blk.endAt)} · {blk.reason}
+                </Text>
+              </Card>
+            );
+          })}
+        </>
       )}
 
       <Modal visible={Boolean(selectedApt)} transparent animationType="fade" onRequestClose={() => setSelectedApt(null)}>
@@ -214,51 +344,80 @@ export default function WorkspaceScheduleScreen() {
                 multiline
                 placeholder="Customer requests or internal staff notes"
               />
+              {error ? <Text style={{ color: colors.danger, fontSize: 12 }}>{error}</Text> : null}
               {canManage ? (
                 <View style={{ gap: 8 }}>
                   <Button
                     label="Save Notes"
                     tone="soft"
-                    onPress={() => {
-                      updateAppointmentNotes(bizId, selectedApt.id, aptNote);
-                      setSelectedApt({ ...selectedApt, notes: aptNote.trim() || undefined });
+                    disabled={busy}
+                    onPress={async () => {
+                      setError("");
+                      setBusy(true);
+                      try {
+                        const res = usingMocks()
+                          ? updateAppointmentNotes(bizId, selectedApt.id, aptNote)
+                          : await updateAppointmentNotesRemote(selectedApt.id, aptNote);
+                        if (!res.ok) {
+                          setError(res.error);
+                          return;
+                        }
+                        setSelectedApt({ ...selectedApt, notes: aptNote.trim() || undefined });
+                      } finally {
+                        setBusy(false);
+                      }
                     }}
                   />
-                  <Button
-                    label="Confirm"
-                    tone="soft"
-                    onPress={() => {
-                      setAppointmentStatus(selectedApt.id, "confirmed", auth.userId!);
-                      setSelectedApt(null);
-                    }}
-                  />
-                  <Button
-                    label="Mark Completed"
-                    tone="soft"
-                    onPress={() => {
-                      setAppointmentStatus(selectedApt.id, "completed", auth.userId!);
-                      setSelectedApt(null);
-                    }}
-                  />
-                  <Button
-                    label="Mark No-show"
-                    tone="ghost"
-                    onPress={() => {
-                      setAppointmentStatus(selectedApt.id, "no_show", auth.userId!);
-                      setSelectedApt(null);
-                    }}
-                  />
-                  <Button
-                    label="Cancel Appointment"
-                    tone="danger"
-                    onPress={() => {
-                      setAppointmentStatus(selectedApt.id, "cancelled", auth.userId!);
-                      setSelectedApt(null);
-                    }}
-                  />
+                  <Button label="Confirm" tone="soft" disabled={busy} onPress={() => void handleAptStatus("confirmed")} />
+                  <Button label="Mark Completed" tone="soft" disabled={busy} onPress={() => void handleAptStatus("completed")} />
+                  <Button label="Mark No-show" tone="ghost" disabled={busy} onPress={() => void handleAptStatus("no_show")} />
+                  <Button label="Cancel Appointment" tone="danger" disabled={busy} onPress={() => void handleAptStatus("cancelled")} />
                 </View>
               ) : null}
               <Button label="Close" tone="ghost" onPress={() => setSelectedApt(null)} />
+            </Card>
+          ) : null}
+        </View>
+      </Modal>
+
+      <Modal visible={Boolean(selectedUb)} transparent animationType="fade" onRequestClose={() => setSelectedUb(null)}>
+        <View style={{ flex: 1, backgroundColor: "rgba(8,8,14,0.75)", justifyContent: "center", padding: 20 }}>
+          {selectedUb ? (
+            <Card style={{ gap: 10 }}>
+              <Text style={{ color: colors.text, fontSize: 18, fontWeight: "800" }}>{selectedUb.title}</Text>
+              <Text style={{ color: colors.muted, fontSize: 13 }}>
+                {displayUser(state, selectedUb.customerId)} · {bookingModelLabel(selectedUb.bookingModel)}
+              </Text>
+              {selectedUb.startAt ? (
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  {formatDateTime(selectedUb.startAt)}
+                  {selectedUb.endAt ? ` → ${formatDateTime(selectedUb.endAt)}` : ""}
+                </Text>
+              ) : null}
+              {canViewCustomers && ubCustomer ? (
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  Contact: {ubCustomer.phone} · {ubCustomer.email}
+                </Text>
+              ) : null}
+              {error ? <Text style={{ color: colors.danger, fontSize: 12 }}>{error}</Text> : null}
+              {canManage ? (
+                <View style={{ gap: 8 }}>
+                  {(selectedUb.status === "pending" || selectedUb.status === "held") ? (
+                    <>
+                      <Button label="Confirm" tone="soft" disabled={busy} onPress={() => void handleUbStatus("confirmed")} />
+                      <Button label="Reject" tone="danger" disabled={busy} onPress={() => void handleUbStatus("rejected")} />
+                    </>
+                  ) : null}
+                  {selectedUb.status === "confirmed" ? (
+                    <>
+                      <Button label="Complete" tone="soft" disabled={busy} onPress={() => void handleUbStatus("completed")} />
+                      <Button label="No-show" tone="ghost" disabled={busy} onPress={() => void handleUbStatus("no_show")} />
+                      <Button label="Cancel" tone="danger" disabled={busy} onPress={() => void handleUbStatus("cancelled")} />
+                    </>
+                  ) : null}
+                </View>
+              ) : null}
+              <Button label="Close" tone="ghost" onPress={() => setSelectedUb(null)} />
             </Card>
           ) : null}
         </View>
@@ -268,7 +427,7 @@ export default function WorkspaceScheduleScreen() {
         <View style={{ flex: 1, backgroundColor: "rgba(8,8,14,0.75)", justifyContent: "center", padding: 20 }}>
           <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
             <Card style={{ gap: 12 }}>
-              <Text style={{ color: colors.text, fontSize: 18, fontWeight: "800" }}>Holidays & Blocked Time</Text>
+              <Text style={{ color: colors.text, fontSize: 18, fontWeight: "800" }}>Holidays &amp; Blocked Time</Text>
               {blockNotice ? <Text style={{ color: colors.lavender, fontSize: 12 }}>{blockNotice}</Text> : null}
 
               <Text style={{ color: colors.text, fontWeight: "700", fontSize: 13 }}>Holidays ({biz.holidays.length})</Text>
@@ -278,9 +437,11 @@ export default function WorkspaceScheduleScreen() {
                     key={h.date}
                     label={`${h.name} (${h.date}) ×`}
                     active
-                    onPress={() => {
-                      removeBusinessHoliday(bizId, h.date);
-                      setBlockNotice(`Removed holiday ${h.name}.`);
+                    onPress={async () => {
+                      const res = usingMocks()
+                        ? removeBusinessHoliday(bizId, h.date)
+                        : await removeBusinessHolidayRemote(bizId, h.date);
+                      setBlockNotice(res.ok ? `Removed holiday ${h.name}.` : res.error);
                     }}
                   />
                 ))}
@@ -298,14 +459,22 @@ export default function WorkspaceScheduleScreen() {
                 label="Add Holiday"
                 tone="soft"
                 small
-                onPress={() => {
-                  const res = addBusinessHoliday(bizId, holidayDate, holidayName);
-                  if (!res.ok) {
-                    setBlockNotice(res.error);
-                    return;
+                disabled={busy}
+                onPress={async () => {
+                  setBusy(true);
+                  try {
+                    const res = usingMocks()
+                      ? addBusinessHoliday(bizId, holidayDate, holidayName)
+                      : await addBusinessHolidayRemote(bizId, holidayDate, holidayName);
+                    if (!res.ok) {
+                      setBlockNotice(res.error);
+                      return;
+                    }
+                    setHolidayName("");
+                    setBlockNotice("Holiday added.");
+                  } finally {
+                    setBusy(false);
                   }
-                  setHolidayName("");
-                  setBlockNotice("Holiday added.");
                 }}
               />
 
@@ -317,9 +486,11 @@ export default function WorkspaceScheduleScreen() {
                   <Chip
                     key={b.id}
                     label={`${b.date} ${b.start}-${b.end} ×`}
-                    onPress={() => {
-                      removeBlockedSlot(bizId, b.id);
-                      setBlockNotice("Removed blocked time.");
+                    onPress={async () => {
+                      const res = usingMocks()
+                        ? removeBlockedSlot(bizId, b.id)
+                        : await removeBlockedSlotRemote(bizId, b.id);
+                      setBlockNotice(res.ok ? "Removed blocked time." : res.error);
                     }}
                   />
                 ))}
@@ -340,14 +511,22 @@ export default function WorkspaceScheduleScreen() {
                 <Button
                   label="Block Time"
                   style={{ flex: 1 }}
-                  onPress={() => {
-                    const res = addBlockedSlot(bizId, blockDate, blockStart, blockEnd, blockReason);
-                    if (!res.ok) {
-                      setBlockNotice(res.error);
-                      return;
+                  disabled={busy}
+                  onPress={async () => {
+                    setBusy(true);
+                    try {
+                      const res = usingMocks()
+                        ? addBlockedSlot(bizId, blockDate, blockStart, blockEnd, blockReason)
+                        : await addBlockedSlotRemote(bizId, blockDate, blockStart, blockEnd, blockReason);
+                      if (!res.ok) {
+                        setBlockNotice(res.error);
+                        return;
+                      }
+                      setBlockReason("");
+                      setBlockNotice("Blocked time added.");
+                    } finally {
+                      setBusy(false);
                     }
-                    setBlockReason("");
-                    setBlockNotice("Blocked time added.");
                   }}
                 />
               </View>
@@ -383,23 +562,32 @@ export default function WorkspaceScheduleScreen() {
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowCreate(false)} />
               <Button
-                label="Create"
+                label={busy ? "Creating..." : "Create"}
                 style={{ flex: 1 }}
-                onPress={() => {
-                  const res = createStaffAppointment({
-                    businessId: bizId,
-                    customerId: newCustomerId,
-                    serviceId: newServiceId || services[0]?.id || "",
-                    employeeId: newEmployeeId || employees[0]?.id || "",
-                    date: selectedDate,
-                    time: newTime,
-                  });
-                  if (!res.ok) {
-                    setError(res.error);
-                    return;
-                  }
-                  setShowCreate(false);
+                disabled={busy}
+                onPress={async () => {
                   setError("");
+                  setBusy(true);
+                  try {
+                    const payload = {
+                      businessId: bizId,
+                      customerId: newCustomerId,
+                      serviceId: newServiceId || services[0]?.id || "",
+                      employeeId: newEmployeeId || employees[0]?.id || "",
+                      date: selectedDate,
+                      time: newTime,
+                    };
+                    const res = usingMocks()
+                      ? createStaffAppointment(payload)
+                      : await createAppointmentRemote(payload);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setShowCreate(false);
+                  } finally {
+                    setBusy(false);
+                  }
                 }}
               />
             </View>

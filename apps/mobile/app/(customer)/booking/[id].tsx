@@ -2,13 +2,29 @@ import {
   addReview,
   displayUser,
   rescheduleAppointment,
+  rescheduleAppointmentRemote,
+  resourcesForBusiness,
   sendBusinessMessage,
   setAppointmentStatus,
+  setAppointmentStatusRemote,
+  setUniversalBookingStatus,
+  setUniversalBookingStatusRemote,
+  universalBookingById,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { brand } from "@bookit/design-system";
-import { appointmentStatus } from "@bookit/ui";
-import { addDays, availableSlots, bookingTotals, DEMO_TODAY, formatDate, formatDateTime, formatMoney } from "@bookit/utils";
+import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
+import {
+  addDays,
+  availableSlots,
+  bookingModelLabel,
+  bookingTotals,
+  DEMO_TODAY,
+  formatDate,
+  formatDateTime,
+  formatMoney,
+} from "@bookit/utils";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -24,9 +40,12 @@ export default function CustomerBookingDetailScreen() {
   const { colors } = useThemePalette();
 
   const apt = state.appointments.find((a) => a.id === id);
-  const biz = apt ? state.businesses.find((b) => b.id === apt.businessId) : undefined;
+  const ub = id ? universalBookingById(state, id) : undefined;
+  const bizId = apt?.businessId ?? ub?.businessId ?? "";
+  const biz = bizId ? state.businesses.find((b) => b.id === bizId) : undefined;
   const svc = apt ? state.services.find((s) => s.id === apt.serviceId) : undefined;
   const emp = apt ? state.employees.find((e) => e.id === apt.employeeId) : undefined;
+  const resources = bizId ? resourcesForBusiness(state, bizId, true) : [];
 
   const [showReschedule, setShowReschedule] = useState(false);
   const [newDate, setNewDate] = useState(apt ? apt.start.slice(0, 10) : addDays(DEMO_TODAY, 1));
@@ -38,6 +57,8 @@ export default function CustomerBookingDetailScreen() {
   const [showMessage, setShowMessage] = useState(false);
   const [messageBody, setMessageBody] = useState("");
   const [notice, setNotice] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const dateDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(DEMO_TODAY, i)), []);
   const openSlots = useMemo(() => {
@@ -53,6 +74,155 @@ export default function CustomerBookingDetailScreen() {
       employeeId: apt.employeeId,
     });
   }, [apt, biz, svc, newDate, state.employees, state.appointments]);
+
+  // Universal booking detail view
+  if (!apt && ub) {
+    if (auth.userId && ub.customerId !== auth.userId && !auth.user?.isPlatformAdmin) {
+      return (
+        <Screen>
+          <BrandHeader title="Booking Details" showBack />
+          <EmptyState title="Booking not found" body="Check your bookings list for active reservations." />
+        </Screen>
+      );
+    }
+    const meta = universalBookingStatus(ub.status);
+    const alloc = ub.resourceAllocations[0];
+    const res = alloc ? resources.find((r) => r.id === alloc.resourceId) : undefined;
+    return (
+      <Screen>
+        <BrandHeader title="Booking Details" showBack />
+        <Card style={{ gap: 10 }}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Badge label={bookingModelLabel(ub.bookingModel)} tone="brand" />
+            <Badge label={meta.label} tone={meta.tone} />
+          </View>
+          <Text style={{ color: colors.text, fontSize: 21, fontWeight: "800" }}>{ub.title}</Text>
+          <Pressable onPress={() => biz && router.push(`/(customer)/business/${biz.id}`)}>
+            <Text style={{ color: brand.lavender, fontSize: 14, fontWeight: "700" }}>{biz?.name} →</Text>
+          </Pressable>
+          {res ? (
+            <Text style={{ color: colors.muted, fontSize: 13 }}>Space: {res.name}</Text>
+          ) : null}
+          {ub.startAt ? (
+            <Text style={{ color: colors.text, fontSize: 14, fontWeight: "700", fontVariant: ["tabular-nums"] }}>
+              {formatDateTime(ub.startAt)}
+              {ub.endAt ? ` → ${formatDateTime(ub.endAt)}` : ""}
+            </Text>
+          ) : null}
+          {alloc ? (
+            <Text style={{ color: colors.muted, fontSize: 12 }}>
+              {alloc.partySize} guest(s) · {alloc.quantityUnits} unit(s)
+            </Text>
+          ) : null}
+          {ub.checkInCode ? (
+            <Card style={{ gap: 4, backgroundColor: colors.bgElevated }}>
+              <Text style={{ color: colors.muted, fontSize: 11 }}>FRONT-DESK CHECK-IN CODE</Text>
+              <Text style={{ color: colors.text, fontSize: 18, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
+                {ub.checkInCode}
+              </Text>
+            </Card>
+          ) : null}
+          {ub.ticketPasses.map((pass) => (
+            <Card key={pass.id} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: colors.bgElevated }}>
+              <View>
+                <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>{pass.passCode}</Text>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  {pass.attendeeName || "Guest"} · {formatMoney(pass.unitPrice)}
+                </Text>
+              </View>
+              <Badge label={pass.status} tone={pass.status === "checked_in" ? "info" : "success"} />
+            </Card>
+          ))}
+          <View style={{ borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 10, gap: 4 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={{ color: colors.muted, fontSize: 12 }}>Subtotal</Text>
+              <Text style={{ color: colors.text, fontVariant: ["tabular-nums"] }}>{formatMoney(ub.subtotalAmount)}</Text>
+            </View>
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={{ color: colors.muted, fontSize: 12 }}>Tax</Text>
+              <Text style={{ color: colors.text, fontVariant: ["tabular-nums"] }}>{formatMoney(ub.taxAmount)}</Text>
+            </View>
+            {ub.depositDueAmount > 0 ? (
+              <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>Deposit Due</Text>
+                <Text style={{ color: colors.lavender, fontWeight: "700", fontVariant: ["tabular-nums"] }}>
+                  {formatMoney(ub.depositDueAmount)}
+                </Text>
+              </View>
+            ) : null}
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={{ color: colors.text, fontWeight: "700" }}>Total ({ub.paymentStatus})</Text>
+              <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>{formatMoney(ub.totalAmount)}</Text>
+            </View>
+          </View>
+          <Text style={{ color: colors.muted, fontSize: 12 }}>{ub.cancellationPolicySnapshot ?? biz?.cancellationPolicy}</Text>
+        </Card>
+
+        {notice ? <Text style={{ color: brand.lavender, fontSize: 13 }}>{notice}</Text> : null}
+        {errorMsg ? <Text style={{ color: colors.danger, fontSize: 13 }}>{errorMsg}</Text> : null}
+
+        <View style={{ gap: 10 }}>
+          {["held", "pending", "confirmed"].includes(ub.status) && auth.userId ? (
+            <Button
+              label={busy ? "Cancelling..." : "Cancel Booking"}
+              tone="danger"
+              disabled={busy}
+              onPress={async () => {
+                setErrorMsg("");
+                setBusy(true);
+                try {
+                  const res = usingMocks()
+                    ? setUniversalBookingStatus(ub.id, "cancelled", auth.userId!)
+                    : await setUniversalBookingStatusRemote(ub.id, "cancelled", "Customer cancelled");
+                  if (!res.ok) {
+                    setErrorMsg(res.error);
+                    return;
+                  }
+                  setNotice("Booking cancelled.");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            />
+          ) : null}
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Button label="Message Business" tone="ghost" style={{ flex: 1 }} onPress={() => setShowMessage(true)} />
+            <Button
+              label="Book Again"
+              tone="ghost"
+              style={{ flex: 1 }}
+              onPress={() => biz && router.push(`/(customer)/book/${biz.id}?model=${ub.bookingModel}`)}
+            />
+          </View>
+        </View>
+
+        <Modal visible={showMessage} transparent animationType="slide" onRequestClose={() => setShowMessage(false)}>
+          <View style={{ flex: 1, backgroundColor: "rgba(8,8,14,0.75)", justifyContent: "center", padding: 20 }}>
+            <Card style={{ gap: 12 }}>
+              <Text style={{ color: colors.text, fontSize: 18, fontWeight: "800" }}>Message {biz?.name}</Text>
+              <InputField label="Message" value={messageBody} onChangeText={setMessageBody} multiline placeholder="Question or update..." />
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowMessage(false)} />
+                <Button
+                  label="Send"
+                  style={{ flex: 1 }}
+                  onPress={() => {
+                    if (!auth.userId) return;
+                    const res = sendBusinessMessage(auth.userId, ub.businessId, messageBody);
+                    if (res.ok) {
+                      setNotice("Message sent.");
+                      setMessageBody("");
+                      setShowMessage(false);
+                    }
+                  }}
+                />
+              </View>
+            </Card>
+          </View>
+        </Modal>
+      </Screen>
+    );
+  }
 
   if (!apt || (auth.userId && apt.customerId !== auth.userId && !auth.user?.isPlatformAdmin)) {
     return (
@@ -115,6 +285,7 @@ export default function CustomerBookingDetailScreen() {
       </Card>
 
       {notice ? <Text style={{ color: brand.lavender, fontSize: 13 }}>{notice}</Text> : null}
+      {errorMsg ? <Text style={{ color: colors.danger, fontSize: 13 }}>{errorMsg}</Text> : null}
 
       <View style={{ gap: 10 }}>
         {(apt.status === "pending" || apt.status === "confirmed") && auth.userId ? (
@@ -124,17 +295,31 @@ export default function CustomerBookingDetailScreen() {
               tone="soft"
               style={{ flex: 1 }}
               onPress={() => {
+                setErrorMsg("");
                 setNewDate(apt.start.slice(0, 10) || addDays(DEMO_TODAY, 1));
                 setShowReschedule(true);
               }}
             />
             <Button
-              label="Cancel Booking"
+              label={busy ? "Cancelling..." : "Cancel Booking"}
               tone="danger"
+              disabled={busy}
               style={{ flex: 1 }}
-              onPress={() => {
-                setAppointmentStatus(apt.id, "cancelled", auth.userId!);
-                setNotice("Appointment cancelled.");
+              onPress={async () => {
+                setErrorMsg("");
+                setBusy(true);
+                try {
+                  const res = usingMocks()
+                    ? setAppointmentStatus(apt.id, "cancelled", auth.userId!)
+                    : await setAppointmentStatusRemote(apt.id, "cancelled", "Customer cancelled");
+                  if (!res.ok) {
+                    setErrorMsg(res.error);
+                    return;
+                  }
+                  setNotice("Appointment cancelled.");
+                } finally {
+                  setBusy(false);
+                }
               }}
             />
           </View>
@@ -150,7 +335,7 @@ export default function CustomerBookingDetailScreen() {
             label="Book Again"
             tone="ghost"
             style={{ flex: 1 }}
-            onPress={() => biz && router.push(`/(customer)/book/${biz.id}?service=${apt.serviceId}`)}
+            onPress={() => biz && router.push(`/(customer)/book/${biz.id}?model=appointment&service=${apt.serviceId}`)}
           />
         </View>
       </View>
@@ -218,18 +403,29 @@ export default function CustomerBookingDetailScreen() {
                 })}
               </View>
             )}
+            {errorMsg ? <Text style={{ color: colors.danger, fontSize: 12 }}>{errorMsg}</Text> : null}
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowReschedule(false)} />
               <Button
-                label="Save Time"
-                disabled={!chosenSlot}
+                label={busy ? "Saving..." : "Save Time"}
+                disabled={busy || !chosenSlot}
                 style={{ flex: 1 }}
-                onPress={() => {
+                onPress={async () => {
                   if (!auth.userId || !chosenSlot) return;
-                  const res = rescheduleAppointment(apt.id, newDate, chosenSlot, auth.userId);
-                  if (res.ok) {
+                  setErrorMsg("");
+                  setBusy(true);
+                  try {
+                    const res = usingMocks()
+                      ? rescheduleAppointment(apt.id, newDate, chosenSlot, auth.userId)
+                      : await rescheduleAppointmentRemote(apt.id, newDate, chosenSlot);
+                    if (!res.ok) {
+                      setErrorMsg(res.error);
+                      return;
+                    }
                     setNotice(`Rescheduled to ${newDate} at ${chosenSlot}.`);
                     setShowReschedule(false);
+                  } finally {
+                    setBusy(false);
                   }
                 }}
               />

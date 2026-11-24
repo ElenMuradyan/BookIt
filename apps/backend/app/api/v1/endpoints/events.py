@@ -8,16 +8,20 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies.auth import get_optional_user, require_user
 from app.core.database import get_db
 from app.models.base import new_id
-from app.models.booking import EventOffering, EventSession, Resource, TicketTier
+from app.models.booking import Booking, EventOffering, EventSession, Resource, TicketPass, TicketTier
 from app.models.catalog import Employee
 from app.models.user import User
 from app.schemas.booking import (
     EventOfferingIn,
     EventOfferingOut,
+    EventOfferingUpdateIn,
     EventSessionIn,
     EventSessionOut,
     EventSessionUpdateIn,
+    SessionAttendeeOut,
+    TicketTierIn,
     TicketTierOut,
+    TicketTierUpdateIn,
 )
 from app.services.rbac import (
     ensure_business_visible,
@@ -154,6 +158,40 @@ async def create_offering(
     return serialize_offering(loaded)
 
 
+@router.patch("/businesses/{business_id}/offerings/{offering_id}", response_model=EventOfferingOut)
+async def update_offering(
+    business_id: str,
+    offering_id: str,
+    payload: EventOfferingUpdateIn,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "events.manage")
+    off = (
+        await db.execute(
+            select(EventOffering)
+            .options(selectinload(EventOffering.sessions).selectinload(EventSession.tiers))
+            .where(EventOffering.id == offering_id, EventOffering.business_id == business_id)
+        )
+    ).scalar_one_or_none()
+    if not off:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Offering not found")
+
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        if isinstance(v, str):
+            v = v.strip()
+        setattr(off, k, v)
+    await db.commit()
+    loaded = (
+        await db.execute(
+            select(EventOffering)
+            .options(selectinload(EventOffering.sessions).selectinload(EventSession.tiers))
+            .where(EventOffering.id == off.id)
+        )
+    ).scalar_one()
+    return serialize_offering(loaded)
+
+
 @router.post(
     "/businesses/{business_id}/offerings/{offering_id}/sessions",
     response_model=EventSessionOut,
@@ -277,3 +315,126 @@ async def get_session_details(
     if not ses:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return serialize_session(ses)
+
+
+@router.post(
+    "/businesses/{business_id}/sessions/{session_id}/tiers",
+    response_model=TicketTierOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_session_tier(
+    business_id: str,
+    session_id: str,
+    payload: TicketTierIn,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "events.manage")
+    ses = await db.get(EventSession, session_id)
+    if not ses or ses.business_id != business_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if payload.capacity_limit is not None and payload.capacity_limit > ses.total_capacity:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Tier capacityLimit cannot exceed session totalCapacity",
+        )
+    tier = TicketTier(
+        id=new_id("tier"),
+        session_id=ses.id,
+        business_id=business_id,
+        name=payload.name.strip(),
+        description=payload.description.strip(),
+        price=payload.price,
+        currency=payload.currency.upper(),
+        capacity_limit=payload.capacity_limit,
+        reserved_count=0,
+        sort_order=payload.sort_order,
+        active=payload.active,
+    )
+    db.add(tier)
+    await db.commit()
+    await db.refresh(tier)
+    return serialize_tier(tier)
+
+
+@router.patch("/businesses/{business_id}/sessions/{session_id}/tiers/{tier_id}", response_model=TicketTierOut)
+async def update_session_tier(
+    business_id: str,
+    session_id: str,
+    tier_id: str,
+    payload: TicketTierUpdateIn,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "events.manage")
+    ses = await db.get(EventSession, session_id)
+    if not ses or ses.business_id != business_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    tier = await db.get(TicketTier, tier_id)
+    if not tier or tier.session_id != ses.id or tier.business_id != business_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket tier not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    if "capacity_limit" in data and data["capacity_limit"] is not None:
+        cap = data["capacity_limit"]
+        if cap < tier.reserved_count:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot lower tier capacityLimit below reserved count ({tier.reserved_count})",
+            )
+        if cap > ses.total_capacity:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Tier capacityLimit cannot exceed session totalCapacity",
+            )
+    for k, v in data.items():
+        if isinstance(v, str):
+            v = v.strip()
+        setattr(tier, k, v)
+    await db.commit()
+    await db.refresh(tier)
+    return serialize_tier(tier)
+
+
+@router.get("/businesses/{business_id}/sessions/{session_id}/attendees", response_model=list[SessionAttendeeOut])
+async def list_session_attendees(
+    business_id: str,
+    session_id: str,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "bookings.view")
+    ses = await db.get(EventSession, session_id)
+    if not ses or ses.business_id != business_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    rows = (
+        await db.execute(
+            select(TicketPass, Booking, User, TicketTier)
+            .join(Booking, Booking.id == TicketPass.booking_id)
+            .join(User, User.id == Booking.customer_id)
+            .outerjoin(TicketTier, TicketTier.id == TicketPass.tier_id)
+            .where(TicketPass.session_id == session_id, TicketPass.business_id == business_id)
+            .order_by(Booking.created_at.desc(), TicketPass.id.asc())
+        )
+    ).all()
+
+    return [
+        SessionAttendeeOut(
+            pass_id=p.id,
+            booking_id=b.id,
+            session_id=p.session_id,
+            tier_id=p.tier_id,
+            tier_name=t.name if t else None,
+            customer_id=u.id,
+            customer_name=f"{u.first_name} {u.last_name}".strip(),
+            attendee_name=p.attendee_name,
+            booking_status=b.status,
+            payment_status=b.payment_status,
+            pass_code=p.pass_code,
+            pass_status=p.status,
+            checked_in_at=p.checked_in_at,
+            created_at=b.created_at,
+        )
+        for p, b, u, t in rows
+    ]

@@ -186,6 +186,7 @@ class ResourceIn(CamelModel):
 
 class ResourceUpdateIn(CamelModel):
     name: str | None = Field(default=None, min_length=2, max_length=200)
+    resource_type: ResourceTypeLiteral | None = None
     description: str | None = Field(default=None, max_length=2000)
     capacity_people: int | None = Field(default=None, ge=1, le=500)
     units_total: int | None = Field(default=None, ge=1, le=1000)
@@ -270,6 +271,37 @@ class ResourceAllocationOut(CamelModel):
     unit_price: float
 
 
+class ResourceSearchItemOut(CamelModel):
+    resource: ResourceOut
+    date: str
+    timezone: str
+    available_at_requested_time: bool | None = None
+    slots: list[ResourceAvailabilitySlotOut] = Field(default_factory=list)
+
+
+class HotelStayOptionOut(CamelModel):
+    resource: ResourceOut
+    check_in_at: datetime
+    check_out_at: datetime
+    nights: int
+    remaining_units: int
+    nightly_rate: float
+    total_price: float
+    deposit_due: float
+
+
+class HotelStayAvailabilityOut(CamelModel):
+    business_id: str
+    check_in: str
+    check_out: str
+    check_in_time: str
+    check_out_time: str
+    nights: int
+    guests: int
+    timezone: str
+    options: list[HotelStayOptionOut] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: Ticket & Capacity Offerings / Sessions / Tiers / Passes
 # ---------------------------------------------------------------------------
@@ -290,6 +322,18 @@ class EventOfferingIn(CamelModel):
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class EventOfferingUpdateIn(CamelModel):
+    booking_model: Literal["ticket", "capacity"] | None = None
+    category: str | None = Field(default=None, min_length=2, max_length=64)
+    title: str | None = Field(default=None, min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    venue_area: str | None = Field(default=None, max_length=200)
+    image_url: str | None = None
+    cancellation_policy: str | None = Field(default=None, max_length=2000)
+    active: bool | None = None
+    metadata_json: dict[str, Any] | None = None
+
+
 class TicketTierIn(CamelModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=500)
@@ -298,6 +342,15 @@ class TicketTierIn(CamelModel):
     capacity_limit: int | None = Field(default=None, ge=1, le=100000)
     sort_order: int = Field(default=0, ge=0, le=1000)
     active: bool = True
+
+
+class TicketTierUpdateIn(CamelModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    price: float | None = Field(default=None, ge=0, le=100000)
+    capacity_limit: int | None = Field(default=None, ge=1, le=100000)
+    sort_order: int | None = Field(default=None, ge=0, le=1000)
+    active: bool | None = None
 
 
 class TicketTierOut(CamelModel):
@@ -385,6 +438,23 @@ class TicketPassOut(CamelModel):
     pass_code: str
     status: str
     checked_in_at: datetime | None = None
+
+
+class SessionAttendeeOut(CamelModel):
+    pass_id: str
+    booking_id: str
+    session_id: str
+    tier_id: str | None = None
+    tier_name: str | None = None
+    customer_id: str
+    customer_name: str
+    attendee_name: str | None = None
+    booking_status: str
+    payment_status: str
+    pass_code: str
+    pass_status: str
+    checked_in_at: datetime | None = None
+    created_at: datetime
 
 
 # ---------------------------------------------------------------------------

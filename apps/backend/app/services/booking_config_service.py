@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -14,6 +15,138 @@ DEFAULT_LABELS = {
     "resource": "Spaces & Resources",
     "ticket": "Events & Tickets",
     "capacity": "Classes & Group Experiences",
+}
+
+
+@dataclass(frozen=True)
+class _ModelSeedSpec:
+    booking_model: str
+    enabled: bool
+    display_label: str
+    approval_mode: str = "automatic"
+    min_notice_minutes: int = 30
+    max_advance_days: int = 90
+    cancellation_cutoff_hours: int = 24
+    cancellation_policy_text: str = "Free cancellation up to 24 hours before the booking."
+    hold_ttl_minutes: int = 10
+    settings: dict[str, Any] = field(default_factory=dict)
+
+
+CATEGORY_BOOKING_DEFAULTS: dict[str, list[_ModelSeedSpec]] = {
+    "restaurant": [
+        _ModelSeedSpec(
+            booking_model="resource",
+            enabled=True,
+            display_label="Table Reservations",
+            min_notice_minutes=30,
+            max_advance_days=60,
+            cancellation_cutoff_hours=4,
+            cancellation_policy_text="Free cancellation or party modification up to 4 hours before dining time.",
+            settings={
+                "slotIntervalMinutes": 30,
+                "turnDurationMinutes": 90,
+                "seatingAreas": ["Main Dining", "Patio", "Bar"],
+            },
+        ),
+        _ModelSeedSpec(booking_model="appointment", enabled=False, display_label="Private Consultations"),
+    ],
+    "hotel": [
+        _ModelSeedSpec(
+            booking_model="resource",
+            enabled=True,
+            display_label="Rooms & Suites",
+            min_notice_minutes=120,
+            max_advance_days=365,
+            cancellation_cutoff_hours=48,
+            cancellation_policy_text="Free cancellation up to 48 hours before scheduled check-in.",
+            settings={
+                "checkInTime": "15:00",
+                "checkOutTime": "11:00",
+                "roomTypes": ["Single", "Double", "Twin", "Suite"],
+            },
+        ),
+        _ModelSeedSpec(booking_model="appointment", enabled=False, display_label="Concierge Appointments"),
+    ],
+    "events": [
+        _ModelSeedSpec(
+            booking_model="ticket",
+            enabled=True,
+            display_label="Events & Tickets",
+            min_notice_minutes=30,
+            max_advance_days=365,
+            cancellation_cutoff_hours=48,
+            cancellation_policy_text="Tickets may be refunded up to 48 hours prior to the event start.",
+            hold_ttl_minutes=15,
+        ),
+        _ModelSeedSpec(
+            booking_model="capacity",
+            enabled=True,
+            display_label="Tours & Group Experiences",
+            min_notice_minutes=60,
+            max_advance_days=180,
+            cancellation_cutoff_hours=24,
+        ),
+        _ModelSeedSpec(booking_model="appointment", enabled=False, display_label="Private Inquiries"),
+    ],
+    "travel": [
+        _ModelSeedSpec(
+            booking_model="ticket",
+            enabled=True,
+            display_label="Tours & Tickets",
+            min_notice_minutes=60,
+            max_advance_days=365,
+            cancellation_cutoff_hours=48,
+            hold_ttl_minutes=15,
+        ),
+        _ModelSeedSpec(
+            booking_model="capacity",
+            enabled=True,
+            display_label="Guided Group Tours",
+            min_notice_minutes=60,
+            max_advance_days=180,
+            cancellation_cutoff_hours=24,
+        ),
+        _ModelSeedSpec(booking_model="appointment", enabled=False, display_label="Custom Travel Planning"),
+    ],
+    "sports": [
+        _ModelSeedSpec(
+            booking_model="resource",
+            enabled=True,
+            display_label="Courts & Fields",
+            min_notice_minutes=30,
+            max_advance_days=60,
+            cancellation_cutoff_hours=12,
+            settings={"slotIntervalMinutes": 60},
+        ),
+        _ModelSeedSpec(
+            booking_model="capacity",
+            enabled=True,
+            display_label="Group Clinics",
+            min_notice_minutes=30,
+            max_advance_days=90,
+            cancellation_cutoff_hours=12,
+        ),
+        _ModelSeedSpec(booking_model="appointment", enabled=True, display_label="Private Coaching"),
+    ],
+    "fitness": [
+        _ModelSeedSpec(booking_model="appointment", enabled=True, display_label="Personal Training"),
+        _ModelSeedSpec(
+            booking_model="capacity",
+            enabled=True,
+            display_label="Group Classes",
+            min_notice_minutes=30,
+            max_advance_days=60,
+            cancellation_cutoff_hours=12,
+        ),
+    ],
+    "wellness": [
+        _ModelSeedSpec(booking_model="appointment", enabled=True, display_label="Sessions & Treatments"),
+        _ModelSeedSpec(booking_model="resource", enabled=True, display_label="Suites & Spa Rooms"),
+    ],
+    "retail": [
+        _ModelSeedSpec(booking_model="appointment", enabled=True, display_label="Consultations & Fittings"),
+        _ModelSeedSpec(booking_model="capacity", enabled=True, display_label="Workshops & Trunk Shows"),
+    ],
 }
 
 
@@ -33,6 +166,7 @@ class EffectiveBookingPolicy:
     deposit_value: float
     hold_ttl_minutes: int
     allow_overbooking: bool
+    settings: dict[str, Any] = field(default_factory=dict)
 
 
 async def list_booking_configs_for_business(db: AsyncSession, business_id: str) -> list[BusinessBookingConfig]:
@@ -48,6 +182,50 @@ async def list_booking_configs_for_business(db: AsyncSession, business_id: str) 
         .all()
     )
     return rows
+
+
+async def seed_booking_configs_for_category(
+    db: AsyncSession,
+    business: Business,
+    *,
+    commit: bool = False,
+) -> list[BusinessBookingConfig]:
+    specs = CATEGORY_BOOKING_DEFAULTS.get(
+        business.category,
+        [_ModelSeedSpec(booking_model="appointment", enabled=True, display_label="Appointments")],
+    )
+    existing_rows = await list_booking_configs_for_business(db, business.id)
+    existing_by_model = {c.booking_model: c for c in existing_rows}
+    created: list[BusinessBookingConfig] = []
+
+    for spec in specs:
+        if spec.booking_model in existing_by_model:
+            continue
+        cfg = BusinessBookingConfig(
+            business_id=business.id,
+            booking_model=spec.booking_model,
+            enabled=spec.enabled,
+            display_label=spec.display_label,
+            approval_mode=spec.approval_mode,
+            min_notice_minutes=spec.min_notice_minutes,
+            max_advance_days=spec.max_advance_days,
+            buffer_before_minutes=0,
+            buffer_after_minutes=0,
+            cancellation_cutoff_hours=spec.cancellation_cutoff_hours,
+            cancellation_fee_percent=0,
+            cancellation_policy_text=spec.cancellation_policy_text,
+            deposit_mode="none",
+            deposit_value=0,
+            hold_ttl_minutes=spec.hold_ttl_minutes,
+            allow_overbooking=False,
+            settings=dict(spec.settings),
+        )
+        db.add(cfg)
+        created.append(cfg)
+
+    if commit:
+        await db.commit()
+    return created
 
 
 async def get_effective_booking_config(
@@ -84,6 +262,7 @@ async def get_effective_booking_config(
             deposit_value=float(cfg.deposit_value),
             hold_ttl_minutes=cfg.hold_ttl_minutes,
             allow_overbooking=cfg.allow_overbooking,
+            settings=dict(cfg.settings or {}),
         )
 
     # Backward-compatible default: appointments are enabled by default using Business columns;
@@ -103,6 +282,7 @@ async def get_effective_booking_config(
         deposit_value=0.0,
         hold_ttl_minutes=10,
         allow_overbooking=False,
+        settings={},
     )
 
 

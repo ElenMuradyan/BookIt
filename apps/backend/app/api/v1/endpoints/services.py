@@ -1,20 +1,49 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies.auth import get_optional_user, require_user
 from app.core.database import get_db
 from app.models.base import new_id
+from app.models.booking import Appointment
 from app.models.business import Business
 from app.models.catalog import Employee, Service
 from app.models.user import User
-from app.schemas.catalog import ServiceActiveIn, ServiceIn, ServiceOut
+from app.schemas.catalog import ServiceActiveIn, ServiceIn, ServiceOut, ServiceUpdateIn
+from app.schemas.common import OkResponse
 from app.services.rbac import ensure_business_visible, require_business_permission
 
 router = APIRouter(tags=["services"])
+
+
+async def _resolve_business_employees(
+    db: AsyncSession,
+    business_id: str,
+    employee_ids: list[str] | None,
+) -> list[Employee]:
+    if not employee_ids:
+        return []
+    cleaned = list(dict.fromkeys(eid.strip() for eid in employee_ids if eid.strip()))
+    if not cleaned:
+        return []
+    rows = list(
+        (
+            await db.execute(
+                select(Employee).where(Employee.business_id == business_id, Employee.id.in_(cleaned))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(rows) != len(cleaned):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="One or more selected staff members do not belong to this business",
+        )
+    return rows
 
 
 def _serialize_service(s: Service) -> ServiceOut:
@@ -97,6 +126,7 @@ async def create_service(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     await require_business_permission(db, user, business_id, "services.manage")
+    assigned_employees = await _resolve_business_employees(db, business_id, payload.employee_ids)
     service = Service(
         id=new_id("svc"),
         business_id=business_id,
@@ -111,6 +141,7 @@ async def create_service(
         deposit_amount=payload.deposit_amount,
         requires_approval=payload.requires_approval,
         cancellation_policy=payload.cancellation_policy.strip(),
+        employees=assigned_employees,
     )
     db.add(service)
     await db.commit()
@@ -149,9 +180,74 @@ async def update_service(
         service.image_url = payload.image_url
     service.requires_approval = payload.requires_approval
     service.deposit_amount = payload.deposit_amount
+    if payload.employee_ids is not None:
+        service.employees = await _resolve_business_employees(db, business_id, payload.employee_ids)
     await db.commit()
-    await db.refresh(service)
-    return _serialize_service(service)
+    loaded = (
+        await db.execute(select(Service).options(selectinload(Service.employees)).where(Service.id == service.id))
+    ).scalar_one()
+    return _serialize_service(loaded)
+
+
+@router.patch("/workspaces/{business_id}/services/{service_id}", response_model=ServiceOut)
+async def patch_service(
+    business_id: str,
+    service_id: str,
+    payload: ServiceUpdateIn,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "services.manage")
+    service = (
+        await db.execute(
+            select(Service)
+            .options(selectinload(Service.employees))
+            .where(Service.id == service_id, Service.business_id == business_id)
+        )
+    ).scalar_one_or_none()
+    if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    employee_ids = data.pop("employee_ids", None)
+    for field_name, value in data.items():
+        if isinstance(value, str):
+            value = value.strip()
+        setattr(service, field_name, value)
+    if employee_ids is not None:
+        service.employees = await _resolve_business_employees(db, business_id, employee_ids)
+    await db.commit()
+    loaded = (
+        await db.execute(select(Service).options(selectinload(Service.employees)).where(Service.id == service.id))
+    ).scalar_one()
+    return _serialize_service(loaded)
+
+
+@router.delete("/workspaces/{business_id}/services/{service_id}", response_model=OkResponse)
+async def delete_service(
+    business_id: str,
+    service_id: str,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "services.manage")
+    service = (
+        await db.execute(select(Service).where(Service.id == service_id, Service.business_id == business_id))
+    ).scalar_one_or_none()
+    if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+
+    appt_count = int(
+        (await db.execute(select(func.count(Appointment.id)).where(Appointment.service_id == service.id))).scalar_one()
+    )
+    if appt_count > 0:
+        service.active = False
+        await db.commit()
+        return OkResponse(ok=True, message="Service archived because existing appointments reference it")
+
+    await db.delete(service)
+    await db.commit()
+    return OkResponse(ok=True, message="Service deleted")
 
 
 @router.patch("/workspaces/{business_id}/services/{service_id}/active", response_model=ServiceOut)

@@ -1,6 +1,4 @@
-from html import escape
 from typing import Annotated
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +34,7 @@ from app.services.auth_service import (
     change_user_password,
     confirm_password_reset_token,
     deactivate_user_account,
+    enqueue_verification_email as _send_verification_email,
     find_user_by_identifier,
     issue_email_verification,
     register_customer,
@@ -50,42 +49,6 @@ from app.services.auth_service import (
 from app.services.notification_service import schedule_email_notification
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-def _send_verification_email(
-    background_tasks: BackgroundTasks,
-    *,
-    to_email: str,
-    code: str,
-    link_token: str,
-) -> None:
-    settings = get_settings()
-    base_url = settings.frontend_base_url.rstrip("/")
-    verify_url = f"{base_url}/verify?{urlencode({'token': link_token})}"
-    text_body = (
-        f"Welcome to BookIt.\n\n"
-        f"Your 6-digit verification code is: {code}\n\n"
-        f"Or verify with a single click using this link (expires in 24 hours):\n{verify_url}\n"
-    )
-    safe_url = escape(verify_url, quote=True)
-    safe_code = escape(code)
-    html_body = (
-        "<div style=\"font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#111827;\">"
-        "<h2 style=\"margin:0 0 12px;\">Verify your BookIt email</h2>"
-        "<p style=\"margin:0 0 16px;line-height:1.5;\">Enter this 6-digit verification code in BookIt:</p>"
-        f"<p style=\"font-size:28px;font-weight:700;letter-spacing:6px;margin:0 0 20px;\">{safe_code}</p>"
-        "<p style=\"margin:0 0 16px;line-height:1.5;\">Or verify directly with the button below (valid for 24 hours, single use):</p>"
-        f"<p style=\"margin:0 0 20px;\"><a href=\"{safe_url}\" style=\"display:inline-block;padding:12px 20px;background:#6d28d9;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;\">Verify email address</a></p>"
-        f"<p style=\"font-size:12px;color:#6b7280;word-break:break-all;\">Direct link: {safe_url}</p>"
-        "</div>"
-    )
-    schedule_email_notification(
-        background_tasks,
-        to_email=to_email,
-        subject="Verify your BookIt email",
-        body=text_body,
-        html_body=html_body,
-    )
 
 
 def _set_session_cookies(

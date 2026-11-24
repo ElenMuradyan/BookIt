@@ -3,6 +3,7 @@ import {
   customerUniversalBookings,
   displayUser,
   setAppointmentStatus,
+  setAppointmentStatusRemote,
   setUniversalBookingStatus,
   setUniversalBookingStatusRemote,
   useBookItState,
@@ -23,6 +24,8 @@ export default function CustomerBookingsScreen() {
   const router = useRouter();
   const { colors } = useThemePalette();
   const [tab, setTab] = useState<"upcoming" | "past">("upcoming");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.userId) return null;
   const userId = auth.userId;
@@ -45,16 +48,18 @@ export default function CustomerBookingsScreen() {
         <Chip label="Upcoming" active={tab === "upcoming"} onPress={() => setTab("upcoming")} />
         <Chip label="Past & Cancelled" active={tab === "past"} onPress={() => setTab("past")} />
       </View>
+      {errorMsg ? <Text style={{ color: colors.danger, fontSize: 12 }}>{errorMsg}</Text> : null}
 
       {rows.length === 0 && universalRows.length === 0 ? (
-        <EmptyState title="No bookings here" body="Schedule a visit, space, or event from Explore to see it here." />
+        <EmptyState title="No bookings here" body="Schedule a visit, stay, table, or event from Explore to see it here." />
       ) : (
         <>
           {universalRows.map((ub) => {
             const biz = state.businesses.find((b) => b.id === ub.businessId);
             const meta = universalBookingStatus(ub.status);
+            const alloc = ub.resourceAllocations[0];
             return (
-              <Card key={ub.id} style={{ gap: 8 }}>
+              <Card key={ub.id} onPress={() => router.push(`/(customer)/booking/${ub.id}`)} style={{ gap: 8 }}>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
                   <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap", flex: 1 }}>
                     <Badge label={bookingModelLabel(ub.bookingModel)} tone="brand" />
@@ -65,9 +70,12 @@ export default function CustomerBookingsScreen() {
                   </Text>
                 </View>
                 <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>{ub.title}</Text>
-                <Text style={{ color: colors.muted, fontSize: 13 }}>{biz?.name} · {ub.quantity}x</Text>
+                <Text style={{ color: colors.muted, fontSize: 13 }}>
+                  {biz?.name} · {ub.quantity}x{alloc?.partySize ? ` · ${alloc.partySize} guests` : ""}
+                </Text>
                 <Text style={{ color: colors.lavender, fontSize: 12, fontVariant: ["tabular-nums"] }}>
                   {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)}
+                  {ub.endAt && ub.bookingModel === "resource" ? ` → ${formatDateTime(ub.endAt)}` : ""}
                 </Text>
                 {ub.checkInCode ? (
                   <Text style={{ color: colors.text, fontSize: 12, fontWeight: "700", fontVariant: ["tabular-nums"] }}>
@@ -81,22 +89,35 @@ export default function CustomerBookingsScreen() {
                     ))}
                   </View>
                 ) : null}
-                {tab === "upcoming" && ["held", "pending", "confirmed"].includes(ub.status) ? (
-                  <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 4 }}>
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
+                  <Button
+                    label="Details"
+                    tone="soft"
+                    small
+                    style={{ flex: 1 }}
+                    onPress={() => router.push(`/(customer)/booking/${ub.id}`)}
+                  />
+                  {tab === "upcoming" && ["held", "pending", "confirmed"].includes(ub.status) ? (
                     <Button
                       label="Cancel"
                       tone="danger"
                       small
+                      disabled={busy}
                       onPress={async () => {
-                        if (usingMocks()) {
-                          setUniversalBookingStatus(ub.id, "cancelled", userId);
-                        } else {
-                          await setUniversalBookingStatusRemote(ub.id, "cancelled", "Customer cancelled");
+                        setErrorMsg("");
+                        setBusy(true);
+                        try {
+                          const res = usingMocks()
+                            ? setUniversalBookingStatus(ub.id, "cancelled", userId)
+                            : await setUniversalBookingStatusRemote(ub.id, "cancelled", "Customer cancelled");
+                          if (!res.ok) setErrorMsg(res.error);
+                        } finally {
+                          setBusy(false);
                         }
                       }}
                     />
-                  </View>
-                ) : null}
+                  ) : null}
+                </View>
               </Card>
             );
           })}
@@ -134,7 +155,19 @@ export default function CustomerBookingsScreen() {
                       label="Cancel"
                       tone="danger"
                       small
-                      onPress={() => setAppointmentStatus(apt.id, "cancelled", userId)}
+                      disabled={busy}
+                      onPress={async () => {
+                        setErrorMsg("");
+                        setBusy(true);
+                        try {
+                          const res = usingMocks()
+                            ? setAppointmentStatus(apt.id, "cancelled", userId)
+                            : await setAppointmentStatusRemote(apt.id, "cancelled", "Customer cancelled");
+                          if (!res.ok) setErrorMsg(res.error);
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
                     />
                   </View>
                 ) : (
@@ -151,7 +184,7 @@ export default function CustomerBookingsScreen() {
                       tone="soft"
                       small
                       style={{ flex: 1 }}
-                      onPress={() => biz && router.push(`/(customer)/book/${biz.id}?service=${apt.serviceId}`)}
+                      onPress={() => biz && router.push(`/(customer)/book/${biz.id}?model=appointment&service=${apt.serviceId}`)}
                     />
                   </View>
                 )}

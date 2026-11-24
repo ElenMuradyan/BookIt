@@ -1,21 +1,29 @@
 "use client";
 
 import {
+  bookingConfigsForBusiness,
   createAppointment,
   createAppointmentRemote,
   createUniversalBooking,
   createUniversalBookingRemote,
   displayUser,
   enabledModelsForBusiness,
-  fetchResourceAvailabilityRemote,
+  fetchHotelStaysAvailabilityRemote,
   offeringsForBusiness,
   publicBusinessById,
   resourcesForBusiness,
+  searchResourcesAvailabilityRemote,
   servicesForBusiness,
   useBookItState,
   usingMocks,
 } from "@bookit/api-client";
-import type { BookingModel, PaymentMethod, ResourceAvailabilitySlot, UniversalBooking } from "@bookit/types";
+import type {
+  BookingModel,
+  HotelStayOption,
+  PaymentMethod,
+  ResourceSearchItem,
+  UniversalBooking,
+} from "@bookit/types";
 import {
   addDays,
   availableSlots,
@@ -35,6 +43,13 @@ import { useAuth } from "@/lib/session";
 
 const DATES = Array.from({ length: 7 }, (_, i) => addDays(DEMO_TODAY, i));
 
+function diffLocalDays(checkIn: string, checkOut: string): number {
+  const [y1, m1, d1] = checkIn.split("-").map(Number);
+  const [y2, m2, d2] = checkOut.split("-").map(Number);
+  if (!y1 || !m1 || !d1 || !y2 || !m2 || !d2) return 0;
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+}
+
 function BookingFlow({ businessId }: { businessId: string }) {
   const auth = useAuth();
   const state = useBookItState();
@@ -44,13 +59,14 @@ function BookingFlow({ businessId }: { businessId: string }) {
   const services = business ? servicesForBusiness(state, business.id) : [];
   const employees = business ? state.employees.filter((e) => e.businessId === business.id) : [];
   const resources = business ? resourcesForBusiness(state, business.id) : [];
+  const configs = business ? bookingConfigsForBusiness(state, business.id) : [];
   const models = business ? enabledModelsForBusiness(state, business.id) : [];
 
   const requestedModel = params.get("model") as BookingModel | null;
   const defaultModel: BookingModel =
     requestedModel && models.includes(requestedModel)
       ? requestedModel
-      : services.length > 0
+      : services.length > 0 && business?.category !== "restaurant" && business?.category !== "hotel"
         ? "appointment"
         : models[0] ?? "appointment";
 
@@ -63,7 +79,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
       )
     : [];
 
-  // Appointment state (preserved)
+  // Appointment state
   const [serviceId, setServiceId] = useState(params.get("service") || services[0]?.id || "");
   const [employeeId, setEmployeeId] = useState(params.get("employee") || "");
   const [date, setDate] = useState(DATES[1] ?? DEMO_TODAY);
@@ -72,13 +88,19 @@ function BookingFlow({ businessId }: { businessId: string }) {
   const [notes, setNotes] = useState("");
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [confirmedId, setConfirmedId] = useState("");
 
-  // Resource state
+  // Resource / Restaurant / Hotel state
   const [resourceId, setResourceId] = useState(params.get("resource") || resources[0]?.id || "");
   const [quantityUnits, setQuantityUnits] = useState(1);
   const [partySize, setPartySize] = useState(2);
-  const [remoteResSlots, setRemoteResSlots] = useState<ResourceAvailabilitySlot[] | null>(null);
+  const [preferredTime, setPreferredTime] = useState("19:00");
+  const [areaFilter, setAreaFilter] = useState("");
+  const [checkInDate, setCheckInDate] = useState(DATES[1] ?? DEMO_TODAY);
+  const [checkOutDate, setCheckOutDate] = useState(DATES[3] ?? addDays(DEMO_TODAY, 3));
+  const [remoteSearchItems, setRemoteSearchItems] = useState<ResourceSearchItem[] | null>(null);
+  const [remoteHotelOptions, setRemoteHotelOptions] = useState<HotelStayOption[] | null>(null);
 
   // Ticket / Capacity state
   const [offeringId, setOfferingId] = useState(params.get("offering") || offerings[0]?.id || "");
@@ -94,55 +116,201 @@ function BookingFlow({ businessId }: { businessId: string }) {
     : employees;
   const activeEmployee = eligibleEmployees.find((e) => e.id === employeeId) ?? eligibleEmployees[0];
 
-  const activeResource = resources.find((r) => r.id === resourceId) ?? resources[0];
+  const isHotel = Boolean(
+    business?.category === "hotel" || resources.some((r) => r.pricingUnit === "per_night" || r.resourceType === "hotel_room"),
+  );
+  const isRestaurant = Boolean(
+    business?.category === "restaurant" || resources.some((r) => r.resourceType === "restaurant_table"),
+  );
+  const resourceCfg = configs.find((c) => c.bookingModel === "resource");
+  const seatingAreas = Array.isArray(resourceCfg?.settings?.seatingAreas)
+    ? (resourceCfg.settings.seatingAreas as string[])
+    : Array.from(
+        new Set(
+          resources
+            .map((r) => (typeof r.attributes?.area === "string" ? r.attributes.area : ""))
+            .filter(Boolean),
+        ),
+      );
+
+  // Live remote search for Restaurant / Time-slot resources
+  useEffect(() => {
+    if (selectedModel !== "resource" || !business || isHotel) return;
+    if (usingMocks()) {
+      setRemoteSearchItems(null);
+      return;
+    }
+    let active = true;
+    void searchResourcesAvailabilityRemote(business.id, {
+      date,
+      time: preferredTime || undefined,
+      guests: partySize,
+      area: areaFilter || undefined,
+    }).then((res) => {
+      if (active && res.ok) setRemoteSearchItems(res.data);
+    });
+    return () => {
+      active = false;
+    };
+  }, [selectedModel, business, isHotel, date, preferredTime, partySize, areaFilter]);
+
+  // Live remote search for Hotel stays
+  useEffect(() => {
+    if (selectedModel !== "resource" || !business || !isHotel) return;
+    if (usingMocks()) {
+      setRemoteHotelOptions(null);
+      return;
+    }
+    if (diffLocalDays(checkInDate, checkOutDate) <= 0) {
+      setRemoteHotelOptions([]);
+      return;
+    }
+    let active = true;
+    void fetchHotelStaysAvailabilityRemote(business.id, {
+      checkIn: checkInDate,
+      checkOut: checkOutDate,
+      guests: partySize,
+    }).then((res) => {
+      if (active && res.ok) setRemoteHotelOptions(res.data.options);
+    });
+    return () => {
+      active = false;
+    };
+  }, [selectedModel, business, isHotel, checkInDate, checkOutDate, partySize]);
+
+  // Local mock fallback for resource/restaurant slot search
+  const localSearchItems = useMemo<ResourceSearchItem[]>(() => {
+    if (!business || isHotel) return [];
+    const interval = Number(resourceCfg?.settings?.slotIntervalMinutes ?? 60);
+    const stepMin = interval >= 15 && interval <= 120 ? interval : 60;
+    const out: ResourceSearchItem[] = [];
+    for (const res of resources) {
+      if (res.pricingUnit === "per_night") continue;
+      if (res.capacityPeople * quantityUnits < partySize) continue;
+      const resArea = typeof res.attributes?.area === "string" ? res.attributes.area : "";
+      if (areaFilter && resArea.toLowerCase() !== areaFilter.toLowerCase()) continue;
+
+      const durationMin = res.slotDurationMinutes ?? Number(resourceCfg?.settings?.turnDurationMinutes ?? 90);
+      const slots = [];
+      for (let mins = 11 * 60; mins <= 21 * 60; mins += stepMin) {
+        const hh = String(Math.floor(mins / 60)).padStart(2, "0");
+        const mm = String(mins % 60).padStart(2, "0");
+        const slotTime = `${hh}:${mm}`;
+        const startIso = `${date}T${slotTime}:00`;
+        const startMs = new Date(startIso).getTime();
+        const endMs = startMs + durationMin * 60 * 1000;
+        const endD = new Date(endMs);
+        const endIso = `${date}T${String(endD.getHours()).padStart(2, "0")}:${String(endD.getMinutes()).padStart(2, "0")}:00`;
+        let used = 0;
+        for (const bk of state.bookings ?? []) {
+          if (["cancelled", "rejected", "expired", "no_show"].includes(bk.status)) continue;
+          for (const alloc of bk.resourceAllocations) {
+            if (alloc.resourceId !== res.id) continue;
+            if (new Date(alloc.startAt).getTime() < endMs && startMs < new Date(alloc.endAt).getTime()) {
+              used += alloc.quantityUnits;
+            }
+          }
+        }
+        for (const blk of state.resourceBlocks ?? []) {
+          if (blk.resourceId !== res.id) continue;
+          if (new Date(blk.startAt).getTime() < endMs && startMs < new Date(blk.endAt).getTime()) {
+            used += blk.unitsBlocked;
+          }
+        }
+        const remainingUnits = Math.max(0, res.unitsTotal - used);
+        if (remainingUnits > 0) {
+          slots.push({ time: slotTime, startAt: startIso, endAt: endIso, remainingUnits });
+        }
+      }
+      out.push({
+        resource: res,
+        date,
+        timezone: res.timezone ?? "America/Los_Angeles",
+        availableAtRequestedTime: preferredTime ? slots.some((s) => s.time === preferredTime) : null,
+        slots,
+      });
+    }
+    return out;
+  }, [business, isHotel, resources, resourceCfg, quantityUnits, partySize, areaFilter, date, state.bookings, state.resourceBlocks, preferredTime]);
+
+  const searchItems = remoteSearchItems ?? localSearchItems;
+  const activeSearchItem =
+    searchItems.find((item) => item.resource.id === resourceId) ?? searchItems[0];
+  const activeResource = activeSearchItem?.resource ?? resources.find((r) => r.id === resourceId) ?? resources[0];
+  const resourceSlots = activeSearchItem?.slots ?? [];
+
+  // Local mock fallback for hotel stays
+  const localHotelOptions = useMemo<HotelStayOption[]>(() => {
+    if (!business || !isHotel) return [];
+    const nights = diffLocalDays(checkInDate, checkOutDate);
+    if (nights <= 0) return [];
+    const checkInTime = String(resourceCfg?.settings?.checkInTime ?? "15:00");
+    const checkOutTime = String(resourceCfg?.settings?.checkOutTime ?? "11:00");
+    const checkInAt = `${checkInDate}T${checkInTime}:00`;
+    const checkOutAt = `${checkOutDate}T${checkOutTime}:00`;
+    const reqStart = new Date(checkInAt).getTime();
+    const reqEnd = new Date(checkOutAt).getTime();
+    const out: HotelStayOption[] = [];
+
+    for (const res of resources) {
+      if (res.capacityPeople < partySize) continue;
+      let peakUsed = 0;
+      const events: [number, number][] = [];
+      for (const bk of state.bookings ?? []) {
+        if (["cancelled", "rejected", "expired", "no_show"].includes(bk.status)) continue;
+        for (const alloc of bk.resourceAllocations) {
+          if (alloc.resourceId !== res.id) continue;
+          const aStart = new Date(alloc.startAt).getTime();
+          const aEnd = new Date(alloc.endAt).getTime();
+          if (aStart < reqEnd && reqStart < aEnd) {
+            events.push([Math.max(aStart, reqStart), alloc.quantityUnits]);
+            events.push([Math.min(aEnd, reqEnd), -alloc.quantityUnits]);
+          }
+        }
+      }
+      for (const blk of state.resourceBlocks ?? []) {
+        if (blk.resourceId !== res.id) continue;
+        const bStart = new Date(blk.startAt).getTime();
+        const bEnd = new Date(blk.endAt).getTime();
+        if (bStart < reqEnd && reqStart < bEnd) {
+          events.push([Math.max(bStart, reqStart), blk.unitsBlocked]);
+          events.push([Math.min(bEnd, reqEnd), -blk.unitsBlocked]);
+        }
+      }
+      events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      let running = 0;
+      for (const [, delta] of events) {
+        running += delta;
+        if (running > peakUsed) peakUsed = running;
+      }
+      const remainingUnits = Math.max(0, res.unitsTotal - peakUsed);
+      if (remainingUnits > 0) {
+        const totalPrice = res.basePrice * nights;
+        const depositDue = res.depositAmount ?? 0;
+        out.push({
+          resource: res,
+          checkInAt,
+          checkOutAt,
+          nights,
+          remainingUnits,
+          nightlyRate: res.basePrice,
+          totalPrice,
+          depositDue,
+        });
+      }
+    }
+    return out;
+  }, [business, isHotel, checkInDate, checkOutDate, resourceCfg, resources, partySize, state.bookings, state.resourceBlocks]);
+
+  const hotelOptions = remoteHotelOptions ?? localHotelOptions;
+  const activeHotelOption =
+    hotelOptions.find((o) => o.resource.id === resourceId) ?? hotelOptions[0];
+
   const activeOffering = offerings.find((o) => o.id === offeringId) ?? offerings[0];
   const activeSession =
     activeOffering?.sessions.find((s) => s.id === sessionId) ??
     activeOffering?.sessions.find((s) => s.status === "on_sale" || s.status === "scheduled") ??
     activeOffering?.sessions[0];
-
-  useEffect(() => {
-    if (selectedModel !== "resource" || !business || !activeResource) return;
-    if (usingMocks()) {
-      setRemoteResSlots(null);
-      return;
-    }
-    let active = true;
-    void fetchResourceAvailabilityRemote(business.id, activeResource.id, date).then((res) => {
-      if (active && res.ok) setRemoteResSlots(res.data.slots);
-    });
-    return () => {
-      active = false;
-    };
-  }, [selectedModel, business, activeResource, date]);
-
-  const resourceSlots = useMemo<ResourceAvailabilitySlot[]>(() => {
-    if (remoteResSlots) return remoteResSlots;
-    if (!activeResource) return [];
-    const durationMin = activeResource.slotDurationMinutes ?? 60;
-    const out: ResourceAvailabilitySlot[] = [];
-    for (const startHour of [10, 12, 14, 16, 18, 20]) {
-      const hh = String(startHour).padStart(2, "0");
-      const startIso = `${date}T${hh}:00:00`;
-      const endDate = new Date(new Date(startIso).getTime() + durationMin * 60 * 1000);
-      const endIso = `${date}T${String(endDate.getHours()).padStart(2, "0")}:${String(endDate.getMinutes()).padStart(2, "0")}:00`;
-      let used = 0;
-      for (const bk of state.bookings ?? []) {
-        if (["cancelled", "rejected", "expired", "no_show"].includes(bk.status)) continue;
-        for (const alloc of bk.resourceAllocations) {
-          if (alloc.resourceId !== activeResource.id) continue;
-          if (new Date(alloc.startAt).getTime() < endDate.getTime() && new Date(startIso).getTime() < new Date(alloc.endAt).getTime()) {
-            used += alloc.quantityUnits;
-          }
-        }
-      }
-      const remainingUnits = Math.max(0, activeResource.unitsTotal - used);
-      if (remainingUnits > 0) {
-        out.push({ time: `${hh}:00`, startAt: startIso, endAt: endIso, remainingUnits });
-      }
-    }
-    return out;
-  }, [remoteResSlots, activeResource, date, state.bookings]);
 
   const slots = useMemo(() => {
     if (!business || !activeService) return [];
@@ -160,17 +328,22 @@ function BookingFlow({ businessId }: { businessId: string }) {
 
   if (!business) return <Empty title="Business unavailable" body="Only approved businesses accept bookings." />;
 
-  // Confirmation screen for universal booking (resource / ticket / capacity)
   if (confirmedUniversal) {
     return (
       <div className="panel stack" style={{ maxWidth: 680, gap: 14 }}>
         <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
-          <Badge tone="success">{confirmedUniversal.status.toUpperCase()}</Badge>
+          <Badge tone={confirmedUniversal.status === "pending" ? "warning" : "success"}>
+            {confirmedUniversal.status.toUpperCase()}
+          </Badge>
           <span className="tiny tabular">Reference #{confirmedUniversal.id}</span>
         </div>
         <h1 style={{ margin: 0 }}>{confirmedUniversal.title}</h1>
         <p className="muted" style={{ margin: 0 }}>
-          {business.name} · {confirmedUniversal.startAt ? formatDateTime(confirmedUniversal.startAt) : "Confirmed"}
+          {business.name} ·{" "}
+          {confirmedUniversal.startAt ? formatDateTime(confirmedUniversal.startAt) : "Confirmed"}
+          {confirmedUniversal.endAt && confirmedUniversal.bookingModel === "resource"
+            ? ` → ${formatDateTime(confirmedUniversal.endAt)}`
+            : ""}
         </p>
         {confirmedUniversal.checkInCode ? (
           <div className="select-card stack" style={{ gap: 4 }}>
@@ -193,12 +366,18 @@ function BookingFlow({ businessId }: { businessId: string }) {
           </div>
         ) : null}
         <div className="select-card row" style={{ justifyContent: "space-between" }}>
-          <span>Total ({confirmedUniversal.paymentMethod?.replaceAll("_", " ") ?? "in person"})</span>
+          <span>
+            Total ({confirmedUniversal.paymentMethod?.replaceAll("_", " ") ?? "in person"})
+            {confirmedUniversal.depositDueAmount > 0 ? ` · Deposit ${formatMoney(confirmedUniversal.depositDueAmount)}` : ""}
+          </span>
           <strong className="tabular">{formatMoney(confirmedUniversal.totalAmount)}</strong>
         </div>
         <div className="row" style={{ flexWrap: "wrap" }}>
-          <Link href="/bookings" className="btn">
-            View My Bookings & Passes
+          <Link href={`/bookings/${confirmedUniversal.id}`} className="btn">
+            View Booking &amp; QR Details
+          </Link>
+          <Link href="/bookings" className="btn ghost">
+            My Bookings
           </Link>
           <Link href={`/business/${business.id}`} className="btn ghost">
             Back to {business.name}
@@ -208,7 +387,6 @@ function BookingFlow({ businessId }: { businessId: string }) {
     );
   }
 
-  // Confirmation screen for legacy appointment
   const confirmedApt = confirmedId ? state.appointments.find((a) => a.id === confirmedId) : undefined;
   if (confirmedId && activeService) {
     const { subtotal, tax, total } = bookingTotals(activeService.price);
@@ -229,12 +407,18 @@ function BookingFlow({ businessId }: { businessId: string }) {
         <div className="select-card stack" style={{ gap: 6 }}>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <span className="tiny">Service Fee</span>
-            <span className="tabular">{formatMoney(subtotal)}</span>
+            <span className="tabular">{subtotal === 0 ? "Free" : formatMoney(subtotal)}</span>
           </div>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <span className="tiny">Estimated Tax (8%)</span>
             <span className="tabular">{formatMoney(tax)}</span>
           </div>
+          {activeService.depositAmount ? (
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <span className="tiny">Deposit Due</span>
+              <span className="tabular">{formatMoney(activeService.depositAmount)}</span>
+            </div>
+          ) : null}
           <div className="row" style={{ justifyContent: "space-between", borderTop: "1px solid var(--line)", paddingTop: 6 }}>
             <strong>Total</strong>
             <strong className="tabular">{formatMoney(total)}</strong>
@@ -265,7 +449,13 @@ function BookingFlow({ businessId }: { businessId: string }) {
           <Link href={`/business/${business.id}`} className="tiny">
             ← {business.name}
           </Link>
-          <h1 style={{ margin: "4px 0 0" }}>Book with {business.name}</h1>
+          <h1 style={{ margin: "4px 0 0" }}>
+            {isRestaurant
+              ? `Reserve a Table at ${business.name}`
+              : isHotel
+                ? `Book a Stay at ${business.name}`
+                : `Book with ${business.name}`}
+          </h1>
         </div>
         {models.length > 1 ? (
           <div className="tabs">
@@ -325,7 +515,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
                         key={service.id}
                         type="button"
                         className={`select-card stack ${activeService.id === service.id ? "on" : ""}`}
-                        style={{ gap: 6 }}
+                        style={{ gap: 6, textAlign: "left" }}
                         onClick={() => {
                           setServiceId(service.id);
                           setEmployeeId("");
@@ -337,6 +527,9 @@ function BookingFlow({ businessId }: { businessId: string }) {
                         <span className="tiny">
                           {service.durationMinutes} min · {service.price === 0 ? "Free" : formatMoney(service.price)}
                         </span>
+                        {service.depositAmount ? (
+                          <span className="tiny">Deposit: {formatMoney(service.depositAmount)}</span>
+                        ) : null}
                       </button>
                     ))}
                   </div>
@@ -376,7 +569,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
                 </section>
 
                 <section className="panel stack">
-                  <h3>3. Select Date & Time</h3>
+                  <h3>3. Select Date &amp; Time</h3>
                   <div className="chips">
                     {DATES.map((d) => (
                       <button
@@ -456,6 +649,9 @@ function BookingFlow({ businessId }: { businessId: string }) {
                         {formatDate(`${date}T12:00:00`, { weekday: "long", month: "short", day: "numeric" })}
                         {time ? ` · ${time}` : " · Select a time"}
                       </span>
+                      {activeService.requiresApproval ? (
+                        <Badge tone="warning">Requires provider approval</Badge>
+                      ) : null}
                     </div>
                     <div className="row" style={{ justifyContent: "space-between" }}>
                       <span className="muted">Duration</span>
@@ -463,12 +659,18 @@ function BookingFlow({ businessId }: { businessId: string }) {
                     </div>
                     <div className="row" style={{ justifyContent: "space-between" }}>
                       <span className="muted">Service Fee</span>
-                      <span className="tabular">{formatMoney(subtotal)}</span>
+                      <span className="tabular">{subtotal === 0 ? "Free" : formatMoney(subtotal)}</span>
                     </div>
                     <div className="row" style={{ justifyContent: "space-between" }}>
                       <span className="muted">Estimated Tax (8%)</span>
                       <span className="tabular">{formatMoney(tax)}</span>
                     </div>
+                    {activeService.depositAmount ? (
+                      <div className="row" style={{ justifyContent: "space-between" }}>
+                        <span className="muted">Deposit required</span>
+                        <strong className="tabular">{formatMoney(activeService.depositAmount)}</strong>
+                      </div>
+                    ) : null}
                     <div className="row" style={{ justifyContent: "space-between", borderTop: "1px solid var(--line)", paddingTop: 10 }}>
                       <strong>Total</strong>
                       <strong className="tabular" style={{ fontSize: 20 }}>
@@ -477,6 +679,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
                     </div>
                     {error ? <p className="error">{error}</p> : null}
                     <Button
+                      disabled={submitting}
                       onClick={async () => {
                         if (!auth.userId || !activeEmployee) return;
                         if (!time) {
@@ -484,40 +687,38 @@ function BookingFlow({ businessId }: { businessId: string }) {
                           return;
                         }
                         setError("");
-                        if (usingMocks()) {
-                          const res = createAppointment({
-                            customerId: auth.userId,
-                            serviceId: activeService.id,
-                            employeeId: activeEmployee.id,
-                            date,
-                            time,
-                            paymentMethod,
-                            notes,
-                          });
+                        setSubmitting(true);
+                        try {
+                          const res = usingMocks()
+                            ? createAppointment({
+                                customerId: auth.userId,
+                                serviceId: activeService.id,
+                                employeeId: activeEmployee.id,
+                                date,
+                                time,
+                                paymentMethod,
+                                notes,
+                              })
+                            : await createAppointmentRemote({
+                                customerId: auth.userId,
+                                serviceId: activeService.id,
+                                employeeId: activeEmployee.id,
+                                date,
+                                time,
+                                paymentMethod,
+                                notes,
+                              });
                           if (!res.ok) {
                             setError(res.error);
                             return;
                           }
                           setConfirmedId(res.data.id);
-                          return;
+                        } finally {
+                          setSubmitting(false);
                         }
-                        const res = await createAppointmentRemote({
-                          customerId: auth.userId,
-                          serviceId: activeService.id,
-                          employeeId: activeEmployee.id,
-                          date,
-                          time,
-                          paymentMethod,
-                          notes,
-                        });
-                        if (!res.ok) {
-                          setError(res.error);
-                          return;
-                        }
-                        setConfirmedId(res.data.id);
                       }}
                     >
-                      Confirm Booking
+                      {submitting ? "Booking..." : "Confirm Booking"}
                     </Button>
                     <p className="tiny" style={{ margin: 0 }}>
                       {activeService.cancellationPolicy}
@@ -530,98 +731,301 @@ function BookingFlow({ businessId }: { businessId: string }) {
         )
       ) : null}
 
-      {/* RESOURCE BOOKING FLOW */}
-      {selectedModel === "resource" ? (
-        !activeResource ? (
+      {/* HOTEL MULTI-NIGHT STAY FLOW */}
+      {selectedModel === "resource" && isHotel ? (
+        resources.length === 0 ? (
+          <Empty title="No rooms published yet" body="This property has not configured bookable rooms yet." />
+        ) : (
+          <div className="split-detail">
+            <div className="stack" style={{ gap: 18 }}>
+              <section className="panel stack">
+                <h3>1. Search Stay Dates &amp; Guests</h3>
+                <div className="grid-3">
+                  <label className="field">
+                    <span>Check-in Date</span>
+                    <input type="date" value={checkInDate} onChange={(e) => setCheckInDate(e.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Check-out Date</span>
+                    <input type="date" value={checkOutDate} onChange={(e) => setCheckOutDate(e.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Guests</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={partySize}
+                      onChange={(e) => setPartySize(Math.max(1, Number(e.target.value) || 1))}
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <section className="panel stack">
+                <h3>2. Select Available Room</h3>
+                {hotelOptions.length === 0 ? (
+                  <p className="muted">No rooms available for those dates and guest count. Adjust your dates.</p>
+                ) : (
+                  <div className="grid-2">
+                    {hotelOptions.map((opt) => {
+                      const amenities = Array.isArray(opt.resource.attributes?.amenities)
+                        ? (opt.resource.attributes.amenities as string[])
+                        : [];
+                      const selected = activeHotelOption?.resource.id === opt.resource.id;
+                      return (
+                        <button
+                          key={opt.resource.id}
+                          type="button"
+                          className={`select-card stack ${selected ? "on" : ""}`}
+                          style={{ gap: 6, textAlign: "left" }}
+                          onClick={() => setResourceId(opt.resource.id)}
+                        >
+                          <div className="row" style={{ justifyContent: "space-between" }}>
+                            <strong>{opt.resource.name}</strong>
+                            <Badge tone="brand">{opt.remainingUnits} left</Badge>
+                          </div>
+                          <span className="tiny">
+                            Up to {opt.resource.capacityPeople} guests · {opt.nights} night(s)
+                          </span>
+                          {amenities.length > 0 ? <span className="tiny">{amenities.join(" · ")}</span> : null}
+                          <strong className="tabular">
+                            {formatMoney(opt.nightlyRate)}/night · {formatMoney(opt.totalPrice)} total
+                          </strong>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <section className="panel stack">
+                <h3>3. Rooms &amp; Special Requests</h3>
+                <div className="grid-2">
+                  <label className="field">
+                    <span>Number of rooms</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={activeHotelOption?.remainingUnits ?? 1}
+                      value={quantityUnits}
+                      onChange={(e) => setQuantityUnits(Math.max(1, Number(e.target.value) || 1))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Payment method</span>
+                    <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}>
+                      <option value="in_person">Pay at hotel</option>
+                      <option value="wallet">BookIt demo wallet</option>
+                      <option value="card_token_pending">Card (API pending)</option>
+                    </select>
+                  </label>
+                </div>
+                <label className="field">
+                  <span>Special requests (optional)</span>
+                  <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Late arrival, high floor, extra pillows..." />
+                </label>
+              </section>
+            </div>
+
+            <aside className="panel stack" style={{ position: "sticky", top: 84 }}>
+              <h2 style={{ margin: 0 }}>Stay Summary</h2>
+              {activeHotelOption ? (
+                <>
+                  <div className="select-card stack" style={{ gap: 4 }}>
+                    <strong>{activeHotelOption.resource.name}</strong>
+                    <span className="tiny">
+                      {checkInDate} → {checkOutDate} ({activeHotelOption.nights} night(s))
+                    </span>
+                    <span className="tiny">
+                      {quantityUnits} room(s) · {partySize} guest(s)
+                    </span>
+                  </div>
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <span className="muted">Nightly rate</span>
+                    <span className="tabular">{formatMoney(activeHotelOption.nightlyRate)}</span>
+                  </div>
+                  {activeHotelOption.depositDue > 0 ? (
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <span className="muted">Deposit due</span>
+                      <strong className="tabular">{formatMoney(activeHotelOption.depositDue * quantityUnits)}</strong>
+                    </div>
+                  ) : null}
+                  <div className="row" style={{ justifyContent: "space-between", borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                    <strong>Total Stay</strong>
+                    <strong className="tabular" style={{ fontSize: 20 }}>
+                      {formatMoney(activeHotelOption.totalPrice * quantityUnits)}
+                    </strong>
+                  </div>
+                </>
+              ) : (
+                <p className="muted">Select valid dates and an available room.</p>
+              )}
+              {error ? <p className="error">{error}</p> : null}
+              <Button
+                disabled={submitting || !activeHotelOption}
+                onClick={async () => {
+                  if (!auth.userId || !activeHotelOption) return;
+                  setError("");
+                  setSubmitting(true);
+                  try {
+                    const payload = {
+                      bookingModel: "resource" as const,
+                      businessId: business.id,
+                      resourceId: activeHotelOption.resource.id,
+                      startAt: activeHotelOption.checkInAt,
+                      endAt: activeHotelOption.checkOutAt,
+                      quantityUnits,
+                      partySize,
+                      paymentMethod,
+                      notes,
+                    };
+                    const res = usingMocks()
+                      ? createUniversalBooking(auth.userId, payload)
+                      : await createUniversalBookingRemote(payload);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setConfirmedUniversal(res.data);
+                  } finally {
+                    setSubmitting(false);
+                  }
+                }}
+              >
+                {submitting ? "Reserving..." : "Confirm Room Stay"}
+              </Button>
+            </aside>
+          </div>
+        )
+      ) : null}
+
+      {/* RESTAURANT / HOURLY RESOURCE FLOW */}
+      {selectedModel === "resource" && !isHotel ? (
+        resources.length === 0 ? (
           <Empty title="No bookable spaces yet" body="This business has not configured rooms, tables, courts, or equipment yet." />
         ) : (
           <div className="split-detail">
             <div className="stack" style={{ gap: 18 }}>
               <section className="panel stack">
-                <h3>1. Select Space or Resource</h3>
-                <div className="grid-2">
-                  {resources.map((res) => (
-                    <button
-                      key={res.id}
-                      type="button"
-                      className={`select-card stack ${activeResource.id === res.id ? "on" : ""}`}
-                      style={{ gap: 6, textAlign: "left" }}
-                      onClick={() => {
-                        setResourceId(res.id);
+                <h3>1. {isRestaurant ? "Party Size, Date & Seating Area" : "Filter Availability"}</h3>
+                <div className="grid-4">
+                  <label className="field">
+                    <span>Date</span>
+                    <input
+                      type="date"
+                      value={date}
+                      onChange={(e) => {
+                        setDate(e.target.value);
                         setTime("");
                       }}
-                    >
-                      <strong>{res.name}</strong>
-                      <span className="tiny">
-                        Up to {res.capacityPeople} guests · {res.unitsTotal} total unit(s)
-                      </span>
-                      <span className="tiny tabular">
-                        {res.basePrice === 0 ? "Free reservation" : `${formatMoney(res.basePrice)} (${res.pricingUnit.replace("_", " ")})`}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-
-              <section className="panel stack">
-                <h3>2. Choose Date &amp; Time Window</h3>
-                <div className="chips">
-                  {DATES.map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      className={`slot ${date === d ? "on" : ""}`}
-                      onClick={() => {
-                        setDate(d);
-                        setTime("");
-                      }}
-                    >
-                      {formatDate(`${d}T12:00:00`, { weekday: "short", month: "short", day: "numeric" })}
-                    </button>
-                  ))}
-                </div>
-                <div className="chips" style={{ marginTop: 6 }}>
-                  {resourceSlots.length === 0 ? (
-                    <p className="muted">No open windows on this date.</p>
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Preferred Time</span>
+                    <input type="time" value={preferredTime} onChange={(e) => setPreferredTime(e.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>{isRestaurant ? "Party Size" : "Guests"}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={partySize}
+                      onChange={(e) => setPartySize(Math.max(1, Number(e.target.value) || 1))}
+                    />
+                  </label>
+                  {seatingAreas.length > 0 ? (
+                    <label className="field">
+                      <span>Seating Area</span>
+                      <select value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}>
+                        <option value="">Any area</option>
+                        {seatingAreas.map((area) => (
+                          <option key={area} value={area}>
+                            {area}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   ) : (
-                    resourceSlots.map((slot) => (
-                      <button
-                        key={slot.time}
-                        type="button"
-                        className={`slot tabular ${time === slot.time ? "on" : ""}`}
-                        onClick={() => setTime(slot.time)}
-                      >
-                        {slot.time} ({slot.remainingUnits} left)
-                      </button>
-                    ))
+                    <label className="field">
+                      <span>Units</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={activeResource?.unitsTotal ?? 10}
+                        value={quantityUnits}
+                        onChange={(e) => setQuantityUnits(Math.max(1, Number(e.target.value) || 1))}
+                      />
+                    </label>
                   )}
                 </div>
-                <div className="grid-2" style={{ marginTop: 8 }}>
-                  <label className="field">
-                    <span>Units</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={activeResource.unitsTotal}
-                      value={quantityUnits}
-                      onChange={(e) => setQuantityUnits(Math.max(1, Number(e.target.value)))}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Party / Guests</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={activeResource.capacityPeople * quantityUnits}
-                      value={partySize}
-                      onChange={(e) => setPartySize(Math.max(1, Number(e.target.value)))}
-                    />
-                  </label>
-                </div>
               </section>
 
               <section className="panel stack">
-                <h3>3. Payment &amp; Requests</h3>
+                <h3>2. Select {isRestaurant ? "Table" : "Space or Resource"}</h3>
+                {searchItems.length === 0 ? (
+                  <p className="muted">No matching tables or spaces for {partySize} guests. Adjust party size or area.</p>
+                ) : (
+                  <div className="grid-2">
+                    {searchItems.map((item) => {
+                      const area = typeof item.resource.attributes?.area === "string" ? item.resource.attributes.area : "";
+                      const selected = activeResource?.id === item.resource.id;
+                      return (
+                        <button
+                          key={item.resource.id}
+                          type="button"
+                          className={`select-card stack ${selected ? "on" : ""}`}
+                          style={{ gap: 6, textAlign: "left" }}
+                          onClick={() => {
+                            setResourceId(item.resource.id);
+                            setTime(item.slots.some((s) => s.time === preferredTime) ? preferredTime : item.slots[0]?.time ?? "");
+                          }}
+                        >
+                          <div className="row" style={{ justifyContent: "space-between" }}>
+                            <strong>{item.resource.name}</strong>
+                            {item.availableAtRequestedTime ? <Badge tone="success">Open at {preferredTime}</Badge> : null}
+                          </div>
+                          <span className="tiny">
+                            Seats up to {item.resource.capacityPeople}
+                            {area ? ` · ${area}` : ""} · {item.slots.length} slot(s) on {date}
+                          </span>
+                          <span className="tiny tabular">
+                            {item.resource.basePrice === 0
+                              ? "Free reservation"
+                              : `${formatMoney(item.resource.basePrice)} (${item.resource.pricingUnit.replaceAll("_", " ")})`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              {activeResource ? (
+                <section className="panel stack">
+                  <h3>3. Choose Time Slot for {activeResource.name}</h3>
+                  <div className="chips">
+                    {resourceSlots.length === 0 ? (
+                      <p className="muted">No open windows on {date} for this table/space.</p>
+                    ) : (
+                      resourceSlots.map((slot) => (
+                        <button
+                          key={slot.time}
+                          type="button"
+                          className={`slot tabular ${time === slot.time ? "on" : ""}`}
+                          onClick={() => setTime(slot.time)}
+                        >
+                          {slot.time} ({slot.remainingUnits} left)
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </section>
+              ) : null}
+
+              <section className="panel stack">
+                <h3>4. Payment &amp; Requests</h3>
                 <div className="chips">
                   {(
                     [
@@ -642,67 +1046,77 @@ function BookingFlow({ businessId }: { businessId: string }) {
                 </div>
                 <label className="field">
                   <span>Special requests (optional)</span>
-                  <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Seating preference, setup notes..." />
+                  <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Seating preference, celebration, dietary notes..." />
                 </label>
               </section>
             </div>
 
             <aside className="panel stack" style={{ position: "sticky", top: 84 }}>
               <h2 style={{ margin: 0 }}>Reservation Summary</h2>
-              <div className="select-card stack" style={{ gap: 4 }}>
-                <strong>{activeResource.name}</strong>
-                <span className="tiny">
-                  {quantityUnits} unit(s) · {partySize} guest(s)
-                </span>
-                <span className="tiny">
-                  {formatDate(`${date}T12:00:00`, { weekday: "long", month: "short", day: "numeric" })}
-                  {time ? ` · ${time}` : " · Choose a window"}
-                </span>
-              </div>
-              {activeResource.depositAmount ? (
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <span className="muted">Deposit required</span>
-                  <strong className="tabular">{formatMoney(activeResource.depositAmount)}</strong>
-                </div>
+              {activeResource ? (
+                <>
+                  <div className="select-card stack" style={{ gap: 4 }}>
+                    <strong>{activeResource.name}</strong>
+                    <span className="tiny">
+                      {quantityUnits} unit(s) · {partySize} guest(s)
+                    </span>
+                    <span className="tiny">
+                      {formatDate(`${date}T12:00:00`, { weekday: "long", month: "short", day: "numeric" })}
+                      {time ? ` · ${time}` : " · Choose a time slot"}
+                    </span>
+                  </div>
+                  {activeResource.depositAmount ? (
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <span className="muted">Deposit required</span>
+                      <strong className="tabular">{formatMoney(activeResource.depositAmount)}</strong>
+                    </div>
+                  ) : null}
+                  <div className="row" style={{ justifyContent: "space-between", borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                    <strong>Total</strong>
+                    <strong className="tabular" style={{ fontSize: 20 }}>
+                      {activeResource.basePrice === 0 ? "Free" : formatMoney(activeResource.basePrice * quantityUnits)}
+                    </strong>
+                  </div>
+                </>
               ) : null}
-              <div className="row" style={{ justifyContent: "space-between", borderTop: "1px solid var(--line)", paddingTop: 10 }}>
-                <strong>Total</strong>
-                <strong className="tabular" style={{ fontSize: 20 }}>
-                  {formatMoney(activeResource.basePrice * quantityUnits)}
-                </strong>
-              </div>
               {error ? <p className="error">{error}</p> : null}
               <Button
+                disabled={submitting || !activeResource}
                 onClick={async () => {
-                  if (!auth.userId) return;
+                  if (!auth.userId || !activeResource) return;
                   const chosen = resourceSlots.find((s) => s.time === time);
                   if (!chosen) {
-                    setError("Pick an open window first.");
+                    setError("Pick an open time slot first.");
                     return;
                   }
                   setError("");
-                  const payload = {
-                    bookingModel: "resource" as const,
-                    businessId: business.id,
-                    resourceId: activeResource.id,
-                    startAt: chosen.startAt,
-                    endAt: chosen.endAt,
-                    quantityUnits,
-                    partySize,
-                    paymentMethod,
-                    notes,
-                  };
-                  const res = usingMocks()
-                    ? createUniversalBooking(auth.userId, payload)
-                    : await createUniversalBookingRemote(payload);
-                  if (!res.ok) {
-                    setError(res.error);
-                    return;
+                  setSubmitting(true);
+                  try {
+                    const payload = {
+                      bookingModel: "resource" as const,
+                      businessId: business.id,
+                      resourceId: activeResource.id,
+                      startAt: chosen.startAt,
+                      endAt: chosen.endAt,
+                      quantityUnits,
+                      partySize,
+                      paymentMethod,
+                      notes,
+                    };
+                    const res = usingMocks()
+                      ? createUniversalBooking(auth.userId, payload)
+                      : await createUniversalBookingRemote(payload);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setConfirmedUniversal(res.data);
+                  } finally {
+                    setSubmitting(false);
                   }
-                  setConfirmedUniversal(res.data);
                 }}
               >
-                Reserve Space
+                {submitting ? "Reserving..." : isRestaurant ? "Confirm Table" : "Reserve Space"}
               </Button>
             </aside>
           </div>
@@ -852,30 +1266,35 @@ function BookingFlow({ businessId }: { businessId: string }) {
                   </div>
                   {error ? <p className="error">{error}</p> : null}
                   <Button
-                    disabled={totalQty === 0}
+                    disabled={submitting || totalQty === 0}
                     onClick={async () => {
                       if (!auth.userId || items.length === 0) return;
                       setError("");
-                      const payload = {
-                        bookingModel: selectedModel,
-                        businessId: business.id,
-                        sessionId: activeSession.id,
-                        ticketItems: items.map((i) => ({ tierId: i.tier.id, quantity: i.quantity })),
-                        attendeeName: attendeeName || undefined,
-                        attendeeEmail: attendeeEmail || undefined,
-                        paymentMethod,
-                      };
-                      const res = usingMocks()
-                        ? createUniversalBooking(auth.userId, payload)
-                        : await createUniversalBookingRemote(payload);
-                      if (!res.ok) {
-                        setError(res.error);
-                        return;
+                      setSubmitting(true);
+                      try {
+                        const payload = {
+                          bookingModel: selectedModel,
+                          businessId: business.id,
+                          sessionId: activeSession.id,
+                          ticketItems: items.map((i) => ({ tierId: i.tier.id, quantity: i.quantity })),
+                          attendeeName: attendeeName || undefined,
+                          attendeeEmail: attendeeEmail || undefined,
+                          paymentMethod,
+                        };
+                        const res = usingMocks()
+                          ? createUniversalBooking(auth.userId, payload)
+                          : await createUniversalBookingRemote(payload);
+                        if (!res.ok) {
+                          setError(res.error);
+                          return;
+                        }
+                        setConfirmedUniversal(res.data);
+                      } finally {
+                        setSubmitting(false);
                       }
-                      setConfirmedUniversal(res.data);
                     }}
                   >
-                    {selectedModel === "ticket" ? "Issue Tickets" : "Reserve Class Spot"}
+                    {submitting ? "Issuing..." : selectedModel === "ticket" ? "Issue Tickets" : "Reserve Class Spot"}
                   </Button>
                   <p className="tiny" style={{ margin: 0 }}>
                     {activeOffering.cancellationPolicy}

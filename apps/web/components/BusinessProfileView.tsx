@@ -3,14 +3,18 @@
 import {
   addReview,
   addToCart,
+  bookingConfigsForBusiness,
   displayUser,
+  enabledModelsForBusiness,
+  offeringsForBusiness,
   publicBusinessById,
+  resourcesForBusiness,
   servicesForBusiness,
   toggleFavorite,
   useBookItState,
 } from "@bookit/api-client";
-import { categoryLabels } from "@bookit/ui";
-import { formatDate, formatMoney, initials } from "@bookit/utils";
+import { categoryLabels, primaryCtaLabelForBusiness } from "@bookit/ui";
+import { formatDate, formatDateTime, formatMoney, initials } from "@bookit/utils";
 import Link from "next/link";
 import { useState } from "react";
 import { Badge, Button, Empty, Field, Modal } from "@/components/ui";
@@ -52,12 +56,32 @@ export function BusinessProfileView({ id }: { id: string }) {
   }
 
   const services = servicesForBusiness(state, business.id);
+  const resources = resourcesForBusiness(state, business.id);
+  const offerings = offeringsForBusiness(state, business.id);
+  const configs = bookingConfigsForBusiness(state, business.id);
+  const enabledModels = enabledModelsForBusiness(state, business.id);
+  const primaryModel = enabledModels[0] ?? "appointment";
+  const ctaLabel = primaryCtaLabelForBusiness(business.category, enabledModels);
+  const resourceCfg = configs.find((c) => c.bookingModel === "resource");
+  const seatingAreas = Array.isArray(resourceCfg?.settings?.seatingAreas)
+    ? (resourceCfg.settings.seatingAreas as string[])
+    : [];
+
   const employees = state.employees.filter((emp) => emp.businessId === business.id);
   const products = state.products.filter((prd) => prd.businessId === business.id && prd.active);
   const reviews = state.reviews.filter((rev) => rev.businessId === business.id && rev.status === "published");
   const isFav = auth.userId
     ? state.favorites.some((fav) => fav.userId === auth.userId && fav.targetType === "business" && fav.targetId === business.id)
     : false;
+
+  const spacesHeading =
+    business.category === "restaurant"
+      ? "Dining Tables & Seating"
+      : business.category === "hotel"
+        ? "Rooms & Suites"
+        : business.category === "sports"
+          ? "Courts & Fields"
+          : "Spaces & Resources";
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -96,8 +120,8 @@ export function BusinessProfileView({ id }: { id: string }) {
               </div>
             </div>
             <div className="row" style={{ flexWrap: "wrap" }}>
-              <Link href={`/book/${business.id}`} className="btn">
-                Book Appointment
+              <Link href={`/book/${business.id}?model=${primaryModel}`} className="btn">
+                {ctaLabel}
               </Link>
               <Button
                 tone={isFav ? "soft" : "ghost"}
@@ -128,41 +152,135 @@ export function BusinessProfileView({ id }: { id: string }) {
 
       <div className="split-detail">
         <div className="stack" style={{ gap: 18 }}>
-          <section className="panel stack">
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <h2>Services</h2>
-              <span className="tiny">{services.length} available</span>
-            </div>
-            {services.length === 0 ? (
-              <p className="muted">No active services listed yet.</p>
-            ) : (
-              services.map((service) => (
-                <div
-                  key={service.id}
-                  className="row"
-                  style={{ justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid var(--line)" }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <Link href={`/services/${service.id}`}>
-                      <strong>{service.name}</strong>
-                    </Link>
+          {resources.length > 0 ? (
+            <section className="panel stack">
+              <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+                <div>
+                  <h2 style={{ margin: 0 }}>{spacesHeading}</h2>
+                  {business.category === "hotel" && resourceCfg?.settings ? (
                     <div className="tiny">
-                      {service.durationMinutes} min · {service.description}
+                      Check-in: {String(resourceCfg.settings.checkInTime ?? "15:00")} · Check-out:{" "}
+                      {String(resourceCfg.settings.checkOutTime ?? "11:00")}
+                    </div>
+                  ) : null}
+                  {seatingAreas.length > 0 ? (
+                    <div className="tiny">Areas: {seatingAreas.join(" · ")}</div>
+                  ) : null}
+                </div>
+                <Link href={`/book/${business.id}?model=resource`} className="btn soft small">
+                  {business.category === "hotel" ? "Search Stay Dates" : business.category === "restaurant" ? "Find a Table" : "Check Availability"}
+                </Link>
+              </div>
+              {resources.map((res) => {
+                const area = typeof res.attributes?.area === "string" ? res.attributes.area : "";
+                const amenities = Array.isArray(res.attributes?.amenities) ? (res.attributes.amenities as string[]) : [];
+                return (
+                  <div
+                    key={res.id}
+                    className="row"
+                    style={{ justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid var(--line)", gap: 12 }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <strong>{res.name}</strong>
+                      <div className="tiny">
+                        Up to {res.capacityPeople} guests · {res.unitsTotal} unit(s)
+                        {area ? ` · ${area}` : ""}
+                      </div>
+                      {res.description ? <div className="tiny">{res.description}</div> : null}
+                      {amenities.length > 0 ? <div className="tiny">Amenities: {amenities.join(", ")}</div> : null}
+                    </div>
+                    <div className="row" style={{ flexShrink: 0 }}>
+                      <strong className="tabular">
+                        {res.basePrice === 0 ? "Free reservation" : `${formatMoney(res.basePrice)}/${res.pricingUnit.replace("per_", "")}`}
+                      </strong>
+                      <Link href={`/book/${business.id}?model=resource&resource=${res.id}`} className="btn soft small">
+                        Reserve
+                      </Link>
                     </div>
                   </div>
-                  <div className="row" style={{ flexShrink: 0 }}>
-                    <strong className="tabular">{service.price === 0 ? "Free" : formatMoney(service.price)}</strong>
-                    <Link href={`/services/${service.id}`} className="btn ghost small">
-                      Details
-                    </Link>
-                    <Link href={`/book/${business.id}?service=${service.id}`} className="btn soft small">
-                      Book
-                    </Link>
+                );
+              })}
+            </section>
+          ) : null}
+
+          {offerings.length > 0 ? (
+            <section className="panel stack">
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <h2 style={{ margin: 0 }}>Events, Tours &amp; Classes</h2>
+                <span className="tiny">{offerings.length} scheduled</span>
+              </div>
+              {offerings.map((off) => {
+                const nextSession = off.sessions.find((s) => s.status === "on_sale" || s.status === "scheduled");
+                const minPrice = nextSession?.tiers.length ? Math.min(...nextSession.tiers.map((t) => t.price)) : 0;
+                return (
+                  <div
+                    key={off.id}
+                    className="row"
+                    style={{ justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid var(--line)", gap: 12 }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div className="row" style={{ gap: 8 }}>
+                        <strong>{off.title}</strong>
+                        <Badge tone={off.bookingModel === "ticket" ? "brand" : "info"}>
+                          {off.bookingModel === "ticket" ? "Tickets" : "Class"}
+                        </Badge>
+                      </div>
+                      <div className="tiny">{off.description}</div>
+                      {nextSession ? (
+                        <div className="tiny tabular">
+                          Next: {formatDateTime(nextSession.startAt)} · {nextSession.remainingCapacity} spots left
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="row" style={{ flexShrink: 0 }}>
+                      <strong className="tabular">{minPrice === 0 ? "Free" : `From ${formatMoney(minPrice)}`}</strong>
+                      <Link href={`/book/${business.id}?model=${off.bookingModel}&offering=${off.id}`} className="btn soft small">
+                        {off.bookingModel === "ticket" ? "Get Tickets" : "Reserve"}
+                      </Link>
+                    </div>
                   </div>
-                </div>
-              ))
-            )}
-          </section>
+                );
+              })}
+            </section>
+          ) : null}
+
+          {services.length > 0 || (resources.length === 0 && offerings.length === 0) ? (
+            <section className="panel stack">
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <h2>Services</h2>
+                <span className="tiny">{services.length} available</span>
+              </div>
+              {services.length === 0 ? (
+                <p className="muted">No active services listed yet.</p>
+              ) : (
+                services.map((service) => (
+                  <div
+                    key={service.id}
+                    className="row"
+                    style={{ justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid var(--line)" }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <Link href={`/services/${service.id}`}>
+                        <strong>{service.name}</strong>
+                      </Link>
+                      <div className="tiny">
+                        {service.durationMinutes} min · {service.description}
+                      </div>
+                    </div>
+                    <div className="row" style={{ flexShrink: 0 }}>
+                      <strong className="tabular">{service.price === 0 ? "Free" : formatMoney(service.price)}</strong>
+                      <Link href={`/services/${service.id}`} className="btn ghost small">
+                        Details
+                      </Link>
+                      <Link href={`/book/${business.id}?model=appointment&service=${service.id}`} className="btn soft small">
+                        Book
+                      </Link>
+                    </div>
+                  </div>
+                ))
+              )}
+            </section>
+          ) : null}
 
           {employees.length > 0 ? (
             <section className="panel stack">
@@ -172,7 +290,7 @@ export function BusinessProfileView({ id }: { id: string }) {
                   const person = state.users.find((u) => u.id === employee.userId);
                   const name = displayUser(state, employee.userId);
                   return (
-                    <Link key={employee.id} href={`/book/${business.id}?employee=${employee.id}`} className="select-card stack" style={{ gap: 6 }}>
+                    <Link key={employee.id} href={`/book/${business.id}?model=appointment&employee=${employee.id}`} className="select-card stack" style={{ gap: 6 }}>
                       <div className="person">
                         {person?.avatarUrl ? (
                           <img className="avatar-img" src={person.avatarUrl} alt={name} referrerPolicy="no-referrer" />
@@ -251,7 +369,7 @@ export function BusinessProfileView({ id }: { id: string }) {
 
         <div className="stack" style={{ gap: 18 }}>
           <section className="panel stack">
-            <h3>Hours & Availability</h3>
+            <h3>Hours &amp; Availability</h3>
             <div className="stack" style={{ gap: 6 }}>
               {DAYS.map(([key, label]) => {
                 const row = business.hours[key];

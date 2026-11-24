@@ -1,18 +1,29 @@
 import type {
   Appointment,
+  AppointmentStatus,
   BookingModel,
+  Business,
   BusinessBookingConfig,
   CustomerProfile,
+  Employee,
   EventOffering,
   EventSession,
+  HotelStayAvailability,
+  MembershipRole,
   PaymentMethod,
   Resource,
   ResourceAvailability,
+  ResourceBlock,
+  ResourceSearchItem,
+  Service,
+  SessionAttendee,
+  TicketTier,
   UniversalBooking,
   UniversalBookingCreateInput,
   UniversalBookingStatus,
   UniversalCheckInResult,
   User,
+  WeeklyHours,
   Workspace,
 } from "@bookit/types";
 import {
@@ -22,6 +33,9 @@ import {
   registerSchema,
   resetConfirmSchema,
   resetRequestSchema,
+  resourceBlockSchema,
+  serviceSchema,
+  ticketTierSchema,
   type BusinessApplicationInput,
   type LoginInput,
   type RegisterInput,
@@ -245,6 +259,47 @@ export async function createAppointmentRemote(input: {
   return { ok: true, data: { id: res.data.id } };
 }
 
+export async function setAppointmentStatusRemote(
+  appointmentId: string,
+  status: AppointmentStatus,
+  reason?: string,
+): Promise<ActionResult<Appointment>> {
+  const res = await apiJson<Appointment>(`/api/v1/bookings/${encodeURIComponent(appointmentId)}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status, reason }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function rescheduleAppointmentRemote(
+  appointmentId: string,
+  date: string,
+  time: string,
+): Promise<ActionResult<Appointment>> {
+  const res = await apiJson<Appointment>(`/api/v1/bookings/${encodeURIComponent(appointmentId)}/reschedule`, {
+    method: "POST",
+    body: JSON.stringify({ date, time }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function updateAppointmentNotesRemote(
+  appointmentId: string,
+  notes: string,
+): Promise<ActionResult<Appointment>> {
+  const res = await apiJson<Appointment>(`/api/v1/bookings/${encodeURIComponent(appointmentId)}/notes`, {
+    method: "PATCH",
+    body: JSON.stringify({ notes }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
 export async function checkoutRemote(input: {
   addressId: string;
   deliveryMethod: "standard" | "express" | "pickup";
@@ -292,6 +347,69 @@ export async function checkInByQrRemote(
   return { ok: true, data: res.data };
 }
 
+// Services (Appointments)
+export async function saveServiceRemote(
+  businessId: string,
+  input: unknown,
+  serviceId?: string,
+): Promise<ActionResult<Service>> {
+  const parsed = serviceSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Check the service fields", fieldErrors: fieldErrors(parsed.error) };
+  }
+  const path = serviceId
+    ? `/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}`
+    : `/api/v1/workspaces/${encodeURIComponent(businessId)}/services`;
+  const res = await apiJson<Service>(path, {
+    method: serviceId ? "PUT" : "POST",
+    body: JSON.stringify(parsed.data),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setServiceActiveRemote(
+  businessId: string,
+  serviceId: string,
+  active: boolean,
+): Promise<ActionResult<Service>> {
+  const res = await apiJson<Service>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}/active`,
+    { method: "PATCH", body: JSON.stringify({ active }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function deleteServiceRemote(
+  businessId: string,
+  serviceId: string,
+): Promise<ActionResult<{ message: string }>> {
+  const res = await apiJson<{ ok: boolean; message?: string }>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: { message: res.data.message || "Service removed" } };
+}
+
+export async function toggleEmployeeToServiceRemote(
+  businessId: string,
+  serviceId: string,
+  employeeId: string,
+): Promise<ActionResult<Service>> {
+  const res = await apiJson<Service>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}/employees/${encodeURIComponent(employeeId)}/toggle`,
+    { method: "POST" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
 export async function fetchBookingConfigsRemote(businessId: string): Promise<ActionResult<BusinessBookingConfig[]>> {
   const res = await apiJson<BusinessBookingConfig[]>(
     `/api/v1/businesses/${encodeURIComponent(businessId)}/booking-configs`,
@@ -329,6 +447,38 @@ export async function fetchResourceAvailabilityRemote(
   return { ok: true, data: res.data };
 }
 
+export async function searchResourcesAvailabilityRemote(
+  businessId: string,
+  params: { date: string; time?: string; guests?: number; area?: string; resourceType?: string },
+): Promise<ActionResult<ResourceSearchItem[]>> {
+  const qs = new URLSearchParams({ date: params.date });
+  if (params.time) qs.set("time", params.time);
+  if (params.guests !== undefined) qs.set("guests", String(params.guests));
+  if (params.area) qs.set("area", params.area);
+  if (params.resourceType) qs.set("resourceType", params.resourceType);
+  const res = await apiJson<ResourceSearchItem[]>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/resources/search?${qs.toString()}`,
+    { method: "GET" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: res.data };
+}
+
+export async function fetchHotelStaysAvailabilityRemote(
+  businessId: string,
+  params: { checkIn: string; checkOut: string; guests?: number; roomType?: string },
+): Promise<ActionResult<HotelStayAvailability>> {
+  const qs = new URLSearchParams({ checkIn: params.checkIn, checkOut: params.checkOut });
+  if (params.guests !== undefined) qs.set("guests", String(params.guests));
+  if (params.roomType) qs.set("roomType", params.roomType);
+  const res = await apiJson<HotelStayAvailability>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/stays/availability?${qs.toString()}`,
+    { method: "GET" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: res.data };
+}
+
 export async function createResourceRemote(
   businessId: string,
   payload: Partial<Resource> & Pick<Resource, "name" | "resourceType">,
@@ -340,6 +490,73 @@ export async function createResourceRemote(
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   await hydrateFromBackend();
   return { ok: true, data: res.data };
+}
+
+export async function updateResourceRemote(
+  businessId: string,
+  resourceId: string,
+  payload: Partial<Resource>,
+): Promise<ActionResult<Resource>> {
+  const res = await apiJson<Resource>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/resources/${encodeURIComponent(resourceId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setResourceActiveRemote(
+  businessId: string,
+  resourceId: string,
+  active: boolean,
+): Promise<ActionResult<Resource>> {
+  return updateResourceRemote(businessId, resourceId, { active });
+}
+
+export async function listResourceBlocksRemote(
+  businessId: string,
+  resourceId?: string,
+): Promise<ActionResult<ResourceBlock[]>> {
+  const qs = resourceId ? `?resourceId=${encodeURIComponent(resourceId)}` : "";
+  const res = await apiJson<ResourceBlock[]>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/resource-blocks${qs}`,
+    { method: "GET" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: res.data };
+}
+
+export async function createResourceBlockRemote(
+  businessId: string,
+  resourceId: string,
+  input: { startAt: string; endAt: string; unitsBlocked?: number; reason: string },
+): Promise<ActionResult<ResourceBlock>> {
+  const parsed = resourceBlockSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Check block details", fieldErrors: fieldErrors(parsed.error) };
+  }
+  const res = await apiJson<ResourceBlock>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/resources/${encodeURIComponent(resourceId)}/blocks`,
+    { method: "POST", body: JSON.stringify(parsed.data) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function deleteResourceBlockRemote(
+  businessId: string,
+  resourceId: string,
+  blockId: string,
+): Promise<ActionResult<undefined>> {
+  const res = await apiJson(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/resources/${encodeURIComponent(resourceId)}/blocks/${encodeURIComponent(blockId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
 }
 
 export async function createOfferingRemote(
@@ -362,6 +579,27 @@ export async function createOfferingRemote(
   return { ok: true, data: res.data };
 }
 
+export async function updateOfferingRemote(
+  businessId: string,
+  offeringId: string,
+  payload: Partial<{
+    title: string;
+    description: string;
+    category: string;
+    venueArea: string;
+    cancellationPolicy: string;
+    active: boolean;
+  }>,
+): Promise<ActionResult<EventOffering>> {
+  const res = await apiJson<EventOffering>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/offerings/${encodeURIComponent(offeringId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
 export async function createSessionRemote(
   businessId: string,
   offeringId: string,
@@ -376,6 +614,194 @@ export async function createSessionRemote(
   const res = await apiJson<EventSession>(
     `/api/v1/businesses/${encodeURIComponent(businessId)}/offerings/${encodeURIComponent(offeringId)}/sessions`,
     { method: "POST", body: JSON.stringify(payload) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function addSessionTierRemote(
+  businessId: string,
+  sessionId: string,
+  input: { name: string; description?: string; price: number; capacityLimit?: number; active?: boolean },
+): Promise<ActionResult<TicketTier>> {
+  const parsed = ticketTierSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Check ticket tier details", fieldErrors: fieldErrors(parsed.error) };
+  }
+  const res = await apiJson<TicketTier>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/sessions/${encodeURIComponent(sessionId)}/tiers`,
+    { method: "POST", body: JSON.stringify(parsed.data) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function updateSessionTierRemote(
+  businessId: string,
+  sessionId: string,
+  tierId: string,
+  payload: Partial<{ name: string; description: string; price: number; capacityLimit: number; active: boolean }>,
+): Promise<ActionResult<TicketTier>> {
+  const res = await apiJson<TicketTier>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/sessions/${encodeURIComponent(sessionId)}/tiers/${encodeURIComponent(tierId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function fetchSessionAttendeesRemote(
+  businessId: string,
+  sessionId: string,
+): Promise<ActionResult<SessionAttendee[]>> {
+  const res = await apiJson<SessionAttendee[]>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/sessions/${encodeURIComponent(sessionId)}/attendees`,
+    { method: "GET" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: res.data };
+}
+
+// Business profile, hours, holidays & blocked slots
+export async function updateBusinessRemote(
+  businessId: string,
+  patch: Partial<
+    Pick<
+      Business,
+      | "name"
+      | "category"
+      | "description"
+      | "phone"
+      | "email"
+      | "website"
+      | "cancellationPolicy"
+      | "bookingApproval"
+      | "address"
+      | "city"
+      | "timezone"
+      | "minNoticeMinutes"
+      | "maxAdvanceDays"
+    >
+  >,
+): Promise<ActionResult<Business>> {
+  const res = await apiJson<Business>(`/api/v1/businesses/${encodeURIComponent(businessId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function updateBusinessHoursRemote(
+  businessId: string,
+  hours: WeeklyHours,
+): Promise<ActionResult<Business>> {
+  const res = await apiJson<Business>(`/api/v1/businesses/${encodeURIComponent(businessId)}/hours`, {
+    method: "PUT",
+    body: JSON.stringify(hours),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function addBusinessHolidayRemote(
+  businessId: string,
+  date: string,
+  name: string,
+): Promise<ActionResult<Business>> {
+  const res = await apiJson<Business>(`/api/v1/businesses/${encodeURIComponent(businessId)}/holidays`, {
+    method: "POST",
+    body: JSON.stringify({ date, name: name.trim() }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function removeBusinessHolidayRemote(
+  businessId: string,
+  date: string,
+): Promise<ActionResult<Business>> {
+  const res = await apiJson<Business>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/holidays/${encodeURIComponent(date)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function addBlockedSlotRemote(
+  businessId: string,
+  date: string,
+  start: string,
+  end: string,
+  reason: string,
+): Promise<ActionResult<Business>> {
+  const res = await apiJson<Business>(`/api/v1/businesses/${encodeURIComponent(businessId)}/blocked`, {
+    method: "POST",
+    body: JSON.stringify({ date, start, end, reason: reason.trim() || "Blocked time" }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function removeBlockedSlotRemote(
+  businessId: string,
+  blockId: string,
+): Promise<ActionResult<Business>> {
+  const res = await apiJson<Business>(
+    `/api/v1/businesses/${encodeURIComponent(businessId)}/blocked/${encodeURIComponent(blockId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function inviteMemberRemote(
+  businessId: string,
+  email: string,
+  role: MembershipRole,
+  title: string,
+): Promise<ActionResult<undefined>> {
+  const res = await apiJson(`/api/v1/workspaces/${encodeURIComponent(businessId)}/team/invite`, {
+    method: "POST",
+    body: JSON.stringify({ email, role, title }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function setMemberRoleRemote(
+  businessId: string,
+  membershipId: string,
+  role: MembershipRole,
+): Promise<ActionResult<undefined>> {
+  const res = await apiJson(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/team/${encodeURIComponent(membershipId)}/role`,
+    { method: "PATCH", body: JSON.stringify({ role }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function updateEmployeeAvailabilityRemote(
+  businessId: string,
+  employeeId: string,
+  patch: Partial<Pick<Employee, "status" | "hours" | "title">>,
+): Promise<ActionResult<Employee>> {
+  const res = await apiJson<Employee>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/employees/${encodeURIComponent(employeeId)}`,
+    { method: "PATCH", body: JSON.stringify(patch) },
   );
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   await hydrateFromBackend();

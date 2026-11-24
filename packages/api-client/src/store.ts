@@ -114,6 +114,7 @@ export async function hydrateFromBackend(): Promise<ActionResult<{ hydrated: boo
     ...res.data,
     bookingConfigs: res.data.bookingConfigs ?? [],
     resources: res.data.resources ?? [],
+    resourceBlocks: res.data.resourceBlocks ?? [],
     eventOfferings: res.data.eventOfferings ?? [],
     bookings: res.data.bookings ?? [],
   });
@@ -400,6 +401,65 @@ export function submitBusinessApplication(
       createdAt: now,
       href: "/workspace/settings",
     });
+
+    const cat = ((parsed.data.category as BusinessCategory) || "other").toLowerCase();
+    next.bookingConfigs = next.bookingConfigs ?? [];
+    const makeCfg = (
+      bookingModel: BookingModel,
+      enabled: boolean,
+      displayLabel: string,
+      settings: Record<string, unknown> = {},
+      cancellationCutoffHours = 24,
+    ): BusinessBookingConfig => ({
+      id: nid("bcfg"),
+      businessId,
+      bookingModel,
+      enabled,
+      displayLabel,
+      approvalMode: "automatic",
+      minNoticeMinutes: 30,
+      maxAdvanceDays: cat === "hotel" ? 365 : 90,
+      bufferBeforeMinutes: 0,
+      bufferAfterMinutes: cat === "restaurant" ? 15 : 0,
+      cancellationCutoffHours,
+      cancellationFeePercent: 0,
+      cancellationPolicyText: "Free cancellation up to 24 hours before the booking.",
+      depositMode: "none",
+      depositValue: 0,
+      holdTtlMinutes: 10,
+      allowOverbooking: false,
+      settings,
+    });
+    if (cat === "restaurant") {
+      next.bookingConfigs.push(
+        makeCfg("resource", true, "Tables & Dining Spaces", { slotIntervalMinutes: 30, turnDurationMinutes: 90, seatingAreas: ["Main Dining", "Patio", "Bar"] }, 6),
+        makeCfg("appointment", false, "Appointments"),
+      );
+    } else if (cat === "hotel") {
+      next.bookingConfigs.push(
+        makeCfg("resource", true, "Rooms & Suites", { checkInTime: "15:00", checkOutTime: "11:00" }, 48),
+        makeCfg("appointment", false, "Appointments"),
+      );
+    } else if (cat === "events" || cat === "travel") {
+      next.bookingConfigs.push(
+        makeCfg("ticket", true, "Tickets & Passes", {}, 48),
+        makeCfg("capacity", true, "Tours & Group Experiences", {}, 24),
+        makeCfg("appointment", false, "Appointments"),
+      );
+    } else if (cat === "sports") {
+      next.bookingConfigs.push(
+        makeCfg("resource", true, "Courts & Fields"),
+        makeCfg("capacity", true, "Group Classes & Clinics"),
+        makeCfg("appointment", true, "Private Coaching"),
+      );
+    } else if (cat === "fitness" || cat === "wellness") {
+      next.bookingConfigs.push(
+        makeCfg("appointment", true, "1-on-1 Sessions"),
+        makeCfg("capacity", true, "Group Classes & Workshops"),
+      );
+    } else {
+      next.bookingConfigs.push(makeCfg("appointment", true, "Appointments"));
+    }
   });
   const owner = state.users.find((u) => u.id === ownerId);
   const token =
@@ -881,22 +941,49 @@ export function markAllNotificationsRead(userId: string): ActionResult {
 export function saveService(businessId: string, input: unknown, serviceId?: string): ActionResult {
   const parsed = serviceSchema.safeParse(input);
   if (!parsed.success) return fail("Check the service", fieldErrors(parsed.error));
+  const assignedIds = parsed.data.employeeIds ?? [];
   draft((next) => {
     if (serviceId) {
       const row = next.services.find((item) => item.id === serviceId && item.businessId === businessId);
-      if (row) Object.assign(row, parsed.data);
+      if (row) {
+        Object.assign(row, {
+          name: parsed.data.name,
+          description: parsed.data.description,
+          category: parsed.data.category,
+          price: parsed.data.price,
+          durationMinutes: parsed.data.durationMinutes,
+          cancellationPolicy: parsed.data.cancellationPolicy,
+          imageUrl: parsed.data.imageUrl,
+          depositAmount: parsed.data.depositAmount,
+          requiresApproval: Boolean(parsed.data.requiresApproval),
+          ...(parsed.data.employeeIds ? { employeeIds: assignedIds } : {}),
+        });
+      }
       return;
     }
+    const newId = nid("svc");
     const service: Service = {
-      id: nid("svc"),
+      id: newId,
       businessId,
-      ...parsed.data,
+      name: parsed.data.name,
+      description: parsed.data.description,
+      category: parsed.data.category,
+      price: parsed.data.price,
+      durationMinutes: parsed.data.durationMinutes,
+      cancellationPolicy: parsed.data.cancellationPolicy,
+      imageUrl: parsed.data.imageUrl,
+      depositAmount: parsed.data.depositAmount,
       currency: "USD",
-      employeeIds: [],
+      employeeIds: assignedIds,
       active: true,
-      requiresApproval: false,
+      requiresApproval: Boolean(parsed.data.requiresApproval),
     };
     next.services.push(service);
+    for (const emp of next.employees) {
+      if (emp.businessId === businessId && assignedIds.includes(emp.id) && !emp.serviceIds.includes(newId)) {
+        emp.serviceIds.push(newId);
+      }
+    }
   });
   if (serviceId) {
     syncRemote(`/api/v1/workspaces/${encodeURIComponent(businessId)}/services/${encodeURIComponent(serviceId)}`, "PUT", parsed.data);
@@ -1612,14 +1699,32 @@ export function createUniversalBooking(
         }
       }
     }
+    for (const blk of state.resourceBlocks ?? []) {
+      if (blk.resourceId !== resource.id) continue;
+      if (new Date(blk.startAt).getTime() < reqEnd && reqStart < new Date(blk.endAt).getTime()) {
+        used += blk.unitsBlocked;
+      }
+    }
     if (used + unitsReq > resource.unitsTotal) {
       return fail("That space or resource is already booked for the selected window");
     }
     const hours = Math.max(1, (reqEnd - reqStart) / (60 * 60 * 1000));
+    const startDayStr = input.startAt.slice(0, 10);
+    const endDayStr = input.endAt.slice(0, 10);
+    const nights = Math.max(
+      1,
+      Math.round(
+        (Date.parse(`${endDayStr}T00:00:00Z`) - Date.parse(`${startDayStr}T00:00:00Z`)) / 86400000,
+      ),
+    );
     const unitPrice =
       resource.pricingUnit === "per_hour"
         ? Math.round(resource.basePrice * hours * 100) / 100
-        : resource.basePrice;
+        : resource.pricingUnit === "per_night"
+          ? Math.round(resource.basePrice * nights * 100) / 100
+          : resource.pricingUnit === "per_day"
+            ? Math.round(resource.basePrice * Math.max(1, Math.ceil(hours / 24)) * 100) / 100
+            : resource.basePrice;
     const total = Math.round(unitPrice * unitsReq * 100) / 100;
     const depositDue = resource.depositAmount ?? 0;
     const cfg = (state.bookingConfigs ?? []).find(

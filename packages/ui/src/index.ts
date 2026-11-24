@@ -1,5 +1,7 @@
 import type {
   AppointmentStatus,
+  BookingModel,
+  BusinessBookingConfig,
   BusinessCategory,
   MembershipRole,
   OrderStatus,
@@ -60,6 +62,8 @@ export const categoryLabels: Record<BusinessCategory, string> = {
   fitness: "Fitness & gym",
   restaurant: "Restaurants",
   hotel: "Hotels",
+  sports: "Sports facilities",
+  events: "Events & tours",
   auto: "Auto detailing",
   travel: "Travel",
   wellness: "Spa & wellness",
@@ -104,6 +108,56 @@ export const workspaceNav: NavItem[] = [
   { href: "/workspace/settings", label: "Settings", icon: "settings", permission: "settings.profile" },
 ];
 
+export function inventoryNavLabelForBusiness(
+  category?: BusinessCategory,
+  bookingConfigs?: BusinessBookingConfig[],
+): string {
+  if (category === "restaurant") return "Tables & Hours";
+  if (category === "hotel") return "Rooms & Rates";
+  if (category === "events" || category === "travel") return "Events & Tickets";
+  if (category === "sports") return "Courts & Classes";
+  const enabled = (bookingConfigs ?? []).filter((c) => c.enabled).map((c) => c.bookingModel);
+  if (enabled.includes("resource") && !enabled.includes("appointment")) return "Spaces & Resources";
+  if ((enabled.includes("ticket") || enabled.includes("capacity")) && !enabled.includes("appointment")) {
+    return "Events & Classes";
+  }
+  return "Services & Offerings";
+}
+
+export function workspaceNavForBusiness(
+  category?: BusinessCategory,
+  bookingConfigs?: BusinessBookingConfig[],
+): NavItem[] {
+  const servicesLabel = inventoryNavLabelForBusiness(category, bookingConfigs);
+  return workspaceNav.map((item) => {
+    if (item.href === "/workspace/services") {
+      return { ...item, label: servicesLabel };
+    }
+    if (item.href === "/workspace/bookings" && category === "restaurant") {
+      return { ...item, label: "Reservations" };
+    }
+    if (item.href === "/workspace/bookings" && category === "hotel") {
+      return { ...item, label: "Stays & Guests" };
+    }
+    return item;
+  });
+}
+
+export function primaryCtaLabelForBusiness(
+  category?: BusinessCategory,
+  enabledModels?: BookingModel[],
+): string {
+  if (category === "restaurant") return "Reserve a Table";
+  if (category === "hotel") return "Check Room Rates";
+  if (category === "events" || category === "travel") return "Get Tickets";
+  if (category === "sports") return "Reserve Court or Class";
+  if (enabledModels?.includes("resource") && !enabledModels?.includes("appointment")) return "Reserve Space";
+  if ((enabledModels?.includes("ticket") || enabledModels?.includes("capacity")) && !enabledModels?.includes("appointment")) {
+    return "Get Passes";
+  }
+  return "Book Appointment";
+}
+
 export const adminNav: NavItem[] = [
   { href: "/admin", label: "Overview", icon: "home" },
   { href: "/admin/applications", label: "Business Applications", icon: "inbox" },
@@ -129,12 +183,14 @@ export const roleLabels: Record<MembershipRole, string> = {
 };
 
 export const exploreFilterHints: Record<string, string[]> = {
-  restaurant: ["Cuisine", "Price range", "Neighborhood", "Available tables"],
+  restaurant: ["Cuisine", "Party size", "Seating area", "Available tables"],
   beauty: ["Service", "Price", "Stylist", "Available date"],
   barber: ["Service", "Barber", "Price", "Available date"],
   healthcare: ["Specialty", "Location", "Available appointment", "Provider"],
   fitness: ["Class type", "Coach", "Time of day"],
-  hotel: ["Dates", "Guests", "Neighborhood"],
+  hotel: ["Check-in / Check-out", "Guests", "Room type"],
+  sports: ["Court type", "Date", "Duration"],
+  events: ["Event date", "Tier price", "Venue area"],
   auto: ["Service", "Vehicle type", "Same-day"],
   travel: ["Destination", "Dates", "Group size"],
   wellness: ["Treatment", "Duration", "Therapist"],

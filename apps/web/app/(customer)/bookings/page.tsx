@@ -6,8 +6,10 @@ import {
   customerUniversalBookings,
   displayUser,
   rescheduleAppointment,
+  rescheduleAppointmentRemote,
   sendBusinessMessage,
   setAppointmentStatus,
+  setAppointmentStatusRemote,
   setUniversalBookingStatus,
   setUniversalBookingStatusRemote,
   useBookItState,
@@ -37,6 +39,8 @@ export default function CustomerBookingsPage() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [notice, setNotice] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const rescheduleSlots = useMemo(() => {
     if (!rescheduleTarget) return [];
@@ -74,7 +78,7 @@ export default function CustomerBookingsPage() {
         <div>
           <h1 style={{ margin: 0 }}>My Bookings</h1>
           <p className="muted" style={{ margin: "4px 0 0" }}>
-            Track upcoming, pending, completed, and cancelled appointments.
+            Track appointments, dining tables, hotel stays, passes, and group classes.
           </p>
         </div>
         <Link href="/explore" className="btn">
@@ -91,14 +95,16 @@ export default function CustomerBookingsPage() {
       </div>
 
       {notice ? <p className="tiny" style={{ color: "var(--lavender)" }}>{notice}</p> : null}
+      {errorMsg ? <p className="error">{errorMsg}</p> : null}
 
       {filtered.length === 0 && universalOnly.length === 0 ? (
-        <Empty title={`No ${tab} bookings`} body="Explore approved businesses to book your next appointment, space, or event." />
+        <Empty title={`No ${tab} bookings`} body="Explore approved businesses to book your next appointment, stay, table, or event." />
       ) : (
         <div className="stack">
           {universalOnly.map((ub) => {
             const biz = state.businesses.find((b) => b.id === ub.businessId);
             const st = universalBookingStatus(ub.status);
+            const alloc = ub.resourceAllocations[0];
             return (
               <article key={ub.id} className="panel stack" style={{ gap: 10 }}>
                 <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 14 }}>
@@ -110,25 +116,42 @@ export default function CustomerBookingsPage() {
                     </div>
                     <span className="tiny">{biz?.name}</span>
                     <span className="tiny tabular">
-                      {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)} ·{" "}
+                      {ub.startAt ? formatDateTime(ub.startAt) : formatDateTime(ub.createdAt)}
+                      {ub.endAt && ub.bookingModel === "resource" ? ` → ${formatDateTime(ub.endAt)}` : ""} ·{" "}
                       {formatMoney(ub.totalAmount)} ({ub.paymentStatus})
+                      {alloc?.partySize ? ` · ${alloc.partySize} guests` : ""}
                     </span>
                     {ub.checkInCode ? (
-                      <span className="tiny tabular">Check-in Code: <strong>{ub.checkInCode}</strong></span>
+                      <span className="tiny tabular">
+                        Check-in Code: <strong>{ub.checkInCode}</strong>
+                      </span>
                     ) : null}
                   </div>
                   <div className="row">
+                    <Link href={`/bookings/${ub.id}`} className="btn ghost small">
+                      Details
+                    </Link>
                     {["held", "pending", "confirmed"].includes(ub.status) ? (
                       <Button
                         tone="danger"
                         small
+                        disabled={busy}
                         onClick={async () => {
-                          if (usingMocks()) {
-                            setUniversalBookingStatus(ub.id, "cancelled", userId);
-                          } else {
-                            await setUniversalBookingStatusRemote(ub.id, "cancelled", "Customer cancelled");
+                          setErrorMsg("");
+                          setNotice("");
+                          setBusy(true);
+                          try {
+                            const res = usingMocks()
+                              ? setUniversalBookingStatus(ub.id, "cancelled", userId)
+                              : await setUniversalBookingStatusRemote(ub.id, "cancelled", "Customer cancelled");
+                            if (!res.ok) {
+                              setErrorMsg(res.error);
+                              return;
+                            }
+                            setNotice("Booking cancelled.");
+                          } finally {
+                            setBusy(false);
                           }
-                          setNotice("Booking cancelled");
                         }}
                       >
                         Cancel
@@ -173,15 +196,36 @@ export default function CustomerBookingsPage() {
                   </Link>
                   {apt.status === "pending" || apt.status === "confirmed" ? (
                     <>
-                      <Button tone="soft" small onClick={() => setRescheduleTarget(apt)}>
+                      <Button
+                        tone="soft"
+                        small
+                        onClick={() => {
+                          setErrorMsg("");
+                          setRescheduleTarget(apt);
+                        }}
+                      >
                         Reschedule
                       </Button>
                       <Button
                         tone="danger"
                         small
-                        onClick={() => {
-                          setAppointmentStatus(apt.id, "cancelled", userId);
-                          setNotice("Booking cancelled");
+                        disabled={busy}
+                        onClick={async () => {
+                          setErrorMsg("");
+                          setNotice("");
+                          setBusy(true);
+                          try {
+                            const res = usingMocks()
+                              ? setAppointmentStatus(apt.id, "cancelled", userId)
+                              : await setAppointmentStatusRemote(apt.id, "cancelled", "Customer cancelled");
+                            if (!res.ok) {
+                              setErrorMsg(res.error);
+                              return;
+                            }
+                            setNotice("Booking cancelled.");
+                          } finally {
+                            setBusy(false);
+                          }
                         }}
                       >
                         Cancel
@@ -207,14 +251,24 @@ export default function CustomerBookingsPage() {
         <Modal title="Reschedule appointment" onClose={() => setRescheduleTarget(null)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               const chosen = rescheduleSlots.includes(newTime) ? newTime : rescheduleSlots[0];
               if (!chosen) return;
-              const res = rescheduleAppointment(rescheduleTarget.id, newDate, chosen, userId);
-              if (res.ok) {
+              setErrorMsg("");
+              setBusy(true);
+              try {
+                const res = usingMocks()
+                  ? rescheduleAppointment(rescheduleTarget.id, newDate, chosen, userId)
+                  : await rescheduleAppointmentRemote(rescheduleTarget.id, newDate, chosen);
+                if (!res.ok) {
+                  setErrorMsg(res.error);
+                  return;
+                }
                 setNotice(`Appointment rescheduled to ${newDate} at ${chosen}`);
                 setRescheduleTarget(null);
+              } finally {
+                setBusy(false);
               }
             }}
           >
@@ -250,8 +304,9 @@ export default function CustomerBookingsPage() {
                 </div>
               )}
             </div>
-            <Button type="submit" disabled={rescheduleSlots.length === 0}>
-              Save new time
+            {errorMsg ? <p className="error">{errorMsg}</p> : null}
+            <Button type="submit" disabled={busy || rescheduleSlots.length === 0}>
+              {busy ? "Saving..." : "Save new time"}
             </Button>
           </form>
         </Modal>

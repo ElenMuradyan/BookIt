@@ -110,6 +110,7 @@ class BusinessOut(PublicBusinessOut):
 
 class BusinessUpdateIn(CamelModel):
     name: str | None = Field(default=None, min_length=2, max_length=200)
+    category: str | None = Field(default=None, min_length=2, max_length=64)
     description: str | None = Field(default=None, min_length=8)
     phone: str | None = Field(default=None, min_length=7, max_length=40)
     email: EmailStr | None = None

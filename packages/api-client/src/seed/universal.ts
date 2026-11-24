@@ -1,4 +1,4 @@
-import type { BusinessBookingConfig, EventOffering, Resource, UniversalBooking } from "@bookit/types";
+import type { BusinessBookingConfig, EventOffering, Resource, ResourceBlock, UniversalBooking } from "@bookit/types";
 
 export const bookingConfigs: BusinessBookingConfig[] = [
   {
@@ -59,7 +59,7 @@ export const bookingConfigs: BusinessBookingConfig[] = [
     depositValue: 25,
     holdTtlMinutes: 10,
     allowOverbooking: false,
-    settings: {},
+    settings: { slotIntervalMinutes: 30, turnDurationMinutes: 90, seatingAreas: ["Main Dining", "Patio", "Bar"] },
   },
   {
     id: "bcfg_zenith_res",
@@ -99,7 +99,7 @@ export const bookingConfigs: BusinessBookingConfig[] = [
     depositValue: 20,
     holdTtlMinutes: 15,
     allowOverbooking: false,
-    settings: {},
+    settings: { checkInTime: "15:00", checkOutTime: "11:00" },
   },
   {
     id: "bcfg_komorebi_cap",
@@ -140,7 +140,7 @@ export const resources: Resource[] = [
     basePrice: 25,
     currency: "USD",
     depositAmount: 25,
-    attributes: { seating: "outdoor", heated: true },
+    attributes: { seating: "outdoor", area: "Patio", heated: true },
     active: true,
   },
   {
@@ -158,7 +158,7 @@ export const resources: Resource[] = [
     bufferMinutes: 15,
     basePrice: 0,
     currency: "USD",
-    attributes: { seating: "indoor" },
+    attributes: { seating: "indoor", area: "Main Dining" },
     active: true,
   },
   {
@@ -196,10 +196,31 @@ export const resources: Resource[] = [
     basePrice: 140,
     currency: "USD",
     depositAmount: 30,
-    attributes: { wifi: "fiber", terrace: true },
+    attributes: { wifi: "fiber", terrace: true, roomType: "Suite", amenities: ["Terrace", "Workspace", "Fiber Wi-Fi"] },
+    active: true,
+  },
+  {
+    id: "res_north_deluxe_king",
+    businessId: "biz_northline",
+    name: "Northline Deluxe King",
+    resourceType: "hotel_room",
+    description: "Quiet overnight hotel room with courtyard views, king bed, and fiber Wi-Fi.",
+    capacityPeople: 2,
+    unitsTotal: 6,
+    pricingUnit: "per_night",
+    slotDurationMinutes: 1440,
+    minDurationMinutes: 720,
+    maxDurationMinutes: 43200,
+    bufferMinutes: 60,
+    basePrice: 215,
+    currency: "USD",
+    depositAmount: 45,
+    attributes: { roomType: "Double", amenities: ["King Bed", "Courtyard View", "Fiber Wi-Fi"] },
     active: true,
   },
 ];
+
+export const resourceBlocks: ResourceBlock[] = [];
 
 export const eventOfferings: EventOffering[] = [
   {

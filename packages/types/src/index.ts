@@ -71,6 +71,8 @@ export type BusinessCategory =
   | "fitness"
   | "restaurant"
   | "hotel"
+  | "sports"
+  | "events"
   | "auto"
   | "travel"
   | "wellness"
@@ -246,6 +248,9 @@ export interface Business {
   blocked: { id: ID; date: string; start: string; end: string; reason: string }[];
   cancellationPolicy: string;
   bookingApproval: "automatic" | "manual";
+  timezone?: string;
+  minNoticeMinutes?: number;
+  maxAdvanceDays?: number;
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
 }
@@ -410,6 +415,47 @@ export interface ResourceAllocation {
   unitPrice: number;
 }
 
+export interface ResourceBlock {
+  id: ID;
+  resourceId: ID;
+  startAt: ISODateTime;
+  endAt: ISODateTime;
+  unitsBlocked: number;
+  reason: string;
+  createdAt: ISODateTime;
+}
+
+export interface ResourceSearchItem {
+  resource: Resource;
+  date: string;
+  timezone: string;
+  availableAtRequestedTime?: boolean | null;
+  slots: ResourceAvailabilitySlot[];
+}
+
+export interface HotelStayOption {
+  resource: Resource;
+  checkInAt: ISODateTime;
+  checkOutAt: ISODateTime;
+  nights: number;
+  remainingUnits: number;
+  nightlyRate: number;
+  totalPrice: number;
+  depositDue: number;
+}
+
+export interface HotelStayAvailability {
+  businessId: ID;
+  checkIn: string;
+  checkOut: string;
+  checkInTime: string;
+  checkOutTime: string;
+  nights: number;
+  guests: number;
+  timezone: string;
+  options: HotelStayOption[];
+}
+
 export interface TicketTier {
   id: ID;
   sessionId: ID;
@@ -472,6 +518,23 @@ export interface TicketPass {
   passCode: string;
   status: "valid" | "checked_in" | "cancelled" | "refunded" | "expired";
   checkedInAt?: ISODateTime;
+}
+
+export interface SessionAttendee {
+  passId: ID;
+  bookingId: ID;
+  sessionId: ID;
+  tierId?: ID;
+  tierName?: string;
+  customerId: ID;
+  customerName: string;
+  attendeeName?: string;
+  bookingStatus: string;
+  paymentStatus: string;
+  passCode: string;
+  passStatus: string;
+  checkedInAt?: ISODateTime;
+  createdAt: ISODateTime;
 }
 
 export interface UniversalBooking {
@@ -798,6 +861,7 @@ export interface AppState {
   appointments: Appointment[];
   bookingConfigs: BusinessBookingConfig[];
   resources: Resource[];
+  resourceBlocks: ResourceBlock[];
   eventOfferings: EventOffering[];
   bookings: UniversalBooking[];
   reviews: Review[];

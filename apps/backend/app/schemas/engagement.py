@@ -9,6 +9,7 @@ from app.schemas.booking import (
     BusinessBookingConfigOut,
     CustomerNoteOut,
     EventOfferingOut,
+    ResourceBlockOut,
     ResourceOut,
     UniversalBookingOut,
 )
@@ -186,6 +187,7 @@ class BootstrapStateOut(CamelModel):
     appointments: list[AppointmentOut] = Field(default_factory=list)
     booking_configs: list[BusinessBookingConfigOut] = Field(default_factory=list)
     resources: list[ResourceOut] = Field(default_factory=list)
+    resource_blocks: list[ResourceBlockOut] = Field(default_factory=list)
     event_offerings: list[EventOfferingOut] = Field(default_factory=list)
     bookings: list[UniversalBookingOut] = Field(default_factory=list)
     reviews: list[ReviewOut] = Field(default_factory=list)
