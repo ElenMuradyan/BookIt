@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import (
@@ -41,12 +41,14 @@ from app.services.auth_service import (
     request_password_reset_token,
     revoke_refresh_token,
     rotate_refresh_session,
+    send_password_reset_email,
+    send_verification_email,
     serialize_profile,
     user_workspaces,
     verify_email_code,
     verify_email_link_token,
 )
-from app.services.notification_service import schedule_email_notification
+from app.services.notification_service import EmailDeliveryError, ensure_email_provider_ready
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -114,7 +116,6 @@ async def register(
     payload: RegisterIn,
     request: Request,
     response: Response,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     settings = get_settings()
@@ -124,18 +125,28 @@ async def register(
         settings.auth_rate_limit_max_attempts,
         settings.auth_rate_limit_window_seconds,
     )
+    try:
+        ensure_email_provider_ready()
+    except EmailDeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
     session_out, raw_refresh, verify_code, verify_link_token = await register_customer(
         db,
         payload,
         user_agent=request.headers.get("user-agent"),
         ip_address=ip,
+        commit=False,
     )
-    _send_verification_email(
-        background_tasks,
-        to_email=payload.email.strip().lower(),
-        code=verify_code,
-        link_token=verify_link_token,
-    )
+    try:
+        await send_verification_email(
+            to_email=payload.email.strip().lower(),
+            code=verify_code,
+            link_token=verify_link_token,
+        )
+    except EmailDeliveryError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    await db.commit()
     return _set_session_cookies(request, response, session_out=session_out, raw_refresh=raw_refresh, remember=True)
 
 
@@ -272,7 +283,6 @@ async def me(
 @router.post("/verify/resend", response_model=OkResponse)
 async def request_verification(
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[None, Depends(verify_csrf_if_cookie_auth)],
     user: Annotated[User | None, Depends(get_optional_user)],
@@ -292,15 +302,24 @@ async def request_verification(
         )
         if user.email_verified:
             return OkResponse(ok=True, message="Email is already verified")
-        issued = await issue_email_verification(db, user, enforce_cooldown_error=True)
+        try:
+            ensure_email_provider_ready()
+        except EmailDeliveryError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+        issued = await issue_email_verification(db, user, enforce_cooldown_error=True, commit=False)
         if issued:
             code, link_token = issued
-            _send_verification_email(
-                background_tasks,
-                to_email=user.email,
-                code=code,
-                link_token=link_token,
-            )
+            try:
+                await send_verification_email(
+                    to_email=user.email,
+                    code=code,
+                    link_token=link_token,
+                )
+            except EmailDeliveryError as exc:
+                await db.rollback()
+                raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            await db.commit()
         return OkResponse(ok=True, message="Verification email sent")
 
     if not requested_identifier:
@@ -314,6 +333,11 @@ async def request_verification(
         min(settings.auth_rate_limit_max_attempts, 6),
         settings.auth_rate_limit_window_seconds,
     )
+    try:
+        ensure_email_provider_ready()
+    except EmailDeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
     target = await find_user_by_identifier(db, requested_identifier)
     if (
         target is not None
@@ -321,15 +345,19 @@ async def request_verification(
         and target.status == "active"
         and not target.email_verified
     ):
-        issued = await issue_email_verification(db, target, enforce_cooldown_error=False)
+        issued = await issue_email_verification(db, target, enforce_cooldown_error=False, commit=False)
         if issued:
             code, link_token = issued
-            _send_verification_email(
-                background_tasks,
-                to_email=target.email,
-                code=code,
-                link_token=link_token,
-            )
+            try:
+                await send_verification_email(
+                    to_email=target.email,
+                    code=code,
+                    link_token=link_token,
+                )
+            except EmailDeliveryError as exc:
+                await db.rollback()
+                raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            await db.commit()
     # Anti-enumeration: identical 200 response for unknown, verified, cooldown, or unverified identifiers
     return OkResponse(
         ok=True,
@@ -395,7 +423,6 @@ async def verify_email_token(
 async def request_password_reset(
     payload: PasswordResetRequestIn,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     settings = get_settings()
@@ -405,15 +432,20 @@ async def request_password_reset(
         settings.auth_rate_limit_max_attempts,
         settings.auth_rate_limit_window_seconds,
     )
-    reset_info = await request_password_reset_token(db, payload.identifier)
+    try:
+        ensure_email_provider_ready()
+    except EmailDeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    reset_info = await request_password_reset_token(db, payload.identifier, commit=False)
     if reset_info:
         target_email, code = reset_info
-        schedule_email_notification(
-            background_tasks,
-            to_email=target_email,
-            subject="BookIt password reset",
-            body=f"Your password reset code is {code}.",
-        )
+        try:
+            await send_password_reset_email(to_email=target_email, code=code)
+        except EmailDeliveryError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        await db.commit()
     # Identical anti-enumeration response regardless of account existence
     return OkResponse(
         ok=True,

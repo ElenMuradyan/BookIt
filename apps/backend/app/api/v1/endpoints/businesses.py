@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,8 +26,9 @@ from app.schemas.business import (
     PublicBusinessOut,
     WeeklyHoursSchema,
 )
-from app.services.auth_service import enqueue_verification_email, issue_email_verification, record_audit
+from app.services.auth_service import issue_email_verification, record_audit, send_verification_email
 from app.services.booking_config_service import seed_booking_configs_for_category
+from app.services.notification_service import EmailDeliveryError, ensure_email_provider_ready
 from app.services.rbac import ensure_business_visible, require_business_permission
 
 router = APIRouter(prefix="/businesses", tags=["businesses"])
@@ -113,7 +114,6 @@ async def get_business(
 async def submit_business_application(
     payload: BusinessApplicationCreateIn,
     request: Request,
-    background_tasks: BackgroundTasks,
     _: Annotated[None, Depends(verify_csrf_if_cookie_auth)],
     current_user: Annotated[User | None, Depends(get_optional_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -145,6 +145,10 @@ async def submit_business_application(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Create an owner password to sign in to your business workspace",
             )
+        try:
+            ensure_email_provider_ready()
+        except EmailDeliveryError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
         parts = payload.owner_name.strip().split(" ")
         first_name = parts[0] or "Owner"
         last_name = " ".join(parts[1:]) or "Account"
@@ -173,6 +177,11 @@ async def submit_business_application(
         db.add(Cart(id=new_id("cart"), user_id=owner.id))
         await db.flush()
         created_new_owner = True
+    elif not owner.email_verified:
+        try:
+            ensure_email_provider_ready()
+        except EmailDeliveryError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     business = Business(
         id=new_id("biz"),
@@ -248,20 +257,26 @@ async def submit_business_application(
         target_id=business.id,
     )
     try:
-        await db.commit()
+        await db.flush()
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account already exists for that owner email. Please sign in first.",
         ) from exc
+
     if verification_issued:
-        enqueue_verification_email(
-            background_tasks,
-            to_email=owner.email,
-            code=verification_issued[0],
-            link_token=verification_issued[1],
-        )
+        try:
+            await send_verification_email(
+                to_email=owner.email,
+                code=verification_issued[0],
+                link_token=verification_issued[1],
+            )
+        except EmailDeliveryError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    await db.commit()
     await db.refresh(application)
     return BusinessApplicationOut.model_validate(application)
 

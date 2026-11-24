@@ -119,7 +119,7 @@ Copy `apps/backend/.env.example` to `apps/backend/.env` for local runs:
 - `JWT_SECRET_KEY` / `CSRF_SECRET_KEY`: Must be strong 32+ byte random secrets in `staging`/`production` (enforced on startup).
 - `COOKIE_SECURE` / `COOKIE_SAMESITE` / `COOKIE_DOMAIN` / `CORS_ORIGINS`: Set `COOKIE_SECURE=true` and explicit HTTPS origins in production.
 - `PAYMENT_PROVIDER`, `PAYMENT_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`: Payment configuration.
-- `EMAIL_PROVIDER`, `PUSH_PROVIDER`, `SMTP_*`, `FCM_SERVER_KEY`: Notification delivery settings.
+- `EMAIL_PROVIDER`, `EMAIL_FROM`, `RESEND_API_KEY`, `RESEND_API_BASE_URL`, `PUSH_PROVIDER`, `SMTP_*`, `FCM_SERVER_KEY`: Notification delivery settings (`RESEND_API_KEY` + verified `EMAIL_FROM` enable transactional Resend delivery).
 
 ### Frontend Dual-Mode Toggle (Root `.env.example`)
 Web (`apps/web`) and Mobile (`apps/mobile`) support both offline demo preview mode and live backend mode:
@@ -192,6 +192,6 @@ Test coverage includes:
 ## 10. Optional External Integrations (Ready for Provider Keys)
 
 The following external services are architected with clean provider abstractions and database persistence, and default to safe local modes until credentials are configured:
-- **Email Delivery (`EMAIL_PROVIDER=log_only` -> `smtp`)**: Verification OTPs and password-reset codes are generated, hashed, and persisted in PostgreSQL; configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, and `SMTP_PASSWORD` for live email dispatch.
+- **Email Delivery (`EMAIL_PROVIDER=log_only` -> `resend` or `smtp`)**: Verification OTPs/links and password-reset codes are generated, SHA-256 hashed, and persisted in PostgreSQL. Configure `EMAIL_PROVIDER=resend` (or set `RESEND_API_KEY` outside `test`), `RESEND_API_KEY`, and a verified sender in `EMAIL_FROM` for live Resend email dispatch (or `EMAIL_PROVIDER=smtp` with `SMTP_*` + `EMAIL_FROM`). Misconfigured or rejected provider deliveries fail safely with `503`/`502` and roll back unissued tokens instead of returning a false `200`.
 - **Push Notifications (`PUSH_PROVIDER=log_only` -> `fcm`)**: In-app notifications are persisted and served via `/api/v1/notifications`; configure `FCM_SERVER_KEY` for remote mobile push dispatch.
 - **Live Payment Settlement (`PAYMENT_PROVIDER=sandbox_unconfigured` -> `stripe`)**: Payment intents, order totals, and HMAC-SHA256 webhook signature verification (`/api/v1/payments/webhooks/{provider}`) are implemented; configure `STRIPE_SECRET_KEY` and `PAYMENT_WEBHOOK_SECRET` for live PSP settlement.

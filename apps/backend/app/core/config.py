@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     stripe_secret_key: str | None = None
 
     email_provider: Literal["log_only", "smtp", "resend"] = "log_only"
-    email_from: str = "BookIt <no-reply@bookit.local>"
+    email_from: str | None = None
     push_provider: Literal["log_only", "fcm"] = "log_only"
     smtp_host: str | None = None
     smtp_port: int = 587
@@ -67,9 +67,19 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_use_tls: bool = True
     resend_api_key: str | None = None
+    resend_api_base_url: str = "https://api.resend.com"
     fcm_server_key: str | None = None
 
-    @field_validator("cookie_domain", "direct_database_url", mode="before")
+    @field_validator(
+        "cookie_domain",
+        "direct_database_url",
+        "email_from",
+        "smtp_host",
+        "smtp_user",
+        "smtp_password",
+        "resend_api_key",
+        mode="before",
+    )
     @classmethod
     def empty_str_to_none(cls, value: str | None) -> str | None:
         if value is not None and value.strip() == "":
@@ -77,7 +87,14 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def validate_production_secrets(self) -> "Settings":
+    def resolve_and_validate_settings(self) -> "Settings":
+        # If EMAIL_PROVIDER was not explicitly specified, prefer configured transactional credentials outside tests
+        if "email_provider" not in self.model_fields_set and self.environment != "test":
+            if self.resend_api_key:
+                self.email_provider = "resend"
+            elif self.smtp_host:
+                self.email_provider = "smtp"
+
         if self.environment in ("staging", "production"):
             insecure_markers = ("replace-with", "dev-only", "change-me", "secret")
             if len(self.jwt_secret_key) < 32 or any(m in self.jwt_secret_key.lower() for m in insecure_markers):
@@ -88,6 +105,10 @@ class Settings(BaseSettings):
                 raise ValueError("COOKIE_SECURE must be true in staging/production")
             if "*" in self.cors_origins_list:
                 raise ValueError("Wildcard CORS origins are forbidden with credentialed cookies")
+            if self.email_provider == "resend" and (not self.resend_api_key or not self.email_from):
+                raise ValueError("RESEND_API_KEY and EMAIL_FROM are required when EMAIL_PROVIDER=resend")
+            if self.email_provider == "smtp" and (not self.smtp_host or not self.email_from):
+                raise ValueError("SMTP_HOST and EMAIL_FROM are required when EMAIL_PROVIDER=smtp")
         return self
 
     @property

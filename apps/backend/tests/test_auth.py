@@ -546,3 +546,273 @@ async def test_email_verification_and_password_reset_lockout_after_five_failed_a
         await auth_rate_limiter.reset()
 
 
+@pytest.mark.asyncio
+async def test_resend_email_verification_and_password_reset_delivery(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import re
+    import httpx
+
+    settings = get_settings()
+    prev = (
+        settings.email_provider,
+        settings.resend_api_key,
+        settings.email_from,
+        settings.resend_api_base_url,
+    )
+    settings.email_provider = "resend"
+    settings.resend_api_key = "re_test_mock_key"
+    settings.email_from = "BookIt <noreply@bookit-test.example>"
+    settings.resend_api_base_url = "https://api.resend.com"
+
+    captured_calls: list[dict] = []
+
+    async def fake_post(self, url, *, headers=None, json=None, **kwargs):
+        del self, kwargs
+        captured_calls.append({"url": str(url), "headers": dict(headers or {}), "json": dict(json or {})})
+        return httpx.Response(
+            200,
+            json={"id": f"re_msg_{len(captured_calls)}"},
+            request=httpx.Request("POST", str(url)),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    await auth_rate_limiter.reset()
+
+    try:
+        reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "firstName": "Resend",
+                "lastName": "Verifier",
+                "username": "resendverifier",
+                "email": "resend.verify@example.com",
+                "phone": "+1 206 555 0171",
+                "password": "StrongPassword1!",
+                "confirmPassword": "StrongPassword1!",
+                "acceptTerms": True,
+            },
+        )
+        assert reg.status_code == 201, reg.text
+        assert len(captured_calls) == 1
+        verify_call = captured_calls[0]
+        assert verify_call["url"] == "https://api.resend.com/emails"
+        assert verify_call["headers"]["Authorization"] == "Bearer re_test_mock_key"
+        assert verify_call["json"]["from"] == "BookIt <noreply@bookit-test.example>"
+        assert verify_call["json"]["to"] == ["resend.verify@example.com"]
+        assert "verify" in verify_call["json"]["subject"].lower()
+        assert verify_call["json"]["html"]
+
+        otp_match = re.search(r"\b(\d{6})\b", verify_call["json"]["text"])
+        assert otp_match is not None
+        otp_code = otp_match.group(1)
+        assert otp_code in verify_call["json"]["html"]
+        assert otp_code not in reg.text
+
+        access = reg.json()["accessToken"]
+        verified = await client.post(
+            "/api/v1/auth/verify",
+            headers={"Authorization": f"Bearer {access}"},
+            json={"code": otp_code},
+        )
+        assert verified.status_code == 200, verified.text
+
+        me = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
+        assert me.status_code == 200
+        assert me.json()["user"]["emailVerified"] is True
+
+        reset_req = await client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"identifier": "resend.verify@example.com"},
+        )
+        assert reset_req.status_code == 200, reset_req.text
+        assert len(captured_calls) == 2
+        reset_call = captured_calls[1]
+        assert reset_call["json"]["to"] == ["resend.verify@example.com"]
+        assert "password" in reset_call["json"]["subject"].lower()
+        reset_match = re.search(r"\b(\d{6})\b", reset_call["json"]["text"])
+        assert reset_match is not None
+        reset_code = reset_match.group(1)
+        assert reset_code not in reset_req.text
+
+        confirm = await client.post(
+            "/api/v1/auth/password-reset/confirm",
+            json={
+                "identifier": "resend.verify@example.com",
+                "code": reset_code,
+                "password": "UpdatedStrongPassword2!",
+                "confirmPassword": "UpdatedStrongPassword2!",
+            },
+        )
+        assert confirm.status_code == 200, confirm.text
+
+        new_login = await client.post(
+            "/api/v1/auth/login",
+            json={"identifier": "resend.verify@example.com", "password": "UpdatedStrongPassword2!"},
+        )
+        assert new_login.status_code == 200, new_login.text
+    finally:
+        (
+            settings.email_provider,
+            settings.resend_api_key,
+            settings.email_from,
+            settings.resend_api_base_url,
+        ) = prev
+        await auth_rate_limiter.reset()
+
+
+@pytest.mark.asyncio
+async def test_resend_provider_failures_and_misconfiguration_never_report_success(
+    client: AsyncClient,
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from datetime import timedelta
+
+    import httpx
+    from sqlalchemy import select, update
+
+    from app.models.base import utc_now
+    from app.models.user import User, VerificationToken
+
+    settings = get_settings()
+    prev = (
+        settings.email_provider,
+        settings.resend_api_key,
+        settings.email_from,
+        settings.resend_api_base_url,
+        settings.verification_resend_cooldown_seconds,
+    )
+    settings.email_provider = "resend"
+    settings.resend_api_key = None
+    settings.email_from = None
+    settings.resend_api_base_url = "https://api.resend.com"
+    settings.verification_resend_cooldown_seconds = 60
+
+    await auth_rate_limiter.reset()
+    try:
+        # 1. Missing RESEND_API_KEY / EMAIL_FROM fails cleanly with 503 (never falls back to log_only)
+        #    and returns identical 503 for unknown vs known emails on anti-enumeration endpoints.
+        unknown_misconfig = await client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"identifier": "missing-user@example.com"},
+        )
+        known_misconfig = await client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"identifier": "customer@bookit.demo"},
+        )
+        assert unknown_misconfig.status_code == 503
+        assert known_misconfig.status_code == 503
+
+        unknown_verify_misconfig = await client.post(
+            "/api/v1/auth/verify/request",
+            json={"email": "missing-user@example.com"},
+        )
+        assert unknown_verify_misconfig.status_code == 503
+
+        # 2. When Resend rejects registration email (HTTP 500), /register returns 502 and rolls back user
+        settings.resend_api_key = "re_test_mock_key"
+        settings.email_from = "BookIt <noreply@bookit-test.example>"
+
+        mode: dict[str, int | str] = {"status": 500}
+        sent_bodies: list[dict] = []
+
+        async def controlled_post(self, url, *, headers=None, json=None, **kwargs):
+            del self, headers, kwargs
+            if mode["status"] == "connect_error":
+                raise httpx.ConnectError("connection refused", request=httpx.Request("POST", str(url)))
+            if isinstance(mode["status"], int) and mode["status"] >= 400:
+                return httpx.Response(
+                    mode["status"],
+                    json={"name": "application_error", "message": "provider failure"},
+                    request=httpx.Request("POST", str(url)),
+                )
+            sent_bodies.append(dict(json or {}))
+            return httpx.Response(
+                200,
+                json={"id": f"re_ok_{len(sent_bodies)}"},
+                request=httpx.Request("POST", str(url)),
+            )
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", controlled_post)
+
+        reg_payload = {
+            "firstName": "Rollback",
+            "lastName": "Check",
+            "username": "rollbackcheck",
+            "email": "rollback.check@example.com",
+            "phone": "+1 206 555 0172",
+            "password": "StrongPassword1!",
+            "confirmPassword": "StrongPassword1!",
+            "acceptTerms": True,
+        }
+        failed_reg = await client.post("/api/v1/auth/register", json=reg_payload)
+        assert failed_reg.status_code == 502
+
+        async with session_factory() as db:
+            ghost = (
+                await db.execute(select(User).where(User.email == "rollback.check@example.com"))
+            ).scalar_one_or_none()
+            assert ghost is None
+
+        # Because registration rolled back cleanly, retrying once Resend recovers succeeds (no 409 conflict!)
+        mode["status"] = 200
+        ok_reg = await client.post("/api/v1/auth/register", json=reg_payload)
+        assert ok_reg.status_code == 201, ok_reg.text
+        access = ok_reg.json()["accessToken"]
+        user_id = ok_reg.json()["userId"]
+
+        # Age the initial verification token past the 60s cooldown so resend is eligible
+        async with session_factory() as db:
+            await db.execute(
+                update(VerificationToken)
+                .where(VerificationToken.user_id == user_id)
+                .values(created_at=utc_now() - timedelta(seconds=120))
+            )
+            await db.commit()
+
+        # 3. Provider 429 rate-limit propagates as 503 and rolls back without burning the 60s cooldown
+        mode["status"] = 429
+        rate_limited = await client.post(
+            "/api/v1/auth/verify/request",
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert rate_limited.status_code == 503
+
+        # Because the failed resend rolled back, immediate retry with cooldown=60 still succeeds once Resend recovers
+        mode["status"] = 200
+        recovered_verify = await client.post(
+            "/api/v1/auth/verify/request",
+            headers={"Authorization": f"Bearer {access}"},
+        )
+        assert recovered_verify.status_code == 200
+
+        # 4. Transport error on password-reset propagates as 502, then recovery succeeds
+        mode["status"] = "connect_error"
+        transport_fail = await client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"identifier": "rollback.check@example.com"},
+        )
+        assert transport_fail.status_code == 502
+
+        mode["status"] = 200
+        recovered_reset = await client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"identifier": "rollback.check@example.com"},
+        )
+        assert recovered_reset.status_code == 200
+        assert len(sent_bodies) == 3
+    finally:
+        (
+            settings.email_provider,
+            settings.resend_api_key,
+            settings.email_from,
+            settings.resend_api_base_url,
+            settings.verification_resend_cooldown_seconds,
+        ) = prev
+        await auth_rate_limiter.reset()
+
+
+
+

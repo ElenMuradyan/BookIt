@@ -31,24 +31,19 @@ from app.schemas.auth import (
     UserOut,
     WorkspaceOut,
 )
-from app.services.notification_service import schedule_email_notification
+from app.services.notification_service import schedule_email_notification, send_email_notification
 
 logger = logging.getLogger("bookit.auth")
 MAX_VERIFICATION_FAILED_ATTEMPTS = 5
 
 
-def enqueue_verification_email(
-    background_tasks: BackgroundTasks,
-    *,
-    to_email: str,
-    code: str,
-    link_token: str,
-) -> None:
+def build_verification_email_content(*, code: str, link_token: str) -> tuple[str, str, str]:
     settings = get_settings()
     base_url = settings.frontend_base_url.rstrip("/")
     verify_url = f"{base_url}/verify?{urlencode({'token': link_token})}"
+    subject = "Verify your BookIt email"
     text_body = (
-        f"Welcome to BookIt.\n\n"
+        "Welcome to BookIt.\n\n"
         f"Your 6-digit verification code is: {code}\n\n"
         f"Or verify with a single click using this link (expires in 24 hours):\n{verify_url}\n"
     )
@@ -64,10 +59,70 @@ def enqueue_verification_email(
         f"<p style=\"font-size:12px;color:#6b7280;word-break:break-all;\">Direct link: {safe_url}</p>"
         "</div>"
     )
+    return subject, text_body, html_body
+
+
+def build_password_reset_email_content(*, code: str) -> tuple[str, str, str]:
+    subject = "Reset your BookIt password"
+    text_body = (
+        "We received a request to reset your BookIt password.\n\n"
+        f"Your 6-digit password reset code is: {code}\n\n"
+        "This code expires in 30 minutes. If you did not request a password reset, you can ignore this email.\n"
+    )
+    safe_code = escape(code)
+    html_body = (
+        "<div style=\"font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#111827;\">"
+        "<h2 style=\"margin:0 0 12px;\">Reset your BookIt password</h2>"
+        "<p style=\"margin:0 0 16px;line-height:1.5;\">Enter this 6-digit password reset code in BookIt:</p>"
+        f"<p style=\"font-size:28px;font-weight:700;letter-spacing:6px;margin:0 0 20px;\">{safe_code}</p>"
+        "<p style=\"margin:0 0 12px;font-size:13px;color:#4b5563;\">This code expires in 30 minutes and locks after 5 incorrect attempts.</p>"
+        "<p style=\"margin:0;font-size:12px;color:#6b7280;\">If you did not request this change, you can safely ignore this message.</p>"
+        "</div>"
+    )
+    return subject, text_body, html_body
+
+
+async def send_verification_email(
+    *,
+    to_email: str,
+    code: str,
+    link_token: str,
+) -> str | None:
+    subject, text_body, html_body = build_verification_email_content(code=code, link_token=link_token)
+    return await send_email_notification(
+        to_email=to_email,
+        subject=subject,
+        body=text_body,
+        html_body=html_body,
+    )
+
+
+async def send_password_reset_email(
+    *,
+    to_email: str,
+    code: str,
+) -> str | None:
+    subject, text_body, html_body = build_password_reset_email_content(code=code)
+    return await send_email_notification(
+        to_email=to_email,
+        subject=subject,
+        body=text_body,
+        html_body=html_body,
+    )
+
+
+def enqueue_verification_email(
+    background_tasks: BackgroundTasks,
+    *,
+    to_email: str,
+    code: str,
+    link_token: str,
+) -> None:
+    subject, text_body, html_body = build_verification_email_content(code=code, link_token=link_token)
     schedule_email_notification(
         background_tasks,
         to_email=to_email,
-        subject="Verify your BookIt email",
+        subject=subject,
         body=text_body,
         html_body=html_body,
     )
@@ -201,6 +256,7 @@ async def register_customer(
     *,
     user_agent: str | None,
     ip_address: str | None,
+    commit: bool = True,
 ) -> tuple[AuthSessionOut, str, str, str]:
     email = data.email.strip().lower()
     username = data.username.strip().lower()
@@ -280,7 +336,8 @@ async def register_customer(
             user_agent=user_agent,
             ip_address=ip_address,
         )
-        await db.commit()
+        if commit:
+            await db.commit()
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(
@@ -658,12 +715,26 @@ async def issue_email_verification(
 
 
 
-async def request_password_reset_token(db: AsyncSession, identifier: str) -> tuple[str, str] | None:
+async def request_password_reset_token(
+    db: AsyncSession,
+    identifier: str,
+    *,
+    commit: bool = True,
+) -> tuple[str, str] | None:
     """Anti-enumeration: callers always receive the same generic 200 message."""
     user = await find_user_by_identifier(db, identifier)
     if not user or user.deactivated_at is not None or user.status != "active":
         return None
     now = utc_now()
+    await db.execute(
+        update(VerificationToken)
+        .where(
+            VerificationToken.user_id == user.id,
+            VerificationToken.purpose == "password_reset",
+            VerificationToken.consumed_at.is_(None),
+        )
+        .values(consumed_at=now)
+    )
     code = generate_six_digit_code()
     db.add(
         VerificationToken(
@@ -680,7 +751,8 @@ async def request_password_reset_token(db: AsyncSession, identifier: str) -> tup
         target_type="user",
         target_id=user.id,
     )
-    await db.commit()
+    if commit:
+        await db.commit()
     return user.email, code
 
 
