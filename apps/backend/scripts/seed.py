@@ -511,6 +511,7 @@ async def seed_database(session: AsyncSession) -> None:
             cancellation_policy_text="Free table cancellation up to 6 hours ahead.",
             deposit_mode="fixed",
             deposit_value=25,
+	    settings={"slotIntervalMinutes": 30},
         ),
         BusinessBookingConfig(
             id="bcfg_zenith_res",

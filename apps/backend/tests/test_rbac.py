@@ -67,7 +67,7 @@ async def test_rbac_and_idor_boundaries(client: AsyncClient):
         json={
             "serviceId": "svc_signature",
             "employeeId": "emp_vance",
-            "date": "2026-11-23",
+            "date": "2026-12-01",
             "time": "10:00",
             "paymentMethod": "in_person",
         },

@@ -21,7 +21,7 @@ async def test_concurrent_double_booking_prevented(client: AsyncClient):
     payload = {
         "serviceId": "svc_signature",
         "employeeId": "emp_vance",
-        "date": "2026-11-23",
+        "date": "2026-12-01",
         "time": "14:00",
         "paymentMethod": "in_person",
     }
@@ -89,7 +89,7 @@ async def test_booking_idempotency_history_reschedule_and_qr_checkin(client: Asy
     body = {
         "serviceId": "svc_signature",
         "employeeId": "emp_vance",
-        "date": "2026-11-24",
+        "date": "2026-12-01",
         "time": "10:00",
         "paymentMethod": "in_person",
         "idempotencyKey": "idem_booking_xyz_1",
@@ -116,7 +116,7 @@ async def test_booking_idempotency_history_reschedule_and_qr_checkin(client: Asy
     resched = await client.post(
         f"/api/v1/bookings/{appt_id}/reschedule",
         headers=cust_headers,
-        json={"date": "2026-11-24", "time": "11:00"},
+        json={"date": "2026-12-01", "time": "11:00"},
     )
     assert resched.status_code == 200
 

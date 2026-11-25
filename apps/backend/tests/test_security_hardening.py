@@ -219,7 +219,7 @@ async def test_booking_past_slot_blocked_reschedule_self_overlap_and_idempotency
     idem_payload = {
         "serviceId": "svc_signature",
         "employeeId": "emp_vance",
-        "date": "2026-11-24",
+        "date": "2026-12-01",
         "time": "14:00",
         "paymentMethod": "in_person",
         "idempotencyKey": "idem_race_test_001",
@@ -237,7 +237,7 @@ async def test_booking_past_slot_blocked_reschedule_self_overlap_and_idempotency
     resched = await client.post(
         f"/api/v1/bookings/{appt_id}/reschedule",
         headers=h,
-        json={"date": "2026-11-24", "time": "14:30"},
+        json={"date": "2026-12-01", "time": "14:30"},
     )
     assert resched.status_code == 200, resched.text
 
@@ -248,7 +248,7 @@ async def test_booking_past_slot_blocked_reschedule_self_overlap_and_idempotency
         json={
             "serviceId": "svc_cleaning",
             "employeeId": "emp_noah",
-            "date": "2026-11-24",
+            "date": "2026-12-01",
             "time": "09:00",
             "paymentMethod": "in_person",
         },

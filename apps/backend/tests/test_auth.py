@@ -527,7 +527,8 @@ async def test_email_verification_and_password_reset_lockout_after_five_failed_a
                 json={
                     "identifier": "lockout.user@example.com",
                     "code": wrong_reset,
-                    "newPassword": "NewStrongPassword2!",
+                    "password": "NewStrongPassword2!",
+                    "confirmPassword": "NewStrongPassword2!",
                 },
             )
             assert bad_reset.status_code == 400
@@ -537,7 +538,8 @@ async def test_email_verification_and_password_reset_lockout_after_five_failed_a
             json={
                 "identifier": "lockout.user@example.com",
                 "code": real_reset,
-                "newPassword": "NewStrongPassword2!",
+                "password": "NewStrongPassword2!",
+                    "confirmPassword": "NewStrongPassword2!",
             },
         )
         assert locked_reset.status_code == 400
@@ -567,9 +569,11 @@ async def test_resend_email_verification_and_password_reset_delivery(
     settings.resend_api_base_url = "https://api.resend.com"
 
     captured_calls: list[dict] = []
+    original_post = httpx.AsyncClient.post
 
     async def fake_post(self, url, *, headers=None, json=None, **kwargs):
-        del self, kwargs
+        if not str(url).startswith("https://api.resend.com/emails"):
+            return await original_post(self, url, headers=headers, json=json, **kwargs)
         captured_calls.append({"url": str(url), "headers": dict(headers or {}), "json": dict(json or {})})
         return httpx.Response(
             200,
@@ -717,9 +721,11 @@ async def test_resend_provider_failures_and_misconfiguration_never_report_succes
 
         mode: dict[str, int | str] = {"status": 500}
         sent_bodies: list[dict] = []
+        original_post = httpx.AsyncClient.post
 
         async def controlled_post(self, url, *, headers=None, json=None, **kwargs):
-            del self, headers, kwargs
+            if not str(url).startswith("https://api.resend.com/emails"):
+                return await original_post(self, url, headers=headers, json=json, **kwargs)
             if mode["status"] == "connect_error":
                 raise httpx.ConnectError("connection refused", request=httpx.Request("POST", str(url)))
             if isinstance(mode["status"], int) and mode["status"] >= 400:
