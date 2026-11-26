@@ -1,11 +1,35 @@
 "use client";
 
-import { setAdvertisementStatus, useBookItState } from "@bookit/api-client";
+import { setAdvertisementStatus, setAdvertisementStatusRemote, useBookItState, usingMocks } from "@bookit/api-client";
+import type { Advertisement } from "@bookit/types";
 import { formatDate, formatMoney } from "@bookit/utils";
+import { useState } from "react";
 import { Badge, Button } from "@/components/ui";
 
 export default function AdminAdvertisementsPage() {
   const state = useBookItState();
+  const [busyId, setBusyId] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function handleStatus(adId: string, status: Advertisement["status"]) {
+    setErrorMsg("");
+    setNotice("");
+    if (usingMocks()) {
+      const res = setAdvertisementStatus(adId, status);
+      if (!res.ok) setErrorMsg(res.error);
+      else setNotice(`Advertisement updated to ${status}.`);
+      return;
+    }
+    setBusyId(adId);
+    try {
+      const res = await setAdvertisementStatusRemote(adId, status);
+      if (!res.ok) setErrorMsg(res.error);
+      else setNotice(`Advertisement updated to ${status}.`);
+    } finally {
+      setBusyId("");
+    }
+  }
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -16,9 +40,13 @@ export default function AdminAdvertisementsPage() {
         </p>
       </div>
 
+      {notice ? <div className="notice">{notice}</div> : null}
+      {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
+
       <div className="stack">
         {state.advertisements.map((ad) => {
           const biz = state.businesses.find((b) => b.id === ad.businessId);
+          const isBusy = busyId === ad.id;
           return (
             <article key={ad.id} className="panel row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
               <div>
@@ -35,11 +63,12 @@ export default function AdminAdvertisementsPage() {
                 <Button
                   tone={ad.status === "active" ? "ghost" : "soft"}
                   small
-                  onClick={() => setAdvertisementStatus(ad.id, ad.status === "active" ? "paused" : "active")}
+                  disabled={isBusy}
+                  onClick={() => void handleStatus(ad.id, ad.status === "active" ? "paused" : "active")}
                 >
-                  {ad.status === "active" ? "Pause" : "Activate"}
+                  {isBusy ? "Saving…" : ad.status === "active" ? "Pause" : "Activate"}
                 </Button>
-                <Button tone="danger" small onClick={() => setAdvertisementStatus(ad.id, "ended")}>
+                <Button tone="danger" small disabled={isBusy} onClick={() => void handleStatus(ad.id, "ended")}>
                   End
                 </Button>
               </div>

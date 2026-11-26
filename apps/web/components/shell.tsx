@@ -109,6 +109,27 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
   const links = workspaceNavForBusiness(biz?.category ?? auth.workspace.category, configs).filter(
     (item) => !item.permission || can(role, item.permission),
   );
+  const statusBanner =
+    biz?.status === "suspended" || biz?.status === "rejected" ? (
+      <div
+        className="notice"
+        style={{
+          marginBottom: 16,
+          borderColor: "var(--danger)",
+          background: "color-mix(in srgb, var(--danger) 12%, var(--card))",
+        }}
+      >
+        <strong>
+          Workspace {biz.status}:
+        </strong>{" "}
+        {biz.name} is currently paused from public discovery, customer bookings, and workspace edits.
+      </div>
+    ) : biz && biz.status !== "approved" ? (
+      <div className="notice" style={{ marginBottom: 16 }}>
+        <strong>Verification {biz.status.replaceAll("_", " ")}:</strong>{" "}
+        You can configure services, resources, hours, and staff now. Public discovery and customer bookings activate once approved.
+      </div>
+    ) : null;
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -135,15 +156,21 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
         <div className="topbar">
           <strong style={{ letterSpacing: "-0.03em" }}>{auth.workspace.businessName}</strong>
           <div className="spacer" />
+          <div className="mobile-only">
+            <CompactWorkspaceSwitcher />
+          </div>
           <Link href="/workspace/notifications" className="btn ghost small" aria-label="Workspace notifications">
             <Icon name="bell" /> {unreadBiz || ""}
           </Link>
-          <button className="btn small" onClick={() => router.push("/workspace/calendar?create=1")}>
+          <button
+            className="btn small"
+            disabled={biz?.status === "suspended" || biz?.status === "rejected"}
+            onClick={() => router.push("/workspace/calendar?create=1")}
+          >
             New booking
           </button>
         </div>
         <div className="main-pad">
-          <div className="tabs" style={{ marginBottom: 14, display: "none" }} />
           <div className="tabs" style={{ marginBottom: 16 }}>
             {links.map((item) => (
               <Link key={item.href} href={item.href} className={`tab ${active(pathname, item.href) ? "on" : ""}`}>
@@ -152,6 +179,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
               </Link>
             ))}
           </div>
+          {statusBanner}
           {children}
         </div>
       </div>
@@ -183,22 +211,90 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         <div className="topbar">
           <strong>Platform administration</strong>
           <div className="spacer" />
+          <div className="mobile-only">
+            <CompactWorkspaceSwitcher />
+          </div>
           <span className="tiny">Separate from customer and business workspaces</span>
         </div>
-        <div className="main-pad">{children}</div>
+        <div className="main-pad">
+          <div className="tabs mobile-only" style={{ marginBottom: 16, width: "100%" }}>
+            {adminNav.map((item) => (
+              <Link key={item.href} href={item.href} className={`tab ${active(pathname, item.href) ? "on" : ""}`}>
+                {item.label}
+              </Link>
+            ))}
+          </div>
+          {children}
+        </div>
       </div>
+    </div>
+  );
+}
+
+function CompactWorkspaceSwitcher() {
+  const auth = useRequireUser();
+  const pathname = usePathname();
+  const router = useRouter();
+  if (!auth.user) return null;
+  const currentValue =
+    auth.workspace && pathname.startsWith("/workspace")
+      ? auth.workspace.businessId
+      : auth.user.isPlatformAdmin && pathname.startsWith("/admin")
+        ? "admin"
+        : "personal";
+  return (
+    <div className="row" style={{ gap: 6 }}>
+      <select
+        aria-label="Switch environment"
+        value={currentValue}
+        onChange={(event) => {
+          const value = event.target.value;
+          if (value === "personal") router.push("/home");
+          else if (value === "admin") router.push("/admin");
+          else {
+            auth.setWorkspaceId(value);
+            router.push("/workspace");
+          }
+        }}
+        style={{ background: "var(--card)", border: "1px solid var(--line)", borderRadius: 10, padding: "6px 8px", fontSize: 12, maxWidth: 150 }}
+      >
+        <option value="personal">Personal</option>
+        {auth.user.isPlatformAdmin ? <option value="admin">Admin</option> : null}
+        {auth.workspaces.map((workspace) => (
+          <option key={workspace.businessId} value={workspace.businessId}>
+            {workspace.businessName}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        className="btn ghost small"
+        onClick={() => {
+          auth.signOut();
+          router.push("/");
+        }}
+      >
+        Sign out
+      </button>
     </div>
   );
 }
 
 export function WorkspaceMenu() {
   const auth = useRequireUser();
+  const pathname = usePathname();
   const router = useRouter();
   if (!auth.user) return null;
+  const currentValue =
+    auth.workspace && pathname.startsWith("/workspace")
+      ? auth.workspace.businessId
+      : auth.user.isPlatformAdmin && pathname.startsWith("/admin")
+        ? "admin"
+        : "personal";
   return (
     <div className="panel" style={{ padding: 10 }}>
       <div className="person">
-        {auth.user.avatarUrl ? <img className="avatar-img" src={auth.user.avatarUrl} alt="" /> : <span className="avatar">{initials(fullName(auth.user))}</span>}
+        {auth.user.avatarUrl ? <img className="avatar-img" src={auth.user.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span className="avatar">{initials(fullName(auth.user))}</span>}
         <div>
           <strong style={{ fontSize: 13 }}>{fullName(auth.user)}</strong>
           <div className="tiny">{auth.user.email}</div>
@@ -207,7 +303,7 @@ export function WorkspaceMenu() {
       <label className="field" style={{ marginTop: 10 }}>
         <span>Switch environment</span>
         <select
-          value={auth.workspace && typeof window !== "undefined" && window.location.pathname.startsWith("/workspace") ? auth.workspace.businessId : auth.user.isPlatformAdmin && typeof window !== "undefined" && window.location.pathname.startsWith("/admin") ? "admin" : "personal"}
+          value={currentValue}
           onChange={(event) => {
             const value = event.target.value;
             if (value === "personal") router.push("/home");

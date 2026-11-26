@@ -1,6 +1,7 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -141,6 +142,36 @@ async def set_member_role(
     if membership.role == "owner":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot reassign primary owner role")
     membership.role = payload.role
+    await db.commit()
+    await db.refresh(membership)
+    return MembershipOut.model_validate(membership)
+
+
+class MemberStatusUpdateIn(BaseModel):
+    status: Literal["active", "suspended"]
+
+
+@router.patch("/team/{membership_id}/status", response_model=MembershipOut)
+async def set_member_status(
+    business_id: str,
+    membership_id: str,
+    payload: MemberStatusUpdateIn,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "team.manage")
+    membership = (
+        await db.execute(
+            select(Membership).where(Membership.id == membership_id, Membership.business_id == business_id)
+        )
+    ).scalar_one_or_none()
+    if not membership:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found")
+    if membership.role == "owner":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot suspend primary owner")
+    if membership.user_id == user.id and payload.status == "suspended":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot suspend your own membership")
+    membership.status = payload.status
     await db.commit()
     await db.refresh(membership)
     return MembershipOut.model_validate(membership)

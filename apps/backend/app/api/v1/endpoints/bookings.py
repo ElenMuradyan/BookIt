@@ -26,7 +26,7 @@ from app.services.booking_service import (
     reschedule_appointment_transactional,
     transition_appointment_status,
 )
-from app.services.rbac import get_active_membership, has_permission, require_business_permission
+from app.services.rbac import require_business_permission
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
@@ -116,9 +116,7 @@ async def get_booking(
     if not appt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
     if appt.customer_id != user.id and not user.is_platform_admin:
-        member = await get_active_membership(db, user.id, appt.business_id)
-        if not member or not has_permission(member.role, "bookings.view"):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this booking")
+        await require_business_permission(db, user, appt.business_id, "bookings.view")
     return _serialize_appointment(appt)
 
 

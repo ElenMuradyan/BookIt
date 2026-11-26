@@ -138,7 +138,12 @@ async def create_booking_transactional(
     if not business:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
 
-    if not business.is_public or business.status != "approved":
+    if business.status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This business is not approved for live bookings",
+        )
+    if not business.is_public:
         membership = await get_active_membership(db, actor.id, business.id)
         if not actor.is_platform_admin and business.owner_user_id != actor.id and not membership:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This business is not open for booking")
@@ -375,6 +380,28 @@ async def transition_appointment_status(
     if appointment.booking_id:
         linked_bk = await db.get(Booking, appointment.booking_id)
         if linked_bk:
+            if (
+                target_status in ("cancelled", "rejected")
+                and is_customer
+                and not is_staff
+                and linked_bk.amount_paid > 0
+                and business
+            ):
+                now = utc_now()
+                policy = await get_effective_booking_config(
+                    db, business=business, booking_model=linked_bk.booking_model
+                )
+                paid = float(linked_bk.amount_paid)
+                if linked_bk.cancellation_cutoff_at and now > linked_bk.cancellation_cutoff_at:
+                    fee = round(paid * (policy.cancellation_fee_percent / 100.0), 2)
+                    linked_bk.refunded_amount = round(max(0.0, paid - fee), 2)
+                else:
+                    linked_bk.refunded_amount = paid
+                if linked_bk.refunded_amount >= paid and paid > 0:
+                    linked_bk.payment_status = "refunded"
+                    appointment.payment_status = "refunded"
+                elif linked_bk.refunded_amount > 0:
+                    linked_bk.payment_status = "partially_refunded"
             linked_bk.status = target_status
             db.add(
                 BookingStatusHistory(

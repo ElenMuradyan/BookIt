@@ -190,9 +190,13 @@ async def change_subscription(
         Invoice(
             id=new_id("inv"),
             business_id=business_id,
-            amount=0,
+            amount=float(plan.monthly_price) if sub.status == "active" else 0.0,
             status="open",
-            description=f"Plan change to {payload.plan_id}",
+            description=(
+                f"Plan change to {plan.name} (trial)"
+                if sub.status == "trialing"
+                else f"Plan change to {plan.name}"
+            ),
         )
     )
     await db.commit()

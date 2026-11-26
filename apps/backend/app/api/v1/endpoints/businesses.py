@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -182,6 +182,26 @@ async def submit_business_application(
             ensure_email_provider_ready()
         except EmailDeliveryError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    norm_name = payload.business_name.strip().lower()
+    norm_legal = payload.legal_name.strip().lower()
+    norm_city = payload.city.strip().lower()
+    duplicate_app = (
+        await db.execute(
+            select(Business.id).where(
+                Business.owner_user_id == owner.id,
+                Business.status != "rejected",
+                func.lower(func.trim(Business.name)) == norm_name,
+                func.lower(func.trim(Business.legal_name)) == norm_legal,
+                func.lower(func.trim(Business.city)) == norm_city,
+            )
+        )
+    ).scalar_one_or_none()
+    if duplicate_app:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An active or pending application already exists for this business",
+        )
 
     business = Business(
         id=new_id("biz"),

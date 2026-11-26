@@ -101,6 +101,14 @@ class Settings(BaseSettings):
                 raise ValueError("JWT_SECRET_KEY must be a strong 32+ character secret in staging/production")
             if len(self.csrf_secret_key) < 32 or any(m in self.csrf_secret_key.lower() for m in insecure_markers):
                 raise ValueError("CSRF_SECRET_KEY must be a strong 32+ character secret in staging/production")
+            if len(self.payment_webhook_secret) < 24 or any(
+                m in self.payment_webhook_secret.lower() for m in insecure_markers
+            ):
+                raise ValueError(
+                    "PAYMENT_WEBHOOK_SECRET must be a strong 24+ character secret in staging/production"
+                )
+            if self.payment_provider == "stripe" and not self.stripe_secret_key:
+                raise ValueError("STRIPE_SECRET_KEY is required when PAYMENT_PROVIDER=stripe")
             if not self.cookie_secure:
                 raise ValueError("COOKIE_SECURE must be true in staging/production")
             if "*" in self.cors_origins_list:

@@ -1,6 +1,13 @@
 "use client";
 
-import { saveProduct, setProductActive, useBookItState } from "@bookit/api-client";
+import {
+  saveProduct,
+  saveProductRemote,
+  setProductActive,
+  setProductActiveRemote,
+  useBookItState,
+  usingMocks,
+} from "@bookit/api-client";
 import type { Product } from "@bookit/types";
 import { can, formatMoney } from "@bookit/utils";
 import { useState } from "react";
@@ -13,6 +20,9 @@ export default function WorkspaceProductsPage() {
   const [editing, setEditing] = useState<Product | "new" | null>(null);
   const [form, setForm] = useState({ name: "", description: "", categoryId: state.productCategories[0]?.id ?? "cat_beauty", price: "36", stock: "20" });
   const [error, setError] = useState("");
+  const [pageError, setPageError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -47,6 +57,9 @@ export default function WorkspaceProductsPage() {
         </div>
         {canManage ? <Button onClick={() => openModal()}>+ Add Product</Button> : null}
       </div>
+
+      {notice ? <div className="notice">{notice}</div> : null}
+      {pageError ? <p className="error">{pageError}</p> : null}
 
       {products.length === 0 ? (
         <Empty title="No products yet" body="Add a physical product to list it on the BookIt marketplace." />
@@ -88,10 +101,31 @@ export default function WorkspaceProductsPage() {
                     {canManage ? (
                       <td>
                         <div className="row">
-                          <Button tone="soft" small onClick={() => openModal(product)}>
+                          <Button tone="soft" small disabled={busy} onClick={() => openModal(product)}>
                             Edit
                           </Button>
-                          <Button tone="ghost" small onClick={() => setProductActive(bizId, product.id, !product.active)}>
+                          <Button
+                            tone="ghost"
+                            small
+                            disabled={busy}
+                            onClick={async () => {
+                              setPageError("");
+                              setNotice("");
+                              setBusy(true);
+                              try {
+                                const res = usingMocks()
+                                  ? setProductActive(bizId, product.id, !product.active)
+                                  : await setProductActiveRemote(bizId, product.id, !product.active);
+                                if (!res.ok) {
+                                  setPageError(res.error);
+                                  return;
+                                }
+                                setNotice(`${product.name} ${product.active ? "disabled" : "enabled"}.`);
+                              } finally {
+                                setBusy(false);
+                              }
+                            }}
+                          >
                             {product.active ? "Disable" : "Enable"}
                           </Button>
                         </div>
@@ -109,14 +143,26 @@ export default function WorkspaceProductsPage() {
         <Modal title={editing === "new" ? "Add Product" : `Edit ${editing.name}`} onClose={() => setEditing(null)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              const res = saveProduct(bizId, form, editing === "new" ? undefined : editing.id);
-              if (!res.ok) {
-                setError(res.error);
-                return;
+              setError("");
+              setPageError("");
+              setNotice("");
+              setBusy(true);
+              try {
+                const productId = editing === "new" ? undefined : editing.id;
+                const res = usingMocks()
+                  ? saveProduct(bizId, form, productId)
+                  : await saveProductRemote(bizId, form, productId);
+                if (!res.ok) {
+                  setError(res.error);
+                  return;
+                }
+                setEditing(null);
+                setNotice(productId ? "Product updated." : "Product created.");
+              } finally {
+                setBusy(false);
               }
-              setEditing(null);
             }}
           >
             <Field label="Name">
@@ -143,7 +189,9 @@ export default function WorkspaceProductsPage() {
               <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </Field>
             {error ? <p className="error">{error}</p> : null}
-            <Button type="submit">Save product</Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? "Saving..." : "Save product"}
+            </Button>
           </form>
         </Modal>
       ) : null}

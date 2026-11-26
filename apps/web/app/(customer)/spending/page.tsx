@@ -1,13 +1,16 @@
 "use client";
 
-import { setSpendingVisibility, useBookItState } from "@bookit/api-client";
+import { setSpendingVisibility, setSpendingVisibilityRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { formatDate, formatMoney, spendingBuckets } from "@bookit/utils";
+import { useState } from "react";
 import { Badge, Bars } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
 export default function SpendingPage() {
   const auth = useAuth();
   const state = useBookItState();
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   if (!auth.userId) return null;
   const userId = auth.userId;
@@ -19,6 +22,22 @@ export default function SpendingPage() {
 
   const serviceTotal = myPayments.filter((p) => p.status === "recorded" && p.referenceType === "appointment").reduce((s, p) => s + p.amount, 0);
   const productTotal = myPayments.filter((p) => p.status === "recorded" && p.referenceType === "order").reduce((s, p) => s + p.amount, 0);
+
+  async function handleVisibility(next: "recorded_only" | "include_estimates") {
+    setErrorMsg("");
+    if (usingMocks()) {
+      const res = setSpendingVisibility(userId, next);
+      if (!res.ok) setErrorMsg(res.error);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await setSpendingVisibilityRemote(next);
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -32,20 +51,24 @@ export default function SpendingPage() {
         <div className="tabs">
           <button
             type="button"
+            disabled={busy}
             className={`tab ${visibility === "recorded_only" ? "on" : ""}`}
-            onClick={() => setSpendingVisibility(userId, "recorded_only")}
+            onClick={() => void handleVisibility("recorded_only")}
           >
             Recorded only
           </button>
           <button
             type="button"
+            disabled={busy}
             className={`tab ${visibility === "include_estimates" ? "on" : ""}`}
-            onClick={() => setSpendingVisibility(userId, "include_estimates")}
+            onClick={() => void handleVisibility("include_estimates")}
           >
             Include estimates
           </button>
         </div>
       </div>
+
+      {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
 
       <div className="grid-4">
         <div className="panel stat">

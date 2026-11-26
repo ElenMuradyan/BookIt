@@ -1,6 +1,6 @@
 "use client";
 
-import { cartFor, setCartQuantity, useBookItState } from "@bookit/api-client";
+import { cartFor, setCartQuantity, setCartQuantityRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import Link from "next/link";
 import { useState } from "react";
@@ -11,11 +11,29 @@ export default function CartPage() {
   const auth = useAuth();
   const state = useBookItState();
   const [deliveryMethod, setDeliveryMethod] = useState<"standard" | "express" | "pickup">("standard");
+  const [busyId, setBusyId] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
 
   if (!auth.userId) return null;
   const userId = auth.userId;
   const cart = cartFor(state, userId);
   const items = cart?.items ?? [];
+
+  async function handleQty(itemId: string, nextQuantity: number) {
+    setErrorMsg("");
+    if (usingMocks()) {
+      const res = setCartQuantity(userId, itemId, nextQuantity);
+      if (!res.ok) setErrorMsg(res.error);
+      return;
+    }
+    setBusyId(itemId);
+    try {
+      const res = await setCartQuantityRemote(itemId, nextQuantity);
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusyId("");
+    }
+  }
 
   if (items.length === 0) {
     return (
@@ -59,46 +77,51 @@ export default function CartPage() {
         </Link>
       </div>
 
+      {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
+
       <div className="split-detail">
         <div className="stack">
-          {lines.map(({ line, product, variant, seller, unitPrice }) => (
-            <article key={line.id} className="panel row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 14 }}>
-              <div className="row" style={{ gap: 14 }}>
-                {product ? (
-                  <img
-                    src={product.imageUrl}
-                    alt={product.name}
-                    referrerPolicy="no-referrer"
-                    style={{ width: 68, height: 68, borderRadius: 12, objectFit: "cover" }}
-                  />
-                ) : null}
-                <div>
-                  <Link href={`/marketplace/${line.productId}`}>
-                    <strong>{product?.name ?? "Product"}</strong>
-                  </Link>
-                  <div className="tiny">
-                    Seller: {seller?.name} {variant ? `· ${variant.label}` : ""}
+          {lines.map(({ line, product, variant, seller, unitPrice }) => {
+            const isBusy = busyId === line.id;
+            return (
+              <article key={line.id} className="panel row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 14 }}>
+                <div className="row" style={{ gap: 14 }}>
+                  {product ? (
+                    <img
+                      src={product.imageUrl}
+                      alt={product.name}
+                      referrerPolicy="no-referrer"
+                      style={{ width: 68, height: 68, borderRadius: 12, objectFit: "cover" }}
+                    />
+                  ) : null}
+                  <div>
+                    <Link href={`/marketplace/${line.productId}`}>
+                      <strong>{product?.name ?? "Product"}</strong>
+                    </Link>
+                    <div className="tiny">
+                      Seller: {seller?.name} {variant ? `· ${variant.label}` : ""}
+                    </div>
+                    <div className="tabular tiny">{formatMoney(unitPrice)} each</div>
                   </div>
-                  <div className="tabular tiny">{formatMoney(unitPrice)} each</div>
                 </div>
-              </div>
-              <div className="row">
-                <Button tone="ghost" small onClick={() => setCartQuantity(userId, line.id, line.quantity - 1)}>
-                  -
-                </Button>
-                <strong className="tabular">{line.quantity}</strong>
-                <Button tone="ghost" small onClick={() => setCartQuantity(userId, line.id, line.quantity + 1)}>
-                  +
-                </Button>
-                <strong className="tabular" style={{ minWidth: 64, textAlign: "right" }}>
-                  {formatMoney(unitPrice * line.quantity)}
-                </strong>
-                <Button tone="danger" small onClick={() => setCartQuantity(userId, line.id, 0)}>
-                  Remove
-                </Button>
-              </div>
-            </article>
-          ))}
+                <div className="row">
+                  <Button tone="ghost" small disabled={isBusy} onClick={() => void handleQty(line.id, line.quantity - 1)}>
+                    -
+                  </Button>
+                  <strong className="tabular">{line.quantity}</strong>
+                  <Button tone="ghost" small disabled={isBusy} onClick={() => void handleQty(line.id, line.quantity + 1)}>
+                    +
+                  </Button>
+                  <strong className="tabular" style={{ minWidth: 64, textAlign: "right" }}>
+                    {formatMoney(unitPrice * line.quantity)}
+                  </strong>
+                  <Button tone="danger" small disabled={isBusy} onClick={() => void handleQty(line.id, 0)}>
+                    {isBusy ? "Saving…" : "Remove"}
+                  </Button>
+                </div>
+              </article>
+            );
+          })}
         </div>
 
         <aside className="panel stack">

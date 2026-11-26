@@ -1,4 +1,4 @@
-import { savePromo, useBookItState, usingMocks } from "@bookit/api-client";
+import { savePromo, savePromoRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { addDays, DEMO_TODAY, todayInput } from "@bookit/utils";
 import React, { useState } from "react";
 import { Modal, Text, View } from "react-native";
@@ -14,6 +14,7 @@ export default function WorkspaceMarketingScreen() {
   const [code, setCode] = useState("FALL20");
   const [percent, setPercent] = useState("20");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -60,16 +61,34 @@ export default function WorkspaceMarketingScreen() {
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowPromo(false)} />
               <Button
-                label="Create"
+                label={busy ? "Creating..." : "Create"}
                 style={{ flex: 1 }}
-                onPress={() => {
+                disabled={busy}
+                onPress={async () => {
+                  setError("");
                   const today = usingMocks() ? DEMO_TODAY : todayInput();
-                  const res = savePromo(bizId, code, Number(percent) || 15, addDays(today, 30));
-                  if (!res.ok) {
-                    setError(res.error);
+                  const expires = addDays(today, 30);
+                  const pct = Number(percent) || 15;
+                  if (usingMocks()) {
+                    const res = savePromo(bizId, code, pct, expires);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setShowPromo(false);
                     return;
                   }
-                  setShowPromo(false);
+                  setBusy(true);
+                  try {
+                    const res = await savePromoRemote(bizId, code, pct, expires);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setShowPromo(false);
+                  } finally {
+                    setBusy(false);
+                  }
                 }}
               />
             </View>

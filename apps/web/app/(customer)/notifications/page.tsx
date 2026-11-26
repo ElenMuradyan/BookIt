@@ -1,6 +1,13 @@
 "use client";
 
-import { markAllNotificationsRead, markNotificationRead, useBookItState } from "@bookit/api-client";
+import {
+  markAllNotificationsRead,
+  markAllNotificationsReadRemote,
+  markNotificationRead,
+  markNotificationReadRemote,
+  useBookItState,
+  usingMocks,
+} from "@bookit/api-client";
 import type { NotificationCategory } from "@bookit/types";
 import { formatDate } from "@bookit/utils";
 import Link from "next/link";
@@ -14,10 +21,42 @@ export default function NotificationsPage() {
   const auth = useAuth();
   const state = useBookItState();
   const [cat, setCat] = useState<(typeof CATS)[number]>("all");
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   if (!auth.userId) return null;
   const userId = auth.userId;
   const rows = state.notifications.filter((n) => n.userId === userId && (cat === "all" || n.category === cat));
+
+  async function handleMarkAll() {
+    setErrorMsg("");
+    if (usingMocks()) {
+      markAllNotificationsRead(userId);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await markAllNotificationsReadRemote();
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleMarkOne(id: string) {
+    setErrorMsg("");
+    if (usingMocks()) {
+      markNotificationRead(id, userId);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await markNotificationReadRemote(id);
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -28,10 +67,12 @@ export default function NotificationsPage() {
             Booking updates, order shipments, promotions, messages, and security alerts.
           </p>
         </div>
-        <Button tone="ghost" small onClick={() => markAllNotificationsRead(userId)}>
-          Mark all read
+        <Button tone="ghost" small disabled={busy} onClick={() => void handleMarkAll()}>
+          {busy ? "Updating…" : "Mark all read"}
         </Button>
       </div>
+
+      {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
 
       <div className="tabs">
         {CATS.map((item) => (
@@ -58,12 +99,18 @@ export default function NotificationsPage() {
               </div>
               <div className="row">
                 {item.href ? (
-                  <Link href={item.href} className="btn soft small" onClick={() => markNotificationRead(item.id, userId)}>
+                  <Link
+                    href={item.href}
+                    className="btn soft small"
+                    onClick={() => {
+                      if (!item.read) void handleMarkOne(item.id);
+                    }}
+                  >
                     Open
                   </Link>
                 ) : null}
                 {!item.read ? (
-                  <Button tone="ghost" small onClick={() => markNotificationRead(item.id, userId)}>
+                  <Button tone="ghost" small disabled={busy} onClick={() => void handleMarkOne(item.id)}>
                     Mark read
                   </Button>
                 ) : null}

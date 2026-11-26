@@ -1,4 +1,11 @@
-import { saveProduct, setProductActive, useBookItState } from "@bookit/api-client";
+import {
+  saveProduct,
+  saveProductRemote,
+  setProductActive,
+  setProductActiveRemote,
+  useBookItState,
+  usingMocks,
+} from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import React, { useState } from "react";
 import { Image, Modal, Switch, Text, View } from "react-native";
@@ -13,6 +20,8 @@ export default function WorkspaceProductsScreen() {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ name: "", description: "", categoryId: state.productCategories[0]?.id ?? "cat_beauty", price: "28", stock: "12" });
   const [error, setError] = useState("");
+  const [pageError, setPageError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -20,7 +29,22 @@ export default function WorkspaceProductsScreen() {
 
   return (
     <Screen>
-      <BrandHeader mode="workspace" showBack right={<Button label="+ Product" small onPress={() => setShowAdd(true)} />} />
+      <BrandHeader
+        mode="workspace"
+        showBack
+        right={
+          <Button
+            label="+ Product"
+            small
+            onPress={() => {
+              setError("");
+              setShowAdd(true);
+            }}
+          />
+        }
+      />
+
+      {pageError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{pageError}</Text> : null}
 
       {products.map((p) => (
         <Card key={p.id} style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
@@ -31,7 +55,25 @@ export default function WorkspaceProductsScreen() {
               {formatMoney(p.price)} · Stock: {p.stock}
             </Text>
           </View>
-          <Switch value={p.active} onValueChange={(v) => { setProductActive(bizId, p.id, v); }} />
+          <Switch
+            value={p.active}
+            disabled={busy}
+            onValueChange={async (v) => {
+              setPageError("");
+              if (usingMocks()) {
+                const res = setProductActive(bizId, p.id, v);
+                if (!res.ok) setPageError(res.error);
+                return;
+              }
+              setBusy(true);
+              try {
+                const res = await setProductActiveRemote(bizId, p.id, v);
+                if (!res.ok) setPageError(res.error);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          />
         </Card>
       ))}
 
@@ -53,15 +95,33 @@ export default function WorkspaceProductsScreen() {
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowAdd(false)} />
               <Button
-                label="Save"
+                label={busy ? "Saving..." : "Save"}
                 style={{ flex: 1 }}
-                onPress={() => {
-                  const res = saveProduct(bizId, form);
-                  if (!res.ok) {
-                    setError(res.error);
+                disabled={busy}
+                onPress={async () => {
+                  setError("");
+                  if (usingMocks()) {
+                    const res = saveProduct(bizId, form);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setForm({ name: "", description: "", categoryId: state.productCategories[0]?.id ?? "cat_beauty", price: "28", stock: "12" });
+                    setShowAdd(false);
                     return;
                   }
-                  setShowAdd(false);
+                  setBusy(true);
+                  try {
+                    const res = await saveProductRemote(bizId, form);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setForm({ name: "", description: "", categoryId: state.productCategories[0]?.id ?? "cat_beauty", price: "28", stock: "12" });
+                    setShowAdd(false);
+                  } finally {
+                    setBusy(false);
+                  }
                 }}
               />
             </View>

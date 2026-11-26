@@ -2,8 +2,11 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   businessNotifications,
   markAllBusinessNotificationsRead,
+  markAllBusinessNotificationsReadRemote,
   markBusinessNotificationRead,
+  markBusinessNotificationReadRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { brand } from "@bookit/design-system";
 import { formatDateTime } from "@bookit/utils";
@@ -29,6 +32,8 @@ export default function WorkspaceNotificationsScreen() {
   const router = useRouter();
   const { colors } = useThemePalette();
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("all");
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -40,6 +45,39 @@ export default function WorkspaceNotificationsScreen() {
     return true;
   });
 
+  async function handleMarkAll() {
+    setErrorMsg("");
+    if (usingMocks()) {
+      markAllBusinessNotificationsRead(bizId);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await markAllBusinessNotificationsReadRemote(bizId);
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleOpen(item: (typeof rows)[number]) {
+    setErrorMsg("");
+    if (!item.read) {
+      if (usingMocks()) {
+        markBusinessNotificationRead(bizId, item.id);
+      } else {
+        setBusy(true);
+        try {
+          const res = await markBusinessNotificationReadRemote(bizId, item.id);
+          if (!res.ok) setErrorMsg(res.error);
+        } finally {
+          setBusy(false);
+        }
+      }
+    }
+    router.push(resolveWorkspaceRoute(item.href, item.category));
+  }
+
   return (
     <Screen>
       <BrandHeader
@@ -47,10 +85,12 @@ export default function WorkspaceNotificationsScreen() {
         showBack
         right={
           unread > 0 ? (
-            <Button label="Read all" tone="soft" small onPress={() => markAllBusinessNotificationsRead(bizId)} />
+            <Button label={busy ? "Updating..." : "Read all"} tone="soft" small disabled={busy} onPress={() => void handleMarkAll()} />
           ) : undefined
         }
       />
+
+      {errorMsg ? <Text style={{ color: colors.danger, fontSize: 12 }}>{errorMsg}</Text> : null}
 
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         {FILTERS.map((f) => (
@@ -72,10 +112,7 @@ export default function WorkspaceNotificationsScreen() {
         rows.map((item) => (
           <Card
             key={item.id}
-            onPress={() => {
-              if (!item.read) markBusinessNotificationRead(bizId, item.id);
-              router.push(resolveWorkspaceRoute(item.href, item.category));
-            }}
+            onPress={() => void handleOpen(item)}
             style={{
               gap: 6,
               borderColor: item.read ? colors.line : brand.primary,

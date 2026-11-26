@@ -1,18 +1,32 @@
 import type {
   Address,
+  Advertisement,
   Appointment,
   AppointmentStatus,
   BookingModel,
   Business,
+  BusinessApplication,
   BusinessBookingConfig,
+  BusinessStatus,
+  Campaign,
+  Cart,
+  CustomerNote,
   CustomerProfile,
   Employee,
   EventOffering,
   EventSession,
+  Expense,
   HotelStayAvailability,
   Membership,
   MembershipRole,
+  NotificationPreferences,
+  Order,
+  OrderStatus,
   PaymentMethod,
+  PlanId,
+  Product,
+  PromoCode,
+  Report,
   Resource,
   ResourceAvailability,
   ResourceBlock,
@@ -20,6 +34,7 @@ import type {
   Review,
   Service,
   SessionAttendee,
+  Subscription,
   TicketTier,
   UniversalBooking,
   UniversalBookingCreateInput,
@@ -32,8 +47,10 @@ import type {
 import {
   addressSchema,
   businessApplicationSchema,
+  expenseSchema,
   fieldErrors,
   loginSchema,
+  productSchema,
   registerSchema,
   resetConfirmSchema,
   resetRequestSchema,
@@ -962,4 +979,355 @@ export async function declineWorkspaceInviteRemote(businessId: string): Promise<
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   await hydrateFromBackend();
   return { ok: true, data: undefined };
+}
+
+export async function setMemberStatusRemote(
+  businessId: string,
+  membershipId: string,
+  status: "active" | "suspended",
+): Promise<ActionResult<Membership>> {
+  const res = await apiJson<Membership>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/team/${encodeURIComponent(membershipId)}/status`,
+    { method: "PATCH", body: JSON.stringify({ status }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function saveProductRemote(
+  businessId: string,
+  input: unknown,
+  productId?: string,
+): Promise<ActionResult<Product>> {
+  const parsed = productSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Check the product fields", fieldErrors: fieldErrors(parsed.error) };
+  }
+  const path = productId
+    ? `/api/v1/workspaces/${encodeURIComponent(businessId)}/products/${encodeURIComponent(productId)}`
+    : `/api/v1/workspaces/${encodeURIComponent(businessId)}/products`;
+  const res = await apiJson<Product>(path, {
+    method: productId ? "PUT" : "POST",
+    body: JSON.stringify(parsed.data),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setProductActiveRemote(
+  businessId: string,
+  productId: string,
+  active: boolean,
+): Promise<ActionResult<Product>> {
+  const res = await apiJson<Product>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/products/${encodeURIComponent(productId)}/active`,
+    { method: "PATCH", body: JSON.stringify({ active }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setOrderStatusRemote(
+  businessId: string,
+  orderId: string,
+  status: OrderStatus,
+): Promise<ActionResult<Order>> {
+  const res = await apiJson<Order>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/orders/${encodeURIComponent(orderId)}`,
+    { method: "PATCH", body: JSON.stringify({ status }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function addCustomerNoteRemote(
+  businessId: string,
+  customerId: string,
+  body: string,
+): Promise<ActionResult<CustomerNote>> {
+  const cleaned = body.trim();
+  if (cleaned.length < 2) {
+    return { ok: false, error: "Write a note (at least 2 characters)" };
+  }
+  const res = await apiJson<CustomerNote>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/notes`,
+    { method: "POST", body: JSON.stringify({ customerId, body: cleaned }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function addExpenseRemote(
+  businessId: string,
+  input: unknown,
+): Promise<ActionResult<Expense>> {
+  const parsed = expenseSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Check the expense details", fieldErrors: fieldErrors(parsed.error) };
+  }
+  const res = await apiJson<Expense>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/expenses`,
+    { method: "POST", body: JSON.stringify(parsed.data) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function saveCampaignRemote(
+  businessId: string,
+  campaign: Pick<Campaign, "name" | "channel" | "audience" | "message" | "startsOn">,
+): Promise<ActionResult<Campaign>> {
+  if (campaign.name.trim().length < 2) {
+    return { ok: false, error: "Name the campaign" };
+  }
+  const res = await apiJson<Campaign>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/campaigns`,
+    { method: "POST", body: JSON.stringify(campaign) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function savePromoRemote(
+  businessId: string,
+  code: string,
+  percentOff: number,
+  expiresOn: string,
+): Promise<ActionResult<PromoCode>> {
+  const normalized = code.trim().toUpperCase();
+  if (!/^[A-Z0-9]{4,12}$/.test(normalized)) {
+    return { ok: false, error: "Use 4–12 letters or numbers" };
+  }
+  const res = await apiJson<PromoCode>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/promos`,
+    { method: "POST", body: JSON.stringify({ code: normalized, percentOff, expiresOn }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function changePlanRemote(
+  businessId: string,
+  planId: PlanId,
+): Promise<ActionResult<Subscription>> {
+  const res = await apiJson<Subscription>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/subscription`,
+    { method: "PATCH", body: JSON.stringify({ planId }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function markBusinessNotificationReadRemote(
+  businessId: string,
+  notificationId: string,
+): Promise<ActionResult<undefined>> {
+  const res = await apiJson(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/notifications/${encodeURIComponent(notificationId)}/read`,
+    { method: "POST" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function markAllBusinessNotificationsReadRemote(
+  businessId: string,
+): Promise<ActionResult<undefined>> {
+  const res = await apiJson(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/notifications/read-all`,
+    { method: "POST" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function markNotificationReadRemote(notificationId: string): Promise<ActionResult<undefined>> {
+  const res = await apiJson(`/api/v1/notifications/${encodeURIComponent(notificationId)}/read`, {
+    method: "POST",
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function markAllNotificationsReadRemote(): Promise<ActionResult<undefined>> {
+  const res = await apiJson("/api/v1/notifications/read-all", { method: "POST" });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function updateProfileRemote(
+  patch: Partial<
+    Pick<
+      User,
+      "firstName" | "lastName" | "phone" | "location" | "language" | "interests" | "avatarUrl" | "dateOfBirth" | "gender"
+    >
+  >,
+): Promise<ActionResult<User>> {
+  const res = await apiJson<User>("/api/v1/users/me", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setPersonalizationConsentRemote(consent: boolean): Promise<ActionResult<CustomerProfile>> {
+  const res = await apiJson<CustomerProfile>("/api/v1/users/me/consent", {
+    method: "PUT",
+    body: JSON.stringify({ consent }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setThemeRemote(theme: "dark" | "light" | "system"): Promise<ActionResult<CustomerProfile>> {
+  const res = await apiJson<CustomerProfile>("/api/v1/users/me/theme", {
+    method: "PUT",
+    body: JSON.stringify({ theme }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function updateNotificationPrefsRemote(
+  patch: Partial<NotificationPreferences>,
+): Promise<ActionResult<CustomerProfile>> {
+  const res = await apiJson<CustomerProfile>("/api/v1/users/me/notification-preferences", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setSpendingVisibilityRemote(
+  visibility: "recorded_only" | "include_estimates",
+): Promise<ActionResult<CustomerProfile>> {
+  const res = await apiJson<CustomerProfile>("/api/v1/users/me/spending-visibility", {
+    method: "PUT",
+    body: JSON.stringify({ visibility }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function addToCartRemote(
+  productId: string,
+  quantity: number,
+  variantId?: string,
+): Promise<ActionResult<Cart>> {
+  const res = await apiJson<Cart>("/api/v1/cart/items", {
+    method: "POST",
+    body: JSON.stringify({ productId, quantity, variantId }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setCartQuantityRemote(itemId: string, quantity: number): Promise<ActionResult<Cart>> {
+  const res = await apiJson<Cart>(`/api/v1/cart/items/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ quantity }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function reviewApplicationRemote(
+  applicationId: string,
+  action: "approve" | "reject" | "request_info",
+  note: string,
+): Promise<ActionResult<BusinessApplication>> {
+  const res = await apiJson<BusinessApplication>(
+    `/api/v1/admin/applications/${encodeURIComponent(applicationId)}/review`,
+    { method: "POST", body: JSON.stringify({ action, note }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setBusinessStatusRemote(
+  businessId: string,
+  status: BusinessStatus,
+): Promise<ActionResult<Business>> {
+  const res = await apiJson<Business>(`/api/v1/admin/businesses/${encodeURIComponent(businessId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setUserStatusRemote(
+  userId: string,
+  status: User["status"],
+): Promise<ActionResult<User>> {
+  const res = await apiJson<User>(`/api/v1/admin/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function moderateReviewRemote(
+  reviewId: string,
+  status: Review["status"],
+): Promise<ActionResult<Review>> {
+  const res = await apiJson<Review>(`/api/v1/admin/reviews/${encodeURIComponent(reviewId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setAdvertisementStatusRemote(
+  adId: string,
+  status: Advertisement["status"],
+): Promise<ActionResult<Advertisement>> {
+  const res = await apiJson<Advertisement>(`/api/v1/admin/advertisements/${encodeURIComponent(adId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function setReportStatusRemote(
+  reportId: string,
+  status: Report["status"],
+): Promise<ActionResult<Report>> {
+  const res = await apiJson<Report>(`/api/v1/admin/reports/${encodeURIComponent(reportId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
 }

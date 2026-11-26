@@ -77,6 +77,8 @@ export default function WorkspaceScheduleScreen() {
 
   if (!auth.workspace || !auth.userId || !biz) return null;
   const actorId = auth.userId;
+  const isRestricted = biz.status === "suspended" || biz.status === "rejected";
+  const isPending = biz.status !== "approved" && !isRestricted;
   const canManage = can(auth.workspace.role, "calendar.manage");
   const canViewCustomers = can(auth.workspace.role, "customers.view");
   const unreadNotifs = state.notifications.filter((n) => n.businessId === bizId && !n.read).length;
@@ -185,11 +187,33 @@ export default function WorkspaceScheduleScreen() {
               ) : null}
             </Pressable>
             {canManage && services.length > 0 ? (
-              <Button label="+ New" small onPress={() => { setError(""); setShowCreate(true); }} />
+              <Button label="+ New" small disabled={isRestricted} onPress={() => { setError(""); setShowCreate(true); }} />
             ) : null}
           </View>
         }
       />
+
+      {isRestricted ? (
+        <Card style={{ gap: 4, borderColor: colors.danger }}>
+          <Text style={{ color: colors.danger, fontWeight: "700", fontSize: 13 }}>
+            {biz.status === "suspended" ? "Business suspended" : "Application rejected"}
+          </Text>
+          <Text style={{ color: colors.muted, fontSize: 12 }}>
+            Live bookings and workspace mutations are disabled until platform admin restores approval.
+          </Text>
+        </Card>
+      ) : null}
+
+      {isPending ? (
+        <Card style={{ gap: 4, borderColor: brand.primary }}>
+          <Text style={{ color: colors.lavender, fontWeight: "700", fontSize: 13 }}>
+            Verification pending ({biz.status.replaceAll("_", " ")})
+          </Text>
+          <Text style={{ color: colors.muted, fontSize: 12 }}>
+            You can finish setting up inventory and hours while admin review completes. Live customer bookings unlock on approval.
+          </Text>
+        </Card>
+      ) : null}
 
       <View style={{ flexDirection: "row", gap: 10 }}>
         <StatCard label="Selected Day" value={String(dayAppts.length + dayUniversal.length)} hint="Bookings" icon="calendar-outline" />

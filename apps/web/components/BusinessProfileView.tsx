@@ -4,6 +4,7 @@ import {
   addReview,
   addReviewRemote,
   addToCart,
+  addToCartRemote,
   bookingConfigsForBusiness,
   displayUser,
   enabledModelsForBusiness,
@@ -44,6 +45,7 @@ export function BusinessProfileView({ id }: { id: string }) {
   const [body, setBody] = useState("");
   const [reviewError, setReviewError] = useState("");
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [cartBusyId, setCartBusyId] = useState("");
 
   if (!business) {
     return (
@@ -339,16 +341,27 @@ export function BusinessProfileView({ id }: { id: string }) {
                         <Button
                           tone="soft"
                           small
-                          onClick={() => {
+                          disabled={cartBusyId === product.id}
+                          onClick={async () => {
                             if (!auth.userId) {
                               setNotice("Please sign in first.");
                               return;
                             }
-                            const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
-                            setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                            if (usingMocks()) {
+                              const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
+                              setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                              return;
+                            }
+                            setCartBusyId(product.id);
+                            try {
+                              const res = await addToCartRemote(product.id, 1, product.variants[0]?.id);
+                              setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                            } finally {
+                              setCartBusyId("");
+                            }
                           }}
                         >
-                          Add to cart
+                          {cartBusyId === product.id ? "Adding…" : "Add to cart"}
                         </Button>
                       </div>
                     </div>

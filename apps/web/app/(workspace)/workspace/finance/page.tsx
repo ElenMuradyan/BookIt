@@ -2,6 +2,7 @@
 
 import {
   addExpense,
+  addExpenseRemote,
   businessAppointments,
   sellerOrders,
   useBookItState,
@@ -21,6 +22,8 @@ export default function WorkspaceFinancePage() {
   const [showExpense, setShowExpense] = useState(false);
   const [form, setForm] = useState({ category: "Supplies", amount: "120", note: "", incurredOn: today });
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -57,6 +60,8 @@ export default function WorkspaceFinancePage() {
           {canManage ? <Button onClick={() => setShowExpense(true)}>+ Add Expense</Button> : null}
         </div>
       </div>
+
+      {notice ? <div className="notice">{notice}</div> : null}
 
       <div className="grid-4">
         <div className="panel stat">
@@ -135,16 +140,34 @@ export default function WorkspaceFinancePage() {
         <Modal title="Add Manual Expense" onClose={() => setShowExpense(false)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              const res = addExpense(bizId, form);
-              if (!res.ok) {
-                setError(res.error);
+              setError("");
+              setNotice("");
+              if (usingMocks()) {
+                const res = addExpense(bizId, form);
+                if (!res.ok) {
+                  setError(res.error);
+                  return;
+                }
+                setForm({ category: "Supplies", amount: "120", note: "", incurredOn: today });
+                setShowExpense(false);
+                setNotice("Expense recorded.");
                 return;
               }
-              setForm({ category: "Supplies", amount: "120", note: "", incurredOn: today });
-              setError("");
-              setShowExpense(false);
+              setBusy(true);
+              try {
+                const res = await addExpenseRemote(bizId, form);
+                if (!res.ok) {
+                  setError(res.error);
+                  return;
+                }
+                setForm({ category: "Supplies", amount: "120", note: "", incurredOn: today });
+                setShowExpense(false);
+                setNotice("Expense recorded.");
+              } finally {
+                setBusy(false);
+              }
             }}
           >
             <Field label="Category">
@@ -162,7 +185,9 @@ export default function WorkspaceFinancePage() {
               <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Salon supplies restock" />
             </Field>
             {error ? <p className="error">{error}</p> : null}
-            <Button type="submit">Save expense</Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? "Saving…" : "Save expense"}
+            </Button>
           </form>
         </Modal>
       ) : null}

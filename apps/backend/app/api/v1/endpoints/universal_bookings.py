@@ -21,7 +21,7 @@ from app.schemas.booking import (
     UniversalBookingStatusIn,
     UniversalCheckInOut,
 )
-from app.services.rbac import get_active_membership, has_permission, require_business_permission
+from app.services.rbac import require_business_permission
 from app.services.universal_booking_service import (
     check_in_universal_qr,
     create_universal_booking_transactional,
@@ -163,9 +163,7 @@ async def get_universal_booking(
     if not bk:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
     if bk.customer_id != user.id and not user.is_platform_admin:
-        member = await get_active_membership(db, user.id, bk.business_id)
-        if not member or not has_permission(member.role, "bookings.view"):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this booking")
+        await require_business_permission(db, user, bk.business_id, "bookings.view")
     return serialize_universal_booking(bk)
 
 

@@ -122,13 +122,40 @@ async def create_payment_intent(
         appt = await db.get(Appointment, reference_id)
         if not appt or appt.customer_id != payer_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
-        amount = float(appt.price)
+        if appt.status in ("cancelled", "rejected") or appt.payment_status in ("paid", "refunded"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Appointment is not eligible for payment",
+            )
+        if appt.booking_id:
+            bk = await db.get(Booking, appt.booking_id)
+            if bk:
+                if bk.status in ("cancelled", "rejected", "expired") or bk.payment_status in ("paid", "refunded"):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Booking is not eligible for payment",
+                    )
+                remaining_total = max(0.0, float(bk.total_amount) - float(bk.amount_paid))
+                deposit_due = float(bk.deposit_due_amount)
+                if float(bk.amount_paid) == 0 and 0 < deposit_due < remaining_total:
+                    amount = round(deposit_due, 2)
+                else:
+                    amount = round(remaining_total, 2)
+            else:
+                amount = float(appt.price)
+        else:
+            amount = float(appt.price)
         business_id = appt.business_id
         currency = appt.currency
     elif reference_type == "booking":
         bk = await db.get(Booking, reference_id)
         if not bk or bk.customer_id != payer_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+        if bk.status in ("cancelled", "rejected", "expired") or bk.payment_status in ("paid", "refunded"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Booking is not eligible for payment",
+            )
         remaining_total = max(0.0, float(bk.total_amount) - float(bk.amount_paid))
         deposit_due = float(bk.deposit_due_amount)
         if float(bk.amount_paid) == 0 and 0 < deposit_due < remaining_total:
@@ -141,6 +168,11 @@ async def create_payment_intent(
         order = await db.get(Order, reference_id)
         if not order or order.user_id != payer_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+        if order.status in ("cancelled", "refunded") or order.payment_status in ("paid", "refunded"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Order is not eligible for payment",
+            )
         amount = float(order.total)
         business_id = order.seller_id
         currency = order.currency
@@ -229,21 +261,33 @@ async def process_payment_webhook(
         ).scalar_one_or_none()
 
     if payment:
-        if event_type in ("payment.succeeded", "payment_intent.succeeded") and payment.status != "refunded":
+        if event_type in ("payment.succeeded", "payment_intent.succeeded") and payment.status == "pending":
             payment.status = "recorded"
             if payment.reference_type == "appointment":
                 appt = await db.get(Appointment, payment.reference_id)
                 if appt:
-                    appt.payment_status = "paid"
                     if appt.booking_id:
                         bk = await db.get(Booking, appt.booking_id)
                         if bk:
-                            bk.amount_paid = float(bk.total_amount)
-                            bk.payment_status = "paid"
+                            bk.amount_paid = round(
+                                min(float(bk.total_amount), float(bk.amount_paid) + float(payment.amount)),
+                                2,
+                            )
+                            bk.payment_status = (
+                                "paid" if float(bk.amount_paid) >= float(bk.total_amount) else "deposit_paid"
+                            )
+                            appt.payment_status = "paid" if bk.payment_status == "paid" else "deposit"
+                        else:
+                            appt.payment_status = "paid"
+                    else:
+                        appt.payment_status = "paid"
             elif payment.reference_type == "booking":
                 bk = await db.get(Booking, payment.reference_id)
                 if bk:
-                    bk.amount_paid = round(float(bk.amount_paid) + float(payment.amount), 2)
+                    bk.amount_paid = round(
+                        min(float(bk.total_amount), float(bk.amount_paid) + float(payment.amount)),
+                        2,
+                    )
                     bk.payment_status = "paid" if float(bk.amount_paid) >= float(bk.total_amount) else "deposit_paid"
                     if bk.status == "held":
                         target_status = "pending" if bk.confirmation_mode == "manual" else "confirmed"

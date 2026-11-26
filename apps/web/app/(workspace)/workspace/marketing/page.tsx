@@ -1,6 +1,6 @@
 "use client";
 
-import { saveCampaign, savePromo, useBookItState } from "@bookit/api-client";
+import { saveCampaign, saveCampaignRemote, savePromo, savePromoRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { can } from "@bookit/utils";
 import { useState } from "react";
 import { Badge, Button, Field } from "@/components/ui";
@@ -21,6 +21,7 @@ export default function WorkspaceMarketingPage() {
   });
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -58,13 +59,24 @@ export default function WorkspaceMarketingPage() {
           {canManage ? (
             <form
               className="stack"
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
-                const res = savePromo(bizId, promoCode.toUpperCase(), Number(percentOff), expiresOn);
-                if (!res.ok) setError(res.error);
-                else {
-                  setError("");
-                  setNotice(`Promo ${promoCode.toUpperCase()} created`);
+                setError("");
+                setNotice("");
+                const normalized = promoCode.trim().toUpperCase();
+                if (usingMocks()) {
+                  const res = savePromo(bizId, normalized, Number(percentOff), expiresOn);
+                  if (!res.ok) setError(res.error);
+                  else setNotice(`Promo ${normalized} created`);
+                  return;
+                }
+                setBusy(true);
+                try {
+                  const res = await savePromoRemote(bizId, normalized, Number(percentOff), expiresOn);
+                  if (!res.ok) setError(res.error);
+                  else setNotice(`Promo ${normalized} created`);
+                } finally {
+                  setBusy(false);
                 }
               }}
             >
@@ -79,8 +91,8 @@ export default function WorkspaceMarketingPage() {
                   <input type="date" value={expiresOn} onChange={(e) => setExpiresOn(e.target.value)} />
                 </Field>
               </div>
-              <Button type="submit" small>
-                Create promo code
+              <Button type="submit" small disabled={busy}>
+                {busy ? "Saving…" : "Create promo code"}
               </Button>
             </form>
           ) : null}
@@ -111,14 +123,29 @@ export default function WorkspaceMarketingPage() {
           {canManage ? (
             <form
               className="stack"
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
-                const res = saveCampaign(bizId, campaign);
-                if (!res.ok) setError(res.error);
-                else {
-                  setError("");
-                  setNotice(`Campaign "${campaign.name}" scheduled`);
-                  setCampaign({ ...campaign, name: "", message: "" });
+                setError("");
+                setNotice("");
+                if (usingMocks()) {
+                  const res = saveCampaign(bizId, campaign);
+                  if (!res.ok) setError(res.error);
+                  else {
+                    setNotice(`Campaign "${campaign.name}" scheduled`);
+                    setCampaign({ ...campaign, name: "", message: "" });
+                  }
+                  return;
+                }
+                setBusy(true);
+                try {
+                  const res = await saveCampaignRemote(bizId, campaign);
+                  if (!res.ok) setError(res.error);
+                  else {
+                    setNotice(`Campaign "${campaign.name}" scheduled`);
+                    setCampaign({ ...campaign, name: "", message: "" });
+                  }
+                } finally {
+                  setBusy(false);
                 }
               }}
             >
@@ -128,8 +155,8 @@ export default function WorkspaceMarketingPage() {
               <Field label="Message">
                 <input value={campaign.message} onChange={(e) => setCampaign({ ...campaign, message: e.target.value })} placeholder="15% off winter facials" />
               </Field>
-              <Button type="submit" small>
-                Schedule campaign
+              <Button type="submit" small disabled={busy}>
+                {busy ? "Scheduling…" : "Schedule campaign"}
               </Button>
             </form>
           ) : null}

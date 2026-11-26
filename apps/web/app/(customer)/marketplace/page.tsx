@@ -2,9 +2,11 @@
 
 import {
   addToCart,
+  addToCartRemote,
   searchProducts,
   toggleFavorite,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import Link from "next/link";
@@ -21,6 +23,7 @@ export default function MarketplacePage() {
   const [sort, setSort] = useState<"newest" | "price_asc" | "price_desc">("newest");
   const [inStock, setInStock] = useState(false);
   const [notice, setNotice] = useState("");
+  const [busyProductId, setBusyProductId] = useState("");
 
   const sponsoredAd = state.advertisements.find((ad) => ad.placement === "marketplace" && ad.status === "active");
   const sponsoredBiz = sponsoredAd ? state.businesses.find((b) => b.id === sponsoredAd.businessId) : undefined;
@@ -147,14 +150,24 @@ export default function MarketplacePage() {
                     <Button
                       tone="soft"
                       small
-                      disabled={product.stock <= 0}
-                      onClick={() => {
+                      disabled={product.stock <= 0 || busyProductId === product.id}
+                      onClick={async () => {
                         if (!auth.userId) return;
-                        const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
-                        setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                        if (usingMocks()) {
+                          const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
+                          setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                          return;
+                        }
+                        setBusyProductId(product.id);
+                        try {
+                          const res = await addToCartRemote(product.id, 1, product.variants[0]?.id);
+                          setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                        } finally {
+                          setBusyProductId("");
+                        }
                       }}
                     >
-                      {product.stock > 0 ? "Add to cart" : "Out of stock"}
+                      {busyProductId === product.id ? "Adding…" : product.stock > 0 ? "Add to cart" : "Out of stock"}
                     </Button>
                     <Button tone="ghost" small onClick={() => auth.userId && toggleFavorite(auth.userId, "product", product.id, "Gifts")}>
                       {isFav ? "Saved" : "Save"}

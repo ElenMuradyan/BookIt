@@ -144,7 +144,21 @@ async def require_business_permission(
 
     membership = await get_active_membership(db, user.id, business_id)
     if not membership:
-        if business.owner_user_id == user.id:
+        suspended = (
+            await db.execute(
+                select(Membership.id).where(
+                    Membership.user_id == user.id,
+                    Membership.business_id == business_id,
+                    Membership.status == "suspended",
+                )
+            )
+        ).scalar_one_or_none()
+        if business.owner_user_id == user.id and not suspended:
+            if business.status in ("rejected", "suspended") and not permission.endswith(".view"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"This business is {business.status} and cannot perform workspace operations",
+                )
             return business, None
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -155,6 +169,12 @@ async def require_business_permission(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Missing permission: {permission}",
+        )
+
+    if business.status in ("rejected", "suspended") and not permission.endswith(".view"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This business is {business.status} and cannot perform workspace operations",
         )
     return business, membership
 

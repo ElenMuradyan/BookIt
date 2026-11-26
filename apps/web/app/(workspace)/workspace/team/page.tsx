@@ -6,6 +6,8 @@ import {
   inviteMemberRemote,
   setMemberRole,
   setMemberRoleRemote,
+  setMemberStatus,
+  setMemberStatusRemote,
   updateEmployeeAvailability,
   updateEmployeeAvailabilityRemote,
   useBookItState,
@@ -183,6 +185,7 @@ export default function WorkspaceTeamPage() {
               <th>Title</th>
               <th>Status</th>
               <th>Role</th>
+              {canManage ? <th>Access</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -191,7 +194,7 @@ export default function WorkspaceTeamPage() {
                 <td>{displayUser(state, m.userId)}</td>
                 <td className="tiny">{m.title ?? "Team member"}</td>
                 <td>
-                  <Badge tone={m.status === "active" ? "success" : "warning"}>{m.status}</Badge>
+                  <Badge tone={m.status === "active" ? "success" : m.status === "suspended" ? "danger" : "warning"}>{m.status}</Badge>
                 </td>
                 <td>
                   {canManage && m.role !== "owner" ? (
@@ -228,6 +231,41 @@ export default function WorkspaceTeamPage() {
                     <Badge tone="brand">{roleLabels[m.role]}</Badge>
                   )}
                 </td>
+                {canManage ? (
+                  <td>
+                    {m.role !== "owner" && m.userId !== auth.userId && (m.status === "active" || m.status === "suspended") ? (
+                      <Button
+                        tone={m.status === "active" ? "danger" : "soft"}
+                        small
+                        disabled={busy}
+                        onClick={async () => {
+                          const nextStatus = m.status === "active" ? "suspended" : "active";
+                          setPageError("");
+                          setNotice("");
+                          setBusy(true);
+                          try {
+                            const res = usingMocks()
+                              ? setMemberStatus(bizId, m.id, nextStatus)
+                              : await setMemberStatusRemote(bizId, m.id, nextStatus);
+                            if (!res.ok) {
+                              setPageError(res.error);
+                              return;
+                            }
+                            setNotice(
+                              `${displayUser(state, m.userId)} ${nextStatus === "suspended" ? "suspended" : "reactivated"}.`,
+                            );
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        {m.status === "active" ? "Suspend" : "Reactivate"}
+                      </Button>
+                    ) : (
+                      <span className="tiny">—</span>
+                    )}
+                  </td>
+                ) : null}
               </tr>
             ))}
           </tbody>

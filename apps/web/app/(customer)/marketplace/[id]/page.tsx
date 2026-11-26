@@ -1,6 +1,6 @@
 "use client";
 
-import { addToCart, toggleFavorite, useBookItState } from "@bookit/api-client";
+import { addToCart, addToCartRemote, toggleFavorite, useBookItState, usingMocks } from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import Link from "next/link";
 import { use, useState } from "react";
@@ -15,6 +15,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
   const [variantId, setVariantId] = useState(product?.variants[0]?.id ?? "");
   const [quantity, setQuantity] = useState(1);
   const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!product) return <Empty title="Product not found" body="Browse the marketplace for available items." />;
   const seller = state.businesses.find((b) => b.id === product.businessId);
@@ -96,14 +97,24 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
 
           <div className="row" style={{ flexWrap: "wrap" }}>
             <Button
-              disabled={stock <= 0}
-              onClick={() => {
+              disabled={stock <= 0 || busy}
+              onClick={async () => {
                 if (!auth.userId) return;
-                const res = addToCart(auth.userId, product.id, quantity, variantId || undefined);
-                setNotice(res.ok ? `Added ${quantity} to cart` : res.error);
+                if (usingMocks()) {
+                  const res = addToCart(auth.userId, product.id, quantity, variantId || undefined);
+                  setNotice(res.ok ? `Added ${quantity} to cart` : res.error);
+                  return;
+                }
+                setBusy(true);
+                try {
+                  const res = await addToCartRemote(product.id, quantity, variantId || undefined);
+                  setNotice(res.ok ? `Added ${quantity} to cart` : res.error);
+                } finally {
+                  setBusy(false);
+                }
               }}
             >
-              Add to Cart
+              {busy ? "Adding…" : "Add to Cart"}
             </Button>
             <Button tone="ghost" onClick={() => auth.userId && toggleFavorite(auth.userId, "product", product.id, "Gifts")}>
               {isFav ? "Saved" : "Save"}

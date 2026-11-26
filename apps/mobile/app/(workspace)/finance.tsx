@@ -1,4 +1,4 @@
-import { addExpense, useBookItState, usingMocks } from "@bookit/api-client";
+import { addExpense, addExpenseRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { can, DEMO_TODAY, formatMoney, todayInput } from "@bookit/utils";
 import React, { useState } from "react";
 import { Modal, Text, View } from "react-native";
@@ -14,6 +14,7 @@ export default function WorkspaceFinanceScreen() {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ category: "Supplies", amount: "120", note: "Salon inventory", incurredOn: today });
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -69,15 +70,31 @@ export default function WorkspaceFinanceScreen() {
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowAdd(false)} />
               <Button
-                label="Save"
+                label={busy ? "Saving..." : "Save"}
                 style={{ flex: 1 }}
-                onPress={() => {
-                  const res = addExpense(bizId, form);
-                  if (!res.ok) {
-                    setError(res.error);
+                disabled={busy}
+                onPress={async () => {
+                  setError("");
+                  if (usingMocks()) {
+                    const res = addExpense(bizId, form);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setShowAdd(false);
                     return;
                   }
-                  setShowAdd(false);
+                  setBusy(true);
+                  try {
+                    const res = await addExpenseRemote(bizId, form);
+                    if (!res.ok) {
+                      setError(res.error);
+                      return;
+                    }
+                    setShowAdd(false);
+                  } finally {
+                    setBusy(false);
+                  }
                 }}
               />
             </View>

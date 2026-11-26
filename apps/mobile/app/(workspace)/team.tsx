@@ -4,6 +4,8 @@ import {
   inviteMemberRemote,
   setMemberRole,
   setMemberRoleRemote,
+  setMemberStatus,
+  setMemberStatusRemote,
   updateEmployeeAvailability,
   updateEmployeeAvailabilityRemote,
   useBookItState,
@@ -90,12 +92,19 @@ export default function WorkspaceTeamScreen() {
                       key={st}
                       label={st.replaceAll("_", " ")}
                       active={emp.status === st}
+                      disabled={busy}
                       onPress={async () => {
+                        if (busy) return;
                         setPageError("");
-                        const res = usingMocks()
-                          ? updateEmployeeAvailability(bizId, emp.id, { status: st })
-                          : await updateEmployeeAvailabilityRemote(bizId, emp.id, { status: st });
-                        if (!res.ok) setPageError(res.error);
+                        setBusy(true);
+                        try {
+                          const res = usingMocks()
+                            ? updateEmployeeAvailability(bizId, emp.id, { status: st })
+                            : await updateEmployeeAvailabilityRemote(bizId, emp.id, { status: st });
+                          if (!res.ok) setPageError(res.error);
+                        } finally {
+                          setBusy(false);
+                        }
                       }}
                     />
                   ))}
@@ -103,7 +112,7 @@ export default function WorkspaceTeamScreen() {
               </View>
             ) : null}
             {canManage && mem.role !== "owner" ? (
-              <View style={{ gap: 4 }}>
+              <View style={{ gap: 6 }}>
                 <Text style={{ color: colors.muted, fontSize: 11 }}>Workspace Role</Text>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
                   {(["manager", "employee", "receptionist"] as const).map((r) => (
@@ -111,16 +120,51 @@ export default function WorkspaceTeamScreen() {
                       key={r}
                       label={roleLabels[r]}
                       active={mem.role === r}
+                      disabled={busy}
                       onPress={async () => {
+                        if (busy) return;
                         setPageError("");
-                        const res = usingMocks()
-                          ? setMemberRole(bizId, mem.id, r)
-                          : await setMemberRoleRemote(bizId, mem.id, r);
-                        if (!res.ok) setPageError(res.error);
+                        setBusy(true);
+                        try {
+                          const res = usingMocks()
+                            ? setMemberRole(bizId, mem.id, r)
+                            : await setMemberRoleRemote(bizId, mem.id, r);
+                          if (!res.ok) setPageError(res.error);
+                        } finally {
+                          setBusy(false);
+                        }
                       }}
                     />
                   ))}
                 </View>
+                {mem.userId !== auth.userId && (mem.status === "active" || mem.status === "suspended") ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+                    <Badge
+                      label={mem.status === "suspended" ? "Suspended" : "Active access"}
+                      tone={mem.status === "suspended" ? "danger" : "success"}
+                    />
+                    <Button
+                      label={mem.status === "suspended" ? "Reactivate" : "Suspend"}
+                      tone={mem.status === "suspended" ? "soft" : "danger"}
+                      small
+                      disabled={busy}
+                      onPress={async () => {
+                        if (busy) return;
+                        setPageError("");
+                        setBusy(true);
+                        const nextStatus = mem.status === "suspended" ? "active" : "suspended";
+                        try {
+                          const res = usingMocks()
+                            ? setMemberStatus(bizId, mem.id, nextStatus)
+                            : await setMemberStatusRemote(bizId, mem.id, nextStatus);
+                          if (!res.ok) setPageError(res.error);
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    />
+                  </View>
+                ) : null}
               </View>
             ) : null}
           </Card>

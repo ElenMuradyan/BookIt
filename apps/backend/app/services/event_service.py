@@ -132,7 +132,12 @@ async def reserve_session_transactional(
     if not business:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
 
-    if not business.is_public or business.status != "approved":
+    if business.status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This business is not approved for live bookings",
+        )
+    if not business.is_public:
         membership = await get_active_membership(db, actor.id, business.id)
         if not actor.is_platform_admin and business.owner_user_id != actor.id and not membership:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This business is not open for booking")

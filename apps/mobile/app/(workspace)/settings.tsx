@@ -1,6 +1,7 @@
 import {
   bookingConfigsForBusiness,
   changePlan,
+  changePlanRemote,
   saveBookingConfig,
   updateBusiness,
   updateBusinessHours,
@@ -354,13 +355,28 @@ export default function WorkspaceSettingsScreen() {
               </View>
               {canSub ? (
                 <Button
-                  label={active ? "Active" : "Select"}
+                  label={active ? "Active" : saving ? "Saving..." : "Select"}
                   tone={active ? "soft" : "ghost"}
                   small
-                  disabled={active}
-                  onPress={() => {
-                    changePlan(bizId, plan.id);
-                    setNotice({ text: `Switched plan to ${plan.name} (preview only).` });
+                  disabled={active || saving}
+                  onPress={async () => {
+                    setNotice(null);
+                    if (usingMocks()) {
+                      changePlan(bizId, plan.id);
+                      setNotice({ text: `Switched plan to ${plan.name} (preview only).` });
+                      return;
+                    }
+                    setSaving(true);
+                    try {
+                      const res = await changePlanRemote(bizId, plan.id);
+                      setNotice(
+                        res.ok
+                          ? { text: `Subscription plan updated to ${plan.name}.` }
+                          : { err: true, text: res.error },
+                      );
+                    } finally {
+                      setSaving(false);
+                    }
                   }}
                 />
               ) : null}

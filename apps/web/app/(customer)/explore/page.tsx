@@ -2,11 +2,13 @@
 
 import {
   addToCart,
+  addToCartRemote,
   enabledModelsForBusiness,
   searchBusinesses,
   searchProducts,
   searchServices,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import type { BookingModel, BusinessCategory } from "@bookit/types";
 import { categoryLabels, exploreFilterHints, primaryCtaLabelForBusiness } from "@bookit/ui";
@@ -34,6 +36,7 @@ function ExploreContent() {
   const [maxPrice, setMaxPrice] = useState<number | undefined>(undefined);
   const [sort, setSort] = useState<"rating" | "distance" | "price_asc" | "price_desc">("rating");
   const [cartNote, setCartNote] = useState("");
+  const [busyProductId, setBusyProductId] = useState("");
 
   const businesses = searchBusinesses(state, {
     q,
@@ -374,13 +377,24 @@ function ExploreContent() {
                       <Button
                         tone="soft"
                         small
-                        onClick={() => {
+                        disabled={busyProductId === product.id}
+                        onClick={async () => {
                           if (!auth.userId) return;
-                          const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
-                          setCartNote(res.ok ? `Added ${product.name} to cart` : res.error);
+                          if (usingMocks()) {
+                            const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
+                            setCartNote(res.ok ? `Added ${product.name} to cart` : res.error);
+                            return;
+                          }
+                          setBusyProductId(product.id);
+                          try {
+                            const res = await addToCartRemote(product.id, 1, product.variants[0]?.id);
+                            setCartNote(res.ok ? `Added ${product.name} to cart` : res.error);
+                          } finally {
+                            setBusyProductId("");
+                          }
                         }}
                       >
-                        Add
+                        {busyProductId === product.id ? "Adding…" : "Add"}
                       </Button>
                     </div>
                   </div>

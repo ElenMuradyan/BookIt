@@ -1,6 +1,6 @@
 "use client";
 
-import { setUserStatus, useBookItState } from "@bookit/api-client";
+import { setUserStatus, setUserStatusRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { fullName } from "@bookit/utils";
 import { useState } from "react";
 import { Badge, Button } from "@/components/ui";
@@ -9,6 +9,8 @@ export default function AdminUsersPage() {
   const state = useBookItState();
   const [q, setQ] = useState("");
   const [notice, setNotice] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [busyId, setBusyId] = useState("");
 
   const users = state.users.filter(
     (u) => !q.trim() || `${fullName(u)} ${u.email} ${u.username}`.toLowerCase().includes(q.trim().toLowerCase()),
@@ -31,6 +33,7 @@ export default function AdminUsersPage() {
       />
 
       {notice ? <div className="notice">{notice}</div> : null}
+      {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
 
       <div className="panel" style={{ overflowX: "auto" }}>
         <table className="table">
@@ -44,37 +47,56 @@ export default function AdminUsersPage() {
             </tr>
           </thead>
           <tbody>
-            {users.map((user) => (
-              <tr key={user.id}>
-                <td>
-                  <strong>{fullName(user)}</strong>
-                  <div className="tiny">
-                    @{user.username} · {user.email}
-                  </div>
-                </td>
-                <td>
-                  <Badge tone={user.isPlatformAdmin ? "brand" : "neutral"}>
-                    {user.isPlatformAdmin ? "Platform Admin" : "Member"}
-                  </Badge>
-                </td>
-                <td className="tiny">{user.emailVerified ? "Verified" : "Unverified"}</td>
-                <td>
-                  <Badge tone={user.status === "active" ? "success" : "danger"}>{user.status}</Badge>
-                </td>
-                <td>
-                  <Button
-                    tone={user.status === "active" ? "danger" : "soft"}
-                    small
-                    onClick={() => {
-                      const res = setUserStatus(user.id, user.status === "active" ? "suspended" : "active");
-                      setNotice(res.ok ? `Updated ${fullName(user)}` : res.error);
-                    }}
-                  >
-                    {user.status === "active" ? "Suspend" : "Activate"}
-                  </Button>
-                </td>
-              </tr>
-            ))}
+            {users.map((user) => {
+              const isBusy = busyId === user.id;
+              const nextStatus = user.status === "active" ? "suspended" : "active";
+              return (
+                <tr key={user.id}>
+                  <td>
+                    <strong>{fullName(user)}</strong>
+                    <div className="tiny">
+                      @{user.username} · {user.email}
+                    </div>
+                  </td>
+                  <td>
+                    <Badge tone={user.isPlatformAdmin ? "brand" : "neutral"}>
+                      {user.isPlatformAdmin ? "Platform Admin" : "Member"}
+                    </Badge>
+                  </td>
+                  <td className="tiny">{user.emailVerified ? "Verified" : "Unverified"}</td>
+                  <td>
+                    <Badge tone={user.status === "active" ? "success" : "danger"}>{user.status}</Badge>
+                  </td>
+                  <td>
+                    <Button
+                      tone={user.status === "active" ? "danger" : "soft"}
+                      small
+                      disabled={isBusy}
+                      onClick={async () => {
+                        setErrorMsg("");
+                        setNotice("");
+                        if (usingMocks()) {
+                          const res = setUserStatus(user.id, nextStatus);
+                          if (!res.ok) setErrorMsg(res.error);
+                          else setNotice(`Updated ${fullName(user)}`);
+                          return;
+                        }
+                        setBusyId(user.id);
+                        try {
+                          const res = await setUserStatusRemote(user.id, nextStatus);
+                          if (!res.ok) setErrorMsg(res.error);
+                          else setNotice(`Updated ${fullName(user)}`);
+                        } finally {
+                          setBusyId("");
+                        }
+                      }}
+                    >
+                      {isBusy ? "Updating…" : user.status === "active" ? "Suspend" : "Activate"}
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

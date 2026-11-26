@@ -3,6 +3,7 @@
 import {
   bookingConfigsForBusiness,
   changePlan,
+  changePlanRemote,
   saveBookingConfig,
   updateBusiness,
   updateBusinessHours,
@@ -592,13 +593,30 @@ export default function WorkspaceSettingsPage() {
                         <Button
                           tone={active ? "soft" : "primary"}
                           small
-                          disabled={active}
-                          onClick={() => {
-                            changePlan(bizId, plan.id);
-                            setNotice(`Switched plan to ${plan.name} (no billing charged in preview).`);
+                          disabled={active || saving}
+                          onClick={async () => {
+                            setNotice("");
+                            setErrorMsg("");
+                            setSaving(true);
+                            try {
+                              const res = usingMocks()
+                                ? changePlan(bizId, plan.id)
+                                : await changePlanRemote(bizId, plan.id);
+                              if (!res.ok) {
+                                setErrorMsg(res.error);
+                                return;
+                              }
+                              setNotice(
+                                usingMocks()
+                                  ? `Switched plan to ${plan.name} (no billing charged in preview).`
+                                  : `Switched subscription plan to ${plan.name}.`,
+                              );
+                            } finally {
+                              setSaving(false);
+                            }
                           }}
                         >
-                          {active ? "Current plan" : "Select plan"}
+                          {active ? "Current plan" : saving ? "Updating..." : "Select plan"}
                         </Button>
                       ) : null}
                     </div>

@@ -7,10 +7,15 @@ import {
   declineWorkspaceInviteRemote,
   resetDemoState,
   setPersonalizationConsent,
+  setPersonalizationConsentRemote,
   setSpendingVisibility,
+  setSpendingVisibilityRemote,
   setTheme,
+  setThemeRemote,
   updateNotificationPrefs,
+  updateNotificationPrefsRemote,
   updateProfile,
+  updateProfileRemote,
   useBookItState,
   usingMocks,
 } from "@bookit/api-client";
@@ -197,13 +202,16 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
 
         <section className="panel stack">
           {notice ? <div className="notice">{notice}</div> : null}
+          {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
 
           {section === "profile" || section === "photo" || section === "contact" || section === "language" ? (
             <form
               className="stack"
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
-                updateProfile(user.id, {
+                setErrorMsg("");
+                setNotice("");
+                const patch = {
                   firstName,
                   lastName,
                   phone,
@@ -211,8 +219,21 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                   language,
                   gender: gender || undefined,
                   dateOfBirth: dateOfBirth || undefined,
-                });
-                setNotice("Profile saved.");
+                };
+                if (usingMocks()) {
+                  const res = updateProfile(user.id, patch);
+                  if (!res.ok) setErrorMsg(res.error);
+                  else setNotice("Profile saved.");
+                  return;
+                }
+                setBusy(true);
+                try {
+                  const res = await updateProfileRemote(patch);
+                  if (!res.ok) setErrorMsg(res.error);
+                  else setNotice("Profile saved.");
+                } finally {
+                  setBusy(false);
+                }
               }}
             >
               <h2 style={{ margin: 0 }}>{customerSettingSections.find((s) => s.id === section)?.label}</h2>
@@ -253,7 +274,9 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                 Date of birth is only used where age verification is required; gender is optional and shared only with your chosen provider when relevant.
               </p>
               <div>
-                <Button type="submit">Save changes</Button>
+                <Button type="submit" disabled={busy}>
+                  {busy ? "Saving…" : "Save changes"}
+                </Button>
               </div>
             </form>
           ) : null}
@@ -267,12 +290,35 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                   <button
                     key={t}
                     type="button"
+                    disabled={busy}
                     className={`slot ${(profile?.theme ?? "dark") === t ? "on" : ""}`}
-                    onClick={() => {
-                      setTheme(user.id, t);
-                      document.documentElement.dataset.theme = t;
-                      localStorage.setItem("bookit.theme", t);
-                      setNotice(`Switched to ${t} theme`);
+                    onClick={async () => {
+                      setErrorMsg("");
+                      setNotice("");
+                      if (usingMocks()) {
+                        const res = setTheme(user.id, t);
+                        if (!res.ok) {
+                          setErrorMsg(res.error);
+                          return;
+                        }
+                        document.documentElement.dataset.theme = t;
+                        localStorage.setItem("bookit.theme", t);
+                        setNotice(`Switched to ${t} theme`);
+                        return;
+                      }
+                      setBusy(true);
+                      try {
+                        const res = await setThemeRemote(t);
+                        if (!res.ok) {
+                          setErrorMsg(res.error);
+                          return;
+                        }
+                        document.documentElement.dataset.theme = t;
+                        localStorage.setItem("bookit.theme", t);
+                        setNotice(`Switched to ${t} theme`);
+                      } finally {
+                        setBusy(false);
+                      }
                     }}
                   >
                     {t[0].toUpperCase() + t.slice(1)} theme
@@ -363,10 +409,26 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                 <label key={key} className="check">
                   <input
                     type="checkbox"
+                    disabled={busy}
                     checked={profile.notificationPreferences[key]}
-                    onChange={(e) => {
-                      updateNotificationPrefs(user.id, { [key]: e.target.checked });
-                      setNotice("Notification preferences updated");
+                    onChange={async (e) => {
+                      const nextVal = e.target.checked;
+                      setErrorMsg("");
+                      setNotice("");
+                      if (usingMocks()) {
+                        const res = updateNotificationPrefs(user.id, { [key]: nextVal });
+                        if (!res.ok) setErrorMsg(res.error);
+                        else setNotice("Notification preferences updated");
+                        return;
+                      }
+                      setBusy(true);
+                      try {
+                        const res = await updateNotificationPrefsRemote({ [key]: nextVal });
+                        if (!res.ok) setErrorMsg(res.error);
+                        else setNotice("Notification preferences updated");
+                      } finally {
+                        setBusy(false);
+                      }
                     }}
                   />
                   <span>{label}</span>
@@ -386,14 +448,36 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                 <label className="check">
                   <input
                     type="checkbox"
+                    disabled={busy}
                     checked={Boolean(profile?.personalizationConsent)}
-                    onChange={(e) => {
-                      setPersonalizationConsent(user.id, e.target.checked);
-                      setNotice(
-                        e.target.checked
-                          ? "Personalized recommendations enabled."
-                          : "Personalized recommendations disabled.",
-                      );
+                    onChange={async (e) => {
+                      const nextVal = e.target.checked;
+                      setErrorMsg("");
+                      setNotice("");
+                      if (usingMocks()) {
+                        const res = setPersonalizationConsent(user.id, nextVal);
+                        if (!res.ok) setErrorMsg(res.error);
+                        else
+                          setNotice(
+                            nextVal
+                              ? "Personalized recommendations enabled."
+                              : "Personalized recommendations disabled.",
+                          );
+                        return;
+                      }
+                      setBusy(true);
+                      try {
+                        const res = await setPersonalizationConsentRemote(nextVal);
+                        if (!res.ok) setErrorMsg(res.error);
+                        else
+                          setNotice(
+                            nextVal
+                              ? "Personalized recommendations enabled."
+                              : "Personalized recommendations disabled.",
+                          );
+                      } finally {
+                        setBusy(false);
+                      }
                     }}
                   />
                   <span>Allow personalized recommendations based on my profile and interests</span>
@@ -403,31 +487,69 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
               <div className="chips">
                 <button
                   type="button"
+                  disabled={busy}
                   className={`slot ${profile?.spendingVisibility === "recorded_only" ? "on" : ""}`}
-                  onClick={() => setSpendingVisibility(user.id, "recorded_only")}
+                  onClick={async () => {
+                    setErrorMsg("");
+                    setNotice("");
+                    if (usingMocks()) {
+                      const res = setSpendingVisibility(user.id, "recorded_only");
+                      if (!res.ok) setErrorMsg(res.error);
+                      else setNotice("Spending visibility updated.");
+                      return;
+                    }
+                    setBusy(true);
+                    try {
+                      const res = await setSpendingVisibilityRemote("recorded_only");
+                      if (!res.ok) setErrorMsg(res.error);
+                      else setNotice("Spending visibility updated.");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
                 >
                   Recorded payments only
                 </button>
                 <button
                   type="button"
+                  disabled={busy}
                   className={`slot ${profile?.spendingVisibility === "include_estimates" ? "on" : ""}`}
-                  onClick={() => setSpendingVisibility(user.id, "include_estimates")}
+                  onClick={async () => {
+                    setErrorMsg("");
+                    setNotice("");
+                    if (usingMocks()) {
+                      const res = setSpendingVisibility(user.id, "include_estimates");
+                      if (!res.ok) setErrorMsg(res.error);
+                      else setNotice("Spending visibility updated.");
+                      return;
+                    }
+                    setBusy(true);
+                    try {
+                      const res = await setSpendingVisibilityRemote("include_estimates");
+                      if (!res.ok) setErrorMsg(res.error);
+                      else setNotice("Spending visibility updated.");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
                 >
                   Include estimates
                 </button>
               </div>
-              <div>
-                <Button
-                  tone="danger"
-                  small
-                  onClick={() => {
-                    resetDemoState();
-                    setNotice("Demo state reset to initial seed data.");
-                  }}
-                >
-                  Reset demo data
-                </Button>
-              </div>
+              {usingMocks() ? (
+                <div>
+                  <Button
+                    tone="danger"
+                    small
+                    onClick={() => {
+                      resetDemoState();
+                      setNotice("Demo state reset to initial seed data.");
+                    }}
+                  >
+                    Reset demo data
+                  </Button>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

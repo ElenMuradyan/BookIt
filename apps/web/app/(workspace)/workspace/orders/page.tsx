@@ -1,6 +1,6 @@
 "use client";
 
-import { displayUser, sellerOrders, setOrderStatus, useBookItState } from "@bookit/api-client";
+import { displayUser, sellerOrders, setOrderStatus, setOrderStatusRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import type { OrderStatus } from "@bookit/types";
 import { orderStatus } from "@bookit/ui";
 import { can, formatDate, formatMoney } from "@bookit/utils";
@@ -23,11 +23,33 @@ export default function WorkspaceOrdersPage() {
   const auth = useAuth();
   const state = useBookItState();
   const [filter, setFilter] = useState<"all" | OrderStatus>("all");
+  const [busyId, setBusyId] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [notice, setNotice] = useState("");
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
   const canManage = can(auth.workspace.role, "orders.manage");
   const orders = sellerOrders(state, bizId).filter((o) => filter === "all" || o.status === filter);
+
+  async function handleStatusChange(orderId: string, nextStatus: OrderStatus) {
+    setErrorMsg("");
+    setNotice("");
+    if (usingMocks()) {
+      const res = setOrderStatus(bizId, orderId, nextStatus);
+      if (!res.ok) setErrorMsg(res.error);
+      else setNotice(`Order updated to ${nextStatus.replaceAll("_", " ")}.`);
+      return;
+    }
+    setBusyId(orderId);
+    try {
+      const res = await setOrderStatusRemote(bizId, orderId, nextStatus);
+      if (!res.ok) setErrorMsg(res.error);
+      else setNotice(`Order updated to ${nextStatus.replaceAll("_", " ")}.`);
+    } finally {
+      setBusyId("");
+    }
+  }
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -49,6 +71,9 @@ export default function WorkspaceOrdersPage() {
         ))}
       </div>
 
+      {notice ? <div className="notice">{notice}</div> : null}
+      {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
+
       {orders.length === 0 ? (
         <Empty title="No matching orders" body="Marketplace orders for this business appear here." />
       ) : (
@@ -68,6 +93,7 @@ export default function WorkspaceOrdersPage() {
             <tbody>
               {orders.map((order) => {
                 const st = orderStatus(order.status);
+                const isBusy = busyId === order.id;
                 return (
                   <tr key={order.id}>
                     <td className="tabular">
@@ -87,7 +113,8 @@ export default function WorkspaceOrdersPage() {
                           <select
                             aria-label="Order status"
                             value={order.status}
-                            onChange={(e) => setOrderStatus(bizId, order.id, e.target.value as OrderStatus)}
+                            disabled={isBusy}
+                            onChange={(e) => void handleStatusChange(order.id, e.target.value as OrderStatus)}
                             style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "5px 8px" }}
                           >
                             {STATUSES.map((s) => (
@@ -97,8 +124,8 @@ export default function WorkspaceOrdersPage() {
                             ))}
                           </select>
                           {order.status === "pending" ? (
-                            <Button tone="soft" small onClick={() => setOrderStatus(bizId, order.id, "confirmed")}>
-                              Confirm
+                            <Button tone="soft" small disabled={isBusy} onClick={() => void handleStatusChange(order.id, "confirmed")}>
+                              {isBusy ? "Saving…" : "Confirm"}
                             </Button>
                           ) : null}
                         </div>

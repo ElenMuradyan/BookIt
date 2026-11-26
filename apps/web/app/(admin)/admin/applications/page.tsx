@@ -1,6 +1,6 @@
 "use client";
 
-import { displayUser, reviewApplication, useBookItState } from "@bookit/api-client";
+import { displayUser, reviewApplication, reviewApplicationRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { categoryLabels } from "@bookit/ui";
 import { formatDate } from "@bookit/utils";
 import { useState } from "react";
@@ -10,6 +10,36 @@ export default function AdminApplicationsPage() {
   const state = useBookItState();
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [busyId, setBusyId] = useState("");
+
+  async function handleReview(appId: string, action: "approve" | "request_info" | "reject", bizName?: string) {
+    setErrorMsg("");
+    setNotice("");
+    const note = notes[appId] ?? "";
+    const successMsg =
+      action === "approve"
+        ? `${bizName ?? "Business"} approved and 30-day trial started.`
+        : action === "request_info"
+          ? `Requested additional info from ${bizName ?? "applicant"}.`
+          : `${bizName ?? "Business"} rejected.`;
+
+    if (usingMocks()) {
+      const res = reviewApplication(appId, action, note);
+      if (!res.ok) setErrorMsg(res.error);
+      else setNotice(successMsg);
+      return;
+    }
+
+    setBusyId(appId);
+    try {
+      const res = await reviewApplicationRemote(appId, action, note);
+      if (!res.ok) setErrorMsg(res.error);
+      else setNotice(successMsg);
+    } finally {
+      setBusyId("");
+    }
+  }
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -21,6 +51,7 @@ export default function AdminApplicationsPage() {
       </div>
 
       {notice ? <div className="notice">{notice}</div> : null}
+      {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
 
       <div className="stack">
         {state.applications.map((app) => {
@@ -31,6 +62,7 @@ export default function AdminApplicationsPage() {
               : app.status === "rejected"
                 ? "danger"
                 : "warning";
+          const isBusy = busyId === app.id;
           return (
             <article key={app.id} className="panel stack" style={{ gap: 12 }}>
               <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
@@ -62,33 +94,13 @@ export default function AdminApplicationsPage() {
                     />
                   </Field>
                 </div>
-                <Button
-                  small
-                  onClick={() => {
-                    reviewApplication(app.id, "approve", notes[app.id] ?? "");
-                    setNotice(`${biz?.name ?? "Business"} approved and 30-day trial started.`);
-                  }}
-                >
-                  Approve
+                <Button small disabled={isBusy} onClick={() => void handleReview(app.id, "approve", biz?.name)}>
+                  {isBusy ? "Saving…" : "Approve"}
                 </Button>
-                <Button
-                  tone="soft"
-                  small
-                  onClick={() => {
-                    reviewApplication(app.id, "request_info", notes[app.id] ?? "");
-                    setNotice(`Requested additional info from ${biz?.name ?? "applicant"}.`);
-                  }}
-                >
+                <Button tone="soft" small disabled={isBusy} onClick={() => void handleReview(app.id, "request_info", biz?.name)}>
                   Request info
                 </Button>
-                <Button
-                  tone="danger"
-                  small
-                  onClick={() => {
-                    reviewApplication(app.id, "reject", notes[app.id] ?? "");
-                    setNotice(`${biz?.name ?? "Business"} rejected.`);
-                  }}
-                >
+                <Button tone="danger" small disabled={isBusy} onClick={() => void handleReview(app.id, "reject", biz?.name)}>
                   Reject
                 </Button>
               </div>

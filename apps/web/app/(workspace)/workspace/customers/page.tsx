@@ -2,9 +2,11 @@
 
 import {
   addCustomerNote,
+  addCustomerNoteRemote,
   businessAppointments,
   sellerOrders,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { can, formatDate, formatMoney, fullName, initials } from "@bookit/utils";
 import { useState } from "react";
@@ -18,6 +20,8 @@ export default function WorkspaceCustomersPage() {
   const [selectedId, setSelectedId] = useState("");
   const [noteBody, setNoteBody] = useState("");
   const [notice, setNotice] = useState("");
+  const [noteError, setNoteError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace || !auth.userId) return null;
   const bizId = auth.workspace.businessId;
@@ -87,7 +91,10 @@ export default function WorkspaceCustomersPage() {
                   return (
                     <tr
                       key={customer.id}
-                      onClick={() => setSelectedId(customer.id)}
+                      onClick={() => {
+                        setSelectedId(customer.id);
+                        setNoteError("");
+                      }}
                       style={{
                         cursor: "pointer",
                         background: selected ? "color-mix(in srgb, var(--primary) 12%, transparent)" : undefined,
@@ -179,10 +186,32 @@ export default function WorkspaceCustomersPage() {
                     ))}
                   <form
                     className="stack"
-                    onSubmit={(e) => {
+                    onSubmit={async (e) => {
                       e.preventDefault();
-                      const res = addCustomerNote(bizId, activeCustomer.id, auth.userId!, noteBody);
-                      if (res.ok) setNoteBody("");
+                      setNoteError("");
+                      setNotice("");
+                      if (usingMocks()) {
+                        const res = addCustomerNote(bizId, activeCustomer.id, auth.userId!, noteBody);
+                        if (!res.ok) {
+                          setNoteError(res.error);
+                          return;
+                        }
+                        setNoteBody("");
+                        setNotice("Customer note saved.");
+                        return;
+                      }
+                      setBusy(true);
+                      try {
+                        const res = await addCustomerNoteRemote(bizId, activeCustomer.id, noteBody);
+                        if (!res.ok) {
+                          setNoteError(res.error);
+                          return;
+                        }
+                        setNoteBody("");
+                        setNotice("Customer note saved.");
+                      } finally {
+                        setBusy(false);
+                      }
                     }}
                   >
                     <textarea
@@ -191,8 +220,9 @@ export default function WorkspaceCustomersPage() {
                       placeholder="Add internal customer note..."
                       style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 12, padding: 10, minHeight: 72 }}
                     />
-                    <Button type="submit" small>
-                      Save note
+                    {noteError ? <p className="error" style={{ margin: 0 }}>{noteError}</p> : null}
+                    <Button type="submit" small disabled={busy}>
+                      {busy ? "Saving…" : "Save note"}
                     </Button>
                   </form>
                 </div>

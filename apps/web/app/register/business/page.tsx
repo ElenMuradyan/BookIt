@@ -67,6 +67,7 @@ export default function BusinessRegisterPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState("");
   const [signInRequired, setSignInRequired] = useState(false);
+  const [duplicateConflict, setDuplicateConflict] = useState(false);
   const [autoLoginNotice, setAutoLoginNotice] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [businessId, setBusinessId] = useState("");
@@ -189,6 +190,7 @@ export default function BusinessRegisterPage() {
             setErrors({});
             setFormError("");
             setSignInRequired(false);
+            setDuplicateConflict(false);
             setAutoLoginNotice("");
             setSubmitting(true);
             try {
@@ -198,6 +200,7 @@ export default function BusinessRegisterPage() {
                   setErrors(result.fieldErrors ?? {});
                   setFormError(result.error);
                   setSignInRequired(result.status === 401);
+                  setDuplicateConflict(result.status === 409);
                   return;
                 }
                 if (result.data.token) {
@@ -213,6 +216,7 @@ export default function BusinessRegisterPage() {
                 setErrors(result.fieldErrors ?? {});
                 setFormError(result.error);
                 setSignInRequired(result.status === 401);
+                setDuplicateConflict(result.status === 409);
                 return;
               }
               if (result.data.session) {
@@ -408,6 +412,18 @@ export default function BusinessRegisterPage() {
                       Business Sign In
                     </Link>
                   </div>
+                </div>
+              ) : null}
+              {duplicateConflict ? (
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  {auth.workspace ? (
+                    <Link className="btn small" href="/workspace">
+                      Open Business Workspace
+                    </Link>
+                  ) : null}
+                  <Link className="btn ghost small" href="/login/business">
+                    Business Sign In
+                  </Link>
                 </div>
               ) : null}
             </div>

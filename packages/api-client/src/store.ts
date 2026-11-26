@@ -323,6 +323,25 @@ export function submitBusinessApplication(
       next.carts.push({ id: nid("cart"), userId: ownerId!, items: [], updatedAt: now });
     });
     passwords.set(ownerEmail, parsed.data.ownerPassword!);
+  } else {
+    const normName = parsed.data.businessName.trim().toLowerCase();
+    const normLegal = parsed.data.legalName.trim().toLowerCase();
+    const normCity = parsed.data.city.trim().toLowerCase();
+    const duplicate = state.businesses.find(
+      (b) =>
+        b.ownerUserId === ownerId &&
+        b.status !== "rejected" &&
+        b.name.trim().toLowerCase() === normName &&
+        b.legalName.trim().toLowerCase() === normLegal &&
+        b.city.trim().toLowerCase() === normCity,
+    );
+    if (duplicate) {
+      return {
+        ok: false,
+        error: "An active or pending application already exists for this business",
+        status: 409,
+      };
+    }
   }
   draft((next) => {
     next.businesses.push({
@@ -1077,6 +1096,26 @@ export function setMemberRole(businessId: string, membershipId: string, role: Me
   return { ok: true, data: undefined };
 }
 
+export function setMemberStatus(
+  businessId: string,
+  membershipId: string,
+  status: "active" | "suspended",
+): ActionResult {
+  const target = state.memberships.find((item) => item.id === membershipId && item.businessId === businessId);
+  if (!target) return fail("Membership not found");
+  if (target.role === "owner") return fail("Cannot suspend primary owner");
+  draft((next) => {
+    const row = next.memberships.find((item) => item.id === membershipId && item.businessId === businessId);
+    if (row && row.role !== "owner") row.status = status;
+  });
+  syncRemote(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/team/${encodeURIComponent(membershipId)}/status`,
+    "PATCH",
+    { status },
+  );
+  return { ok: true, data: undefined };
+}
+
 export function addCustomerNote(businessId: string, customerId: string, authorId: string, body: string): ActionResult {
   if (body.trim().length < 2) return fail("Write a note");
   draft((next) => {
@@ -1291,9 +1330,11 @@ export function markAllBusinessNotificationsRead(businessId: string): ActionResu
 }
 
 export function changePlan(businessId: string, planId: AppState["plans"][number]["id"]): ActionResult {
+  const plan = state.plans.find((p) => p.id === planId);
   draft((next) => {
     const row = next.subscriptions.find((item) => item.businessId === businessId);
     const now = new Date().toISOString();
+    const isTrialing = !row || row.status === "trialing";
     if (row) {
       row.planId = planId;
       row.status = row.status === "trialing" ? "trialing" : "active";
@@ -1311,9 +1352,9 @@ export function changePlan(businessId: string, planId: AppState["plans"][number]
     next.invoices.unshift({
       id: nid("inv"),
       businessId,
-      amount: 0,
+      amount: isTrialing ? 0 : (plan?.monthlyPrice ?? 0),
       status: "open",
-      description: `Plan change to ${planId} (billing not charged in this preview)`,
+      description: `Plan change to ${plan?.name ?? planId}${isTrialing ? " (trial)" : ""}`,
       issuedAt: now,
     });
   });

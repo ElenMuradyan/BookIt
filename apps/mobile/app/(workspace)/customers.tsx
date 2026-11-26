@@ -1,4 +1,4 @@
-import { addCustomerNote, businessAppointments, displayUser, useBookItState } from "@bookit/api-client";
+import { addCustomerNote, addCustomerNoteRemote, businessAppointments, displayUser, useBookItState, usingMocks } from "@bookit/api-client";
 import { can, formatDate } from "@bookit/utils";
 import React, { useState } from "react";
 import { Text, View } from "react-native";
@@ -14,6 +14,8 @@ export default function WorkspaceCustomersScreen() {
   const [filter, setFilter] = useState<"all" | "frequent">("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [noteBody, setNoteBody] = useState("");
+  const [noteError, setNoteError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (!auth.workspace || !auth.userId) return null;
   const bizId = auth.workspace.businessId;
@@ -46,7 +48,15 @@ export default function WorkspaceCustomersScreen() {
         const notes = state.notes.filter((n) => n.businessId === bizId && n.customerId === r.cid);
         const open = expandedId === r.cid;
         return (
-          <Card key={r.cid} onPress={() => setExpandedId(open ? null : r.cid)} style={{ gap: 8 }}>
+          <Card
+            key={r.cid}
+            onPress={() => {
+              setExpandedId(open ? null : r.cid);
+              setNoteBody("");
+              setNoteError("");
+            }}
+            style={{ gap: 8 }}
+          >
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
               <Avatar name={r.name} uri={r.user?.avatarUrl} size={44} />
               <View style={{ flex: 1 }}>
@@ -66,13 +76,34 @@ export default function WorkspaceCustomersScreen() {
                 {canNotes ? (
                   <View style={{ gap: 6 }}>
                     <InputField label="Add internal note" value={noteBody} onChangeText={setNoteBody} />
+                    {noteError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{noteError}</Text> : null}
                     <Button
-                      label="Save Note"
+                      label={busy ? "Saving..." : "Save Note"}
                       tone="soft"
                       small
-                      onPress={() => {
-                        const res = addCustomerNote(bizId, r.cid, auth.userId!, noteBody);
-                        if (res.ok) setNoteBody("");
+                      disabled={busy}
+                      onPress={async () => {
+                        setNoteError("");
+                        if (usingMocks()) {
+                          const res = addCustomerNote(bizId, r.cid, auth.userId!, noteBody);
+                          if (!res.ok) {
+                            setNoteError(res.error);
+                            return;
+                          }
+                          setNoteBody("");
+                          return;
+                        }
+                        setBusy(true);
+                        try {
+                          const res = await addCustomerNoteRemote(bizId, r.cid, noteBody);
+                          if (!res.ok) {
+                            setNoteError(res.error);
+                            return;
+                          }
+                          setNoteBody("");
+                        } finally {
+                          setBusy(false);
+                        }
                       }}
                     />
                   </View>

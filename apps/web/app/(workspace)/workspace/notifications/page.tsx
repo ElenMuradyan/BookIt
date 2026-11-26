@@ -3,8 +3,11 @@
 import {
   businessNotifications,
   markAllBusinessNotificationsRead,
+  markAllBusinessNotificationsReadRemote,
   markBusinessNotificationRead,
+  markBusinessNotificationReadRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { formatDateTime } from "@bookit/utils";
 import Link from "next/link";
@@ -18,6 +21,8 @@ export default function WorkspaceNotificationsPage() {
   const auth = useAuth();
   const state = useBookItState();
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("all");
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   if (!auth.workspace) return null;
   const bizId = auth.workspace.businessId;
@@ -29,6 +34,36 @@ export default function WorkspaceNotificationsPage() {
     return true;
   });
 
+  async function handleMarkAll() {
+    setErrorMsg("");
+    if (usingMocks()) {
+      markAllBusinessNotificationsRead(bizId);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await markAllBusinessNotificationsReadRemote(bizId);
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleMarkOne(id: string) {
+    setErrorMsg("");
+    if (usingMocks()) {
+      markBusinessNotificationRead(bizId, id);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await markBusinessNotificationReadRemote(bizId, id);
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="stack" style={{ gap: 18 }}>
       <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
@@ -39,11 +74,13 @@ export default function WorkspaceNotificationsPage() {
           </p>
         </div>
         {unreadCount > 0 ? (
-          <Button tone="soft" small onClick={() => markAllBusinessNotificationsRead(bizId)}>
-            Mark all read
+          <Button tone="soft" small disabled={busy} onClick={() => void handleMarkAll()}>
+            {busy ? "Updating…" : "Mark all read"}
           </Button>
         ) : null}
       </div>
+
+      {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
 
       <div className="tabs">
         {FILTERS.map((f) => (
@@ -87,13 +124,13 @@ export default function WorkspaceNotificationsPage() {
                     href={targetHref}
                     className="btn soft small"
                     onClick={() => {
-                      if (!item.read) markBusinessNotificationRead(bizId, item.id);
+                      if (!item.read) void handleMarkOne(item.id);
                     }}
                   >
                     Open
                   </Link>
                   {!item.read ? (
-                    <Button tone="ghost" small onClick={() => markBusinessNotificationRead(bizId, item.id)}>
+                    <Button tone="ghost" small disabled={busy} onClick={() => void handleMarkOne(item.id)}>
                       Mark read
                     </Button>
                   ) : null}
