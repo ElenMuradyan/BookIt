@@ -283,6 +283,10 @@ async def update_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
     data = payload.model_dump(exclude_unset=True)
+    new_start = data.get("start_at", ses.start_at)
+    new_end = data.get("end_at", ses.end_at)
+    if new_end <= new_start:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="endAt must be after startAt")
     if "total_capacity" in data and data["total_capacity"] < ses.reserved_count:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -304,16 +308,26 @@ async def get_session_details(
     user: Annotated[User | None, Depends(get_optional_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    await ensure_business_visible(db, business_id, user)
+    business, _ = await ensure_business_visible(db, business_id, user)
     ses = (
         await db.execute(
             select(EventSession)
-            .options(selectinload(EventSession.tiers))
+            .options(selectinload(EventSession.tiers), selectinload(EventSession.offering))
             .where(EventSession.id == session_id, EventSession.business_id == business_id)
         )
     ).scalar_one_or_none()
-    if not ses:
+    if not ses or not ses.offering:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if not ses.offering.active:
+        can_view_inactive = False
+        if user:
+            if user.is_platform_admin or business.owner_user_id == user.id:
+                can_view_inactive = True
+            else:
+                membership = await get_active_membership(db, user.id, business.id)
+                can_view_inactive = bool(membership and has_permission(membership.role, "events.manage"))
+        if not can_view_inactive:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return serialize_session(ses)
 
 

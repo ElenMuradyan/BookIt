@@ -1,7 +1,10 @@
 "use client";
 
 import {
+  acceptWorkspaceInviteRemote,
   addAddress,
+  addAddressRemote,
+  declineWorkspaceInviteRemote,
   resetDemoState,
   setPersonalizationConsent,
   setSpendingVisibility,
@@ -9,6 +12,7 @@ import {
   updateNotificationPrefs,
   updateProfile,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { customerSettingSections, roleLabels } from "@bookit/ui";
 import { fullName, initials } from "@bookit/utils";
@@ -30,6 +34,8 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
   const router = useRouter();
   const [section, setSection] = useState(initialSection);
   const [notice, setNotice] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [busy, setBusy] = useState(false);
   const profile = state.customerProfiles.find((p) => p.userId === user.id);
   const addresses = state.addresses.filter((a) => a.userId === user.id);
 
@@ -85,24 +91,92 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                 <span className="tiny">Super Admin Console</span>
               </Link>
             ) : null}
-            {auth.workspaces.map((ws) => (
-              <button
-                key={ws.businessId}
-                type="button"
-                className="select-card stack"
-                style={{ gap: 4 }}
-                onClick={() => {
-                  auth.setWorkspaceId(ws.businessId);
-                  router.push("/workspace");
-                }}
-              >
-                <strong>{ws.businessName}</strong>
-                <span className="tiny">
-                  {roleLabels[ws.role]} · {ws.city}
-                </span>
-              </button>
-            ))}
+            {auth.workspaces.map((ws) =>
+              ws.status === "invited" ? (
+                <div key={ws.businessId} className="select-card stack" style={{ gap: 8 }}>
+                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                    <strong>{ws.businessName}</strong>
+                    <Badge tone="warning">Invited</Badge>
+                  </div>
+                  <span className="tiny">
+                    {roleLabels[ws.role]} · {ws.city}
+                  </span>
+                  <div className="row" style={{ gap: 8 }}>
+                    <Button
+                      small
+                      disabled={busy}
+                      onClick={async () => {
+                        setErrorMsg("");
+                        setNotice("");
+                        if (usingMocks()) {
+                          setNotice("Workspace invites are managed via the live backend.");
+                          return;
+                        }
+                        setBusy(true);
+                        try {
+                          const res = await acceptWorkspaceInviteRemote(ws.businessId);
+                          if (!res.ok) {
+                            setErrorMsg(res.error);
+                            return;
+                          }
+                          await auth.refreshSession();
+                          setNotice(`Joined ${ws.businessName}.`);
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Accept
+                    </Button>
+                    <Button
+                      tone="ghost"
+                      small
+                      disabled={busy}
+                      onClick={async () => {
+                        setErrorMsg("");
+                        setNotice("");
+                        if (usingMocks()) {
+                          setNotice("Workspace invites are managed via the live backend.");
+                          return;
+                        }
+                        setBusy(true);
+                        try {
+                          const res = await declineWorkspaceInviteRemote(ws.businessId);
+                          if (!res.ok) {
+                            setErrorMsg(res.error);
+                            return;
+                          }
+                          await auth.refreshSession();
+                          setNotice(`Declined invitation from ${ws.businessName}.`);
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Decline
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  key={ws.businessId}
+                  type="button"
+                  className="select-card stack"
+                  style={{ gap: 4 }}
+                  onClick={() => {
+                    auth.setWorkspaceId(ws.businessId);
+                    router.push("/workspace");
+                  }}
+                >
+                  <strong>{ws.businessName}</strong>
+                  <span className="tiny">
+                    {roleLabels[ws.role]} · {ws.city}
+                  </span>
+                </button>
+              ),
+            )}
           </div>
+          {errorMsg ? <p className="error" style={{ margin: 0 }}>{errorMsg}</p> : null}
         </section>
       ) : null}
 
@@ -224,10 +298,30 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
               ))}
               <form
                 className="stack"
-                onSubmit={(e) => {
+                onSubmit={async (e) => {
                   e.preventDefault();
-                  const res = addAddress(user.id, addr);
-                  setNotice(res.ok ? "Address added" : res.error);
+                  setErrorMsg("");
+                  setNotice("");
+                  if (usingMocks()) {
+                    const res = addAddress(user.id, addr);
+                    if (!res.ok) setErrorMsg(res.error);
+                    else {
+                      setNotice("Address added");
+                      setAddr((prev) => ({ ...prev, line1: "" }));
+                    }
+                    return;
+                  }
+                  setBusy(true);
+                  try {
+                    const res = await addAddressRemote(addr);
+                    if (!res.ok) setErrorMsg(res.error);
+                    else {
+                      setNotice("Address added");
+                      setAddr((prev) => ({ ...prev, line1: "" }));
+                    }
+                  } finally {
+                    setBusy(false);
+                  }
                 }}
               >
                 <div className="grid-2">
@@ -244,8 +338,11 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
                     <input value={addr.postalCode} onChange={(e) => setAddr({ ...addr, postalCode: e.target.value })} />
                   </Field>
                 </div>
+                {errorMsg ? <p className="error">{errorMsg}</p> : null}
                 <div>
-                  <Button type="submit">Add address</Button>
+                  <Button type="submit" disabled={busy}>
+                    {busy ? "Saving…" : "Add address"}
+                  </Button>
                 </div>
               </form>
             </div>

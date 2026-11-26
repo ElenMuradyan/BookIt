@@ -1,10 +1,13 @@
 import {
   addReview,
+  addReviewRemote,
   displayUser,
+  fetchAvailabilityRemote,
   rescheduleAppointment,
   rescheduleAppointmentRemote,
   resourcesForBusiness,
   sendBusinessMessage,
+  sendBusinessMessageRemote,
   setAppointmentStatus,
   setAppointmentStatusRemote,
   setUniversalBookingStatus,
@@ -24,9 +27,10 @@ import {
   formatDate,
   formatDateTime,
   formatMoney,
+  todayInput,
 } from "@bookit/utils";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, EmptyState, InputField, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
@@ -47,9 +51,16 @@ export default function CustomerBookingDetailScreen() {
   const emp = apt ? state.employees.find((e) => e.id === apt.employeeId) : undefined;
   const resources = bizId ? resourcesForBusiness(state, bizId, true) : [];
 
+  const mockMode = usingMocks();
+  const today = useMemo(() => (mockMode ? DEMO_TODAY : todayInput()), [mockMode]);
+
   const [showReschedule, setShowReschedule] = useState(false);
-  const [newDate, setNewDate] = useState(apt ? apt.start.slice(0, 10) : addDays(DEMO_TODAY, 1));
+  const [newDate, setNewDate] = useState(() => (apt ? apt.start.slice(0, 10) : addDays(today, 1)));
   const [newTime, setNewTime] = useState("");
+  const [remoteSlots, setRemoteSlots] = useState<string[] | null>(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState("");
+  const [slotsRetry, setSlotsRetry] = useState(0);
   const [showReview, setShowReview] = useState(false);
   const [rating, setRating] = useState(5);
   const [title, setTitle] = useState("");
@@ -58,10 +69,39 @@ export default function CustomerBookingDetailScreen() {
   const [messageBody, setMessageBody] = useState("");
   const [notice, setNotice] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [modalError, setModalError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const dateDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(DEMO_TODAY, i)), []);
+  const dateDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(today, i)), [today]);
+
+  useEffect(() => {
+    if (!showReschedule || !apt || !biz) return;
+    if (mockMode) {
+      setRemoteSlots(null);
+      setSlotsError("");
+      setSlotsLoading(false);
+      return;
+    }
+    let active = true;
+    setSlotsLoading(true);
+    setSlotsError("");
+    void fetchAvailabilityRemote(biz.id, apt.serviceId, newDate, apt.employeeId).then((res) => {
+      if (!active) return;
+      setSlotsLoading(false);
+      if (res.ok) {
+        setRemoteSlots(res.data);
+      } else {
+        setRemoteSlots([]);
+        setSlotsError(res.error);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [showReschedule, apt, biz, newDate, mockMode, slotsRetry]);
+
   const openSlots = useMemo(() => {
+    if (!mockMode) return remoteSlots ?? [];
     if (!apt || !biz || !svc) return [];
     return availableSlots({
       date: newDate,
@@ -73,7 +113,7 @@ export default function CustomerBookingDetailScreen() {
       blocked: biz.blocked,
       employeeId: apt.employeeId,
     });
-  }, [apt, biz, svc, newDate, state.employees, state.appointments]);
+  }, [mockMode, remoteSlots, apt, biz, svc, newDate, state.employees, state.appointments]);
 
   // Universal booking detail view
   if (!apt && ub) {
@@ -186,7 +226,7 @@ export default function CustomerBookingDetailScreen() {
             />
           ) : null}
           <View style={{ flexDirection: "row", gap: 10 }}>
-            <Button label="Message Business" tone="ghost" style={{ flex: 1 }} onPress={() => setShowMessage(true)} />
+            <Button label="Message Business" tone="ghost" style={{ flex: 1 }} onPress={() => { setModalError(""); setShowMessage(true); }} />
             <Button
               label="Book Again"
               tone="ghost"
@@ -201,18 +241,33 @@ export default function CustomerBookingDetailScreen() {
             <Card style={{ gap: 12 }}>
               <Text style={{ color: colors.text, fontSize: 18, fontWeight: "800" }}>Message {biz?.name}</Text>
               <InputField label="Message" value={messageBody} onChangeText={setMessageBody} multiline placeholder="Question or update..." />
+              {modalError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{modalError}</Text> : null}
               <View style={{ flexDirection: "row", gap: 10 }}>
                 <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowMessage(false)} />
                 <Button
-                  label="Send"
+                  label={busy ? "Sending..." : "Send"}
+                  disabled={busy}
                   style={{ flex: 1 }}
-                  onPress={() => {
-                    if (!auth.userId) return;
-                    const res = sendBusinessMessage(auth.userId, ub.businessId, messageBody);
-                    if (res.ok) {
+                  onPress={async () => {
+                    if (!auth.userId) {
+                      setModalError("Please sign in to send a message.");
+                      return;
+                    }
+                    setModalError("");
+                    setBusy(true);
+                    try {
+                      const res = mockMode
+                        ? sendBusinessMessage(auth.userId, ub.businessId, messageBody)
+                        : await sendBusinessMessageRemote(ub.businessId, messageBody);
+                      if (!res.ok) {
+                        setModalError(res.error);
+                        return;
+                      }
                       setNotice("Message sent.");
                       setMessageBody("");
                       setShowMessage(false);
+                    } finally {
+                      setBusy(false);
                     }
                   }}
                 />
@@ -296,7 +351,8 @@ export default function CustomerBookingDetailScreen() {
               style={{ flex: 1 }}
               onPress={() => {
                 setErrorMsg("");
-                setNewDate(apt.start.slice(0, 10) || addDays(DEMO_TODAY, 1));
+                setModalError("");
+                setNewDate(apt.start.slice(0, 10) || addDays(today, 1));
                 setShowReschedule(true);
               }}
             />
@@ -309,7 +365,7 @@ export default function CustomerBookingDetailScreen() {
                 setErrorMsg("");
                 setBusy(true);
                 try {
-                  const res = usingMocks()
+                  const res = mockMode
                     ? setAppointmentStatus(apt.id, "cancelled", auth.userId!)
                     : await setAppointmentStatusRemote(apt.id, "cancelled", "Customer cancelled");
                   if (!res.ok) {
@@ -326,11 +382,11 @@ export default function CustomerBookingDetailScreen() {
         ) : null}
 
         {apt.status === "completed" ? (
-          <Button label="Leave a Review" tone="soft" onPress={() => setShowReview(true)} />
+          <Button label="Leave a Review" tone="soft" onPress={() => { setModalError(""); setShowReview(true); }} />
         ) : null}
 
         <View style={{ flexDirection: "row", gap: 10 }}>
-          <Button label="Message Business" tone="ghost" style={{ flex: 1 }} onPress={() => setShowMessage(true)} />
+          <Button label="Message Business" tone="ghost" style={{ flex: 1 }} onPress={() => { setModalError(""); setShowMessage(true); }} />
           <Button
             label="Book Again"
             tone="ghost"
@@ -374,7 +430,14 @@ export default function CustomerBookingDetailScreen() {
                 );
               })}
             </ScrollView>
-            {openSlots.length === 0 ? (
+            {slotsLoading ? (
+              <Text style={{ color: colors.muted, fontSize: 13 }}>Loading available times...</Text>
+            ) : slotsError ? (
+              <View style={{ gap: 8 }}>
+                <Text style={{ color: colors.danger, fontSize: 13 }}>{slotsError}</Text>
+                <Button label="Retry" tone="soft" small onPress={() => setSlotsRetry((n) => n + 1)} />
+              </View>
+            ) : openSlots.length === 0 ? (
               <Text style={{ color: colors.muted, fontSize: 13 }}>No open times on this date. Pick another day.</Text>
             ) : (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -415,7 +478,7 @@ export default function CustomerBookingDetailScreen() {
                   setErrorMsg("");
                   setBusy(true);
                   try {
-                    const res = usingMocks()
+                    const res = mockMode
                       ? rescheduleAppointment(apt.id, newDate, chosenSlot, auth.userId)
                       : await rescheduleAppointmentRemote(apt.id, newDate, chosenSlot);
                     if (!res.ok) {
@@ -445,26 +508,47 @@ export default function CustomerBookingDetailScreen() {
             </View>
             <InputField label="Headline" value={title} onChangeText={setTitle} />
             <InputField label="Experience" value={body} onChangeText={setBody} multiline />
+            {modalError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{modalError}</Text> : null}
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowReview(false)} />
               <Button
-                label="Submit"
+                label={busy ? "Submitting..." : "Submit"}
+                disabled={busy}
                 style={{ flex: 1 }}
-                onPress={() => {
-                  if (!auth.userId) return;
-                  const res = addReview({
-                    authorId: auth.userId,
-                    businessId: apt.businessId,
-                    appointmentId: apt.id,
-                    rating,
-                    title,
-                    body,
-                  });
-                  if (res.ok) {
+                onPress={async () => {
+                  if (!auth.userId) {
+                    setModalError("Please sign in to publish a review.");
+                    return;
+                  }
+                  setModalError("");
+                  setBusy(true);
+                  try {
+                    const res = mockMode
+                      ? addReview({
+                          authorId: auth.userId,
+                          businessId: apt.businessId,
+                          appointmentId: apt.id,
+                          rating,
+                          title,
+                          body,
+                        })
+                      : await addReviewRemote({
+                          businessId: apt.businessId,
+                          appointmentId: apt.id,
+                          rating,
+                          title,
+                          body,
+                        });
+                    if (!res.ok) {
+                      setModalError(res.error);
+                      return;
+                    }
                     setNotice("Review published.");
                     setTitle("");
                     setBody("");
                     setShowReview(false);
+                  } finally {
+                    setBusy(false);
                   }
                 }}
               />
@@ -478,18 +562,33 @@ export default function CustomerBookingDetailScreen() {
           <Card style={{ gap: 12 }}>
             <Text style={{ color: colors.text, fontSize: 18, fontWeight: "800" }}>Message {biz?.name}</Text>
             <InputField label="Message" value={messageBody} onChangeText={setMessageBody} multiline placeholder="Question or arrival update..." />
+            {modalError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{modalError}</Text> : null}
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowMessage(false)} />
               <Button
-                label="Send"
+                label={busy ? "Sending..." : "Send"}
+                disabled={busy}
                 style={{ flex: 1 }}
-                onPress={() => {
-                  if (!auth.userId) return;
-                  const res = sendBusinessMessage(auth.userId, apt.businessId, messageBody);
-                  if (res.ok) {
+                onPress={async () => {
+                  if (!auth.userId) {
+                    setModalError("Please sign in to send a message.");
+                    return;
+                  }
+                  setModalError("");
+                  setBusy(true);
+                  try {
+                    const res = mockMode
+                      ? sendBusinessMessage(auth.userId, apt.businessId, messageBody)
+                      : await sendBusinessMessageRemote(apt.businessId, messageBody);
+                    if (!res.ok) {
+                      setModalError(res.error);
+                      return;
+                    }
                     setNotice("Message sent.");
                     setMessageBody("");
                     setShowMessage(false);
+                  } finally {
+                    setBusy(false);
                   }
                 }}
               />

@@ -1,6 +1,6 @@
 "use client";
 
-import { addAddress, cartFor, checkout, checkoutRemote, useBookItState, usingMocks } from "@bookit/api-client";
+import { addAddress, addAddressRemote, cartFor, checkout, checkoutRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import type { PaymentMethod } from "@bookit/types";
 import { formatMoney } from "@bookit/utils";
 import Link from "next/link";
@@ -23,6 +23,7 @@ function CheckoutContent() {
   const [showNewAddress, setShowNewAddress] = useState(addresses.length === 0);
   const [addrForm, setAddrForm] = useState({ label: "Home", line1: "", city: "Seattle", region: "WA", postalCode: "98101", country: "United States" });
   const [error, setError] = useState("");
+  const [savingAddr, setSavingAddr] = useState(false);
   const [orderIds, setOrderIds] = useState<string[] | null>(null);
 
   if (!auth.user) return null;
@@ -109,16 +110,31 @@ function CheckoutContent() {
                 <Button
                   tone="soft"
                   small
-                  onClick={() => {
-                    const res = addAddress(userId, addrForm);
-                    if (!res.ok) setError(res.error);
-                    else {
-                      setShowNewAddress(false);
-                      setError("");
+                  disabled={savingAddr}
+                  onClick={async () => {
+                    setError("");
+                    if (usingMocks()) {
+                      const res = addAddress(userId, addrForm);
+                      if (!res.ok) setError(res.error);
+                      else {
+                        setShowNewAddress(false);
+                      }
+                      return;
+                    }
+                    setSavingAddr(true);
+                    try {
+                      const res = await addAddressRemote(addrForm);
+                      if (!res.ok) setError(res.error);
+                      else {
+                        setAddressId(res.data.id);
+                        setShowNewAddress(false);
+                      }
+                    } finally {
+                      setSavingAddr(false);
                     }
                   }}
                 >
-                  Save address
+                  {savingAddr ? "Saving…" : "Save address"}
                 </Button>
               </div>
             ) : null}
@@ -147,7 +163,7 @@ function CheckoutContent() {
               {(
                 [
                   ["card_token_pending", "Card token (API pending)"],
-                  ["wallet", "BookIt demo wallet"],
+                  ["wallet", usingMocks() ? "BookIt demo wallet" : "Wallet (pending verification)"],
                   ["pay_on_pickup", "Pay on pickup"],
                 ] as const
               ).map(([m, label]) => (

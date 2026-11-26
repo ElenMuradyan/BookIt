@@ -1,4 +1,12 @@
-import { resetDemoState, setPersonalizationConsent, updateProfile, useBookItState } from "@bookit/api-client";
+import {
+  acceptWorkspaceInviteRemote,
+  declineWorkspaceInviteRemote,
+  resetDemoState,
+  setPersonalizationConsent,
+  updateProfile,
+  useBookItState,
+  usingMocks,
+} from "@bookit/api-client";
 import { roleLabels } from "@bookit/ui";
 import { fullName } from "@bookit/utils";
 import { useRouter } from "expo-router";
@@ -44,6 +52,8 @@ function AccountBody({
   const [gender, setGender] = useState(user.gender ?? "");
   const [dateOfBirth, setDateOfBirth] = useState(user.dateOfBirth ?? "");
   const [notice, setNotice] = useState("");
+  const [inviteError, setInviteError] = useState("");
+  const [inviteBusy, setInviteBusy] = useState(false);
   const profile = state.customerProfiles.find((p) => p.userId === user.id);
   const addresses = state.addresses.filter((a) => a.userId === user.id);
 
@@ -70,18 +80,86 @@ function AccountBody({
               onPress={() => router.replace("/(admin)")}
             />
           ) : null}
-          {auth.workspaces.map((ws) => (
-            <Button
-              key={ws.businessId}
-              label={`${ws.businessName} (${roleLabels[ws.role]})`}
-              tone="ghost"
-              icon="storefront-outline"
-              onPress={async () => {
-                await auth.setWorkspaceId(ws.businessId);
-                router.replace("/(workspace)");
-              }}
-            />
-          ))}
+          {auth.workspaces.map((ws) =>
+            ws.status === "invited" ? (
+              <Card key={ws.businessId} style={{ gap: 8, backgroundColor: colors.bgElevated }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ color: colors.text, fontWeight: "700", fontSize: 14 }}>{ws.businessName}</Text>
+                  <Badge label="Invited" tone="warning" />
+                </View>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  {roleLabels[ws.role]} · {ws.city}
+                </Text>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <Button
+                    label="Accept"
+                    small
+                    disabled={inviteBusy}
+                    style={{ flex: 1 }}
+                    onPress={async () => {
+                      setInviteError("");
+                      setNotice("");
+                      if (usingMocks()) {
+                        setNotice("Workspace invites are managed via the live backend.");
+                        return;
+                      }
+                      setInviteBusy(true);
+                      try {
+                        const res = await acceptWorkspaceInviteRemote(ws.businessId);
+                        if (!res.ok) {
+                          setInviteError(res.error);
+                          return;
+                        }
+                        await auth.refreshSession();
+                        setNotice(`Joined ${ws.businessName}.`);
+                      } finally {
+                        setInviteBusy(false);
+                      }
+                    }}
+                  />
+                  <Button
+                    label="Decline"
+                    tone="ghost"
+                    small
+                    disabled={inviteBusy}
+                    style={{ flex: 1 }}
+                    onPress={async () => {
+                      setInviteError("");
+                      setNotice("");
+                      if (usingMocks()) {
+                        setNotice("Workspace invites are managed via the live backend.");
+                        return;
+                      }
+                      setInviteBusy(true);
+                      try {
+                        const res = await declineWorkspaceInviteRemote(ws.businessId);
+                        if (!res.ok) {
+                          setInviteError(res.error);
+                          return;
+                        }
+                        await auth.refreshSession();
+                        setNotice(`Declined invitation from ${ws.businessName}.`);
+                      } finally {
+                        setInviteBusy(false);
+                      }
+                    }}
+                  />
+                </View>
+              </Card>
+            ) : (
+              <Button
+                key={ws.businessId}
+                label={`${ws.businessName} (${roleLabels[ws.role]})`}
+                tone="ghost"
+                icon="storefront-outline"
+                onPress={async () => {
+                  await auth.setWorkspaceId(ws.businessId);
+                  router.replace("/(workspace)");
+                }}
+              />
+            ),
+          )}
+          {inviteError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{inviteError}</Text> : null}
         </Card>
       ) : null}
 

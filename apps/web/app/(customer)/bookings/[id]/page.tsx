@@ -2,11 +2,14 @@
 
 import {
   addReview,
+  addReviewRemote,
   displayUser,
+  fetchAvailabilityRemote,
   rescheduleAppointment,
   rescheduleAppointmentRemote,
   resourcesForBusiness,
   sendBusinessMessage,
+  sendBusinessMessageRemote,
   setAppointmentStatus,
   setAppointmentStatusRemote,
   setUniversalBookingStatus,
@@ -24,9 +27,10 @@ import {
   DEMO_TODAY,
   formatDateTime,
   formatMoney,
+  todayInput,
 } from "@bookit/utils";
 import Link from "next/link";
-import { use, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import { Badge, Button, Empty, Field, Modal } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
@@ -36,10 +40,15 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
   const state = useBookItState();
   const apt = state.appointments.find((a) => a.id === id);
   const ub = universalBookingById(state, id);
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
 
   const [showReschedule, setShowReschedule] = useState(false);
-  const [newDate, setNewDate] = useState(apt ? apt.start.slice(0, 10) : addDays(DEMO_TODAY, 1));
+  const [newDate, setNewDate] = useState(apt ? apt.start.slice(0, 10) : addDays(today, 1));
   const [newTime, setNewTime] = useState("");
+  const [remoteSlots, setRemoteSlots] = useState<string[] | null>(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState("");
+  const [slotsRetryKey, setSlotsRetryKey] = useState(0);
   const [showReview, setShowReview] = useState(false);
   const [rating, setRating] = useState(5);
   const [title, setTitle] = useState("");
@@ -48,6 +57,7 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
   const [messageBody, setMessageBody] = useState("");
   const [notice, setNotice] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [modalError, setModalError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const bizId = apt?.businessId ?? ub?.businessId ?? "";
@@ -56,8 +66,33 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
   const emp = apt ? state.employees.find((e) => e.id === apt.employeeId) : undefined;
   const resources = bizId ? resourcesForBusiness(state, bizId, true) : [];
 
-  const openSlots = useMemo(() => {
-    if (!apt || !biz || !svc) return [];
+  useEffect(() => {
+    if (!showReschedule || !apt || usingMocks()) {
+      setRemoteSlots(null);
+      setSlotsError("");
+      setSlotsLoading(false);
+      return;
+    }
+    let active = true;
+    setSlotsLoading(true);
+    setSlotsError("");
+    void fetchAvailabilityRemote(apt.businessId, apt.serviceId, newDate, apt.employeeId).then((res) => {
+      if (!active) return;
+      setSlotsLoading(false);
+      if (res.ok) {
+        setRemoteSlots(res.data);
+      } else {
+        setRemoteSlots([]);
+        setSlotsError(res.error);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [showReschedule, apt, newDate, slotsRetryKey]);
+
+  const localSlots = useMemo(() => {
+    if (!apt || !biz || !svc || !usingMocks()) return [];
     return availableSlots({
       date: newDate,
       service: svc,
@@ -69,6 +104,8 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
       employeeId: apt.employeeId,
     });
   }, [apt, biz, svc, newDate, state.employees, state.appointments]);
+
+  const openSlots = usingMocks() ? localSlots : (remoteSlots ?? []);
 
   // Universal booking detail view (hotel stay, restaurant table, event tickets, class)
   if (!apt && ub) {
@@ -192,7 +229,13 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
               {busy ? "Cancelling..." : "Cancel booking"}
             </Button>
           ) : null}
-          <Button tone="ghost" onClick={() => setShowMessage(true)}>
+          <Button
+            tone="ghost"
+            onClick={() => {
+              setModalError("");
+              setShowMessage(true);
+            }}
+          >
             Contact business
           </Button>
           <Link href={`/book/${ub.businessId}?model=${ub.bookingModel}`} className="btn ghost">
@@ -204,21 +247,34 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
           <Modal title={`Message ${biz?.name ?? "business"}`} onClose={() => setShowMessage(false)}>
             <form
               className="stack"
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 if (!auth.userId) return;
-                const resMsg = sendBusinessMessage(auth.userId, ub.businessId, messageBody);
-                if (resMsg.ok) {
+                setModalError("");
+                setBusy(true);
+                try {
+                  const resMsg = usingMocks()
+                    ? sendBusinessMessage(auth.userId, ub.businessId, messageBody)
+                    : await sendBusinessMessageRemote(ub.businessId, messageBody);
+                  if (!resMsg.ok) {
+                    setModalError(resMsg.error);
+                    return;
+                  }
                   setNotice("Message sent to business.");
                   setMessageBody("");
                   setShowMessage(false);
+                } finally {
+                  setBusy(false);
                 }
               }}
             >
               <Field label="Message">
                 <textarea value={messageBody} onChange={(e) => setMessageBody(e.target.value)} placeholder="Question or update..." />
               </Field>
-              <Button type="submit">Send message</Button>
+              {modalError ? <p className="error">{modalError}</p> : null}
+              <Button type="submit" disabled={busy}>
+                {busy ? "Sending..." : "Send message"}
+              </Button>
             </form>
           </Modal>
         ) : null}
@@ -285,7 +341,7 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
               tone="soft"
               onClick={() => {
                 setErrorMsg("");
-                setNewDate(apt.start.slice(0, 10) || addDays(DEMO_TODAY, 1));
+                setNewDate(apt.start.slice(0, 10) || addDays(today, 1));
                 setShowReschedule(true);
               }}
             >
@@ -317,11 +373,23 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
           </>
         ) : null}
         {apt.status === "completed" ? (
-          <Button tone="soft" onClick={() => setShowReview(true)}>
+          <Button
+            tone="soft"
+            onClick={() => {
+              setModalError("");
+              setShowReview(true);
+            }}
+          >
             Leave review
           </Button>
         ) : null}
-        <Button tone="ghost" onClick={() => setShowMessage(true)}>
+        <Button
+          tone="ghost"
+          onClick={() => {
+            setModalError("");
+            setShowMessage(true);
+          }}
+        >
           Contact business
         </Button>
         <Link href={`/book/${apt.businessId}?service=${apt.serviceId}`} className="btn ghost">
@@ -365,7 +433,16 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
             </Field>
             <div className="stack" style={{ gap: 6 }}>
               <span className="tiny">Available time slots</span>
-              {openSlots.length === 0 ? (
+              {slotsLoading ? (
+                <p className="muted">Loading available slots...</p>
+              ) : slotsError ? (
+                <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <p className="error" style={{ margin: 0 }}>{slotsError}</p>
+                  <Button tone="soft" small onClick={() => setSlotsRetryKey((k) => k + 1)}>
+                    Retry
+                  </Button>
+                </div>
+              ) : openSlots.length === 0 ? (
                 <p className="muted">No available slots on this date. Pick another day.</p>
               ) : (
                 <div className="chips">
@@ -383,7 +460,7 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
               )}
             </div>
             {errorMsg ? <p className="error">{errorMsg}</p> : null}
-            <Button type="submit" disabled={busy || !selectedSlot}>
+            <Button type="submit" disabled={busy || slotsLoading || !selectedSlot}>
               {busy ? "Saving..." : "Save new time"}
             </Button>
           </form>
@@ -394,22 +471,38 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
         <Modal title="Leave a review" onClose={() => setShowReview(false)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               if (!auth.userId) return;
-              const res = addReview({
-                authorId: auth.userId,
-                businessId: apt.businessId,
-                appointmentId: apt.id,
-                rating,
-                title,
-                body,
-              });
-              if (res.ok) {
+              setModalError("");
+              setBusy(true);
+              try {
+                const res = usingMocks()
+                  ? addReview({
+                      authorId: auth.userId,
+                      businessId: apt.businessId,
+                      appointmentId: apt.id,
+                      rating,
+                      title,
+                      body,
+                    })
+                  : await addReviewRemote({
+                      businessId: apt.businessId,
+                      appointmentId: apt.id,
+                      rating,
+                      title,
+                      body,
+                    });
+                if (!res.ok) {
+                  setModalError(res.error);
+                  return;
+                }
                 setNotice("Review published.");
                 setTitle("");
                 setBody("");
                 setShowReview(false);
+              } finally {
+                setBusy(false);
               }
             }}
           >
@@ -428,7 +521,10 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
             <Field label="Details">
               <textarea value={body} onChange={(e) => setBody(e.target.value)} />
             </Field>
-            <Button type="submit">Submit review</Button>
+            {modalError ? <p className="error">{modalError}</p> : null}
+            <Button type="submit" disabled={busy}>
+              {busy ? "Publishing..." : "Submit review"}
+            </Button>
           </form>
         </Modal>
       ) : null}
@@ -437,21 +533,34 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
         <Modal title={`Message ${biz?.name ?? "business"}`} onClose={() => setShowMessage(false)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               if (!auth.userId) return;
-              const res = sendBusinessMessage(auth.userId, apt.businessId, messageBody);
-              if (res.ok) {
+              setModalError("");
+              setBusy(true);
+              try {
+                const res = usingMocks()
+                  ? sendBusinessMessage(auth.userId, apt.businessId, messageBody)
+                  : await sendBusinessMessageRemote(apt.businessId, messageBody);
+                if (!res.ok) {
+                  setModalError(res.error);
+                  return;
+                }
                 setNotice("Message sent to business.");
                 setMessageBody("");
                 setShowMessage(false);
+              } finally {
+                setBusy(false);
               }
             }}
           >
             <Field label="Message">
               <textarea value={messageBody} onChange={(e) => setMessageBody(e.target.value)} placeholder="Question or update for the provider..." />
             </Field>
-            <Button type="submit">Send message</Button>
+            {modalError ? <p className="error">{modalError}</p> : null}
+            <Button type="submit" disabled={busy}>
+              {busy ? "Sending..." : "Send message"}
+            </Button>
           </form>
         </Modal>
       ) : null}

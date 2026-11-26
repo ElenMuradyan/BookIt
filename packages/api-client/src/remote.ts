@@ -1,4 +1,5 @@
 import type {
+  Address,
   Appointment,
   AppointmentStatus,
   BookingModel,
@@ -9,12 +10,14 @@ import type {
   EventOffering,
   EventSession,
   HotelStayAvailability,
+  Membership,
   MembershipRole,
   PaymentMethod,
   Resource,
   ResourceAvailability,
   ResourceBlock,
   ResourceSearchItem,
+  Review,
   Service,
   SessionAttendee,
   TicketTier,
@@ -27,6 +30,7 @@ import type {
   Workspace,
 } from "@bookit/types";
 import {
+  addressSchema,
   businessApplicationSchema,
   fieldErrors,
   loginSchema,
@@ -34,6 +38,7 @@ import {
   resetConfirmSchema,
   resetRequestSchema,
   resourceBlockSchema,
+  reviewSchema,
   serviceSchema,
   ticketTierSchema,
   type BusinessApplicationInput,
@@ -811,12 +816,42 @@ export async function updateEmployeeAvailabilityRemote(
 export async function createUniversalBookingRemote(
   input: UniversalBookingCreateInput,
 ): Promise<ActionResult<UniversalBooking>> {
+  const { ticketItems, attendeeName, attendeeEmail: _attendeeEmail, ...rest } = input;
+  const trimmedAttendee = attendeeName?.trim();
+  const payload: Record<string, unknown> = {
+    ...rest,
+    idempotencyKey: input.idempotencyKey ?? makeIdempotencyKey("ubk"),
+  };
+
+  if (input.bookingModel === "ticket" || input.bookingModel === "capacity") {
+    if (input.tickets && input.tickets.length > 0) {
+      payload.tickets = input.tickets.map((t) => ({
+        tierId: t.tierId,
+        quantity: t.quantity,
+        attendeeNames:
+          t.attendeeNames && t.attendeeNames.length > 0
+            ? t.attendeeNames
+            : trimmedAttendee
+              ? Array.from({ length: t.quantity }, () => trimmedAttendee)
+              : [],
+      }));
+    } else if (ticketItems && ticketItems.length > 0) {
+      payload.tickets = ticketItems.map((item) => ({
+        tierId: item.tierId,
+        quantity: item.quantity,
+        attendeeNames: trimmedAttendee
+          ? Array.from({ length: item.quantity }, () => trimmedAttendee)
+          : [],
+      }));
+    }
+    if (trimmedAttendee && (!input.attendeeNames || input.attendeeNames.length === 0)) {
+      payload.attendeeNames = [trimmedAttendee];
+    }
+  }
+
   const res = await apiJson<UniversalBooking>("/api/v1/bookings/universal", {
     method: "POST",
-    body: JSON.stringify({
-      ...input,
-      idempotencyKey: input.idempotencyKey ?? makeIdempotencyKey("ubk"),
-    }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   await hydrateFromBackend();
@@ -848,4 +883,83 @@ export async function checkInUniversalQrRemote(
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   await hydrateFromBackend();
   return { ok: true, data: res.data };
+}
+
+export async function addAddressRemote(input: unknown): Promise<ActionResult<Address>> {
+  const parsed = addressSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Check the address", fieldErrors: fieldErrors(parsed.error) };
+  }
+  const res = await apiJson<Address>("/api/v1/users/me/addresses", {
+    method: "POST",
+    body: JSON.stringify(parsed.data),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function sendBusinessMessageRemote(
+  businessId: string,
+  body: string,
+): Promise<ActionResult<undefined>> {
+  const cleaned = body.trim();
+  if (cleaned.length < 2) {
+    return { ok: false, error: "Write a message" };
+  }
+  const res = await apiJson(`/api/v1/businesses/${encodeURIComponent(businessId)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body: cleaned }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function addReviewRemote(input: {
+  businessId: string;
+  appointmentId?: string;
+  productId?: string;
+  rating: number;
+  title: string;
+  body: string;
+}): Promise<ActionResult<Review>> {
+  const parsed = reviewSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Check the review", fieldErrors: fieldErrors(parsed.error) };
+  }
+  const res = await apiJson<Review>("/api/v1/reviews", {
+    method: "POST",
+    body: JSON.stringify({
+      businessId: input.businessId,
+      appointmentId: input.appointmentId,
+      productId: input.productId,
+      rating: parsed.data.rating,
+      title: parsed.data.title,
+      body: parsed.data.body,
+    }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function acceptWorkspaceInviteRemote(businessId: string): Promise<ActionResult<Membership>> {
+  const res = await apiJson<Membership>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/team/accept`,
+    { method: "POST" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function declineWorkspaceInviteRemote(businessId: string): Promise<ActionResult<undefined>> {
+  const res = await apiJson(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/team/decline`,
+    { method: "POST" },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
 }

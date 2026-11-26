@@ -4,6 +4,7 @@ import {
   checkInUniversalQr,
   checkInUniversalQrRemote,
   displayUser,
+  fetchAvailabilityRemote,
   rescheduleAppointment,
   rescheduleAppointmentRemote,
   resourcesForBusiness,
@@ -18,8 +19,8 @@ import {
 } from "@bookit/api-client";
 import type { Appointment, AppointmentStatus, UniversalBookingStatus } from "@bookit/types";
 import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
-import { addDays, availableSlots, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
-import React, { useState } from "react";
+import { addDays, availableSlots, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney, todayInput } from "@bookit/utils";
+import React, { useEffect, useState } from "react";
 import { Modal, ScrollView, Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, Chip, EmptyState, InputField, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
@@ -31,16 +32,51 @@ export default function WorkspaceBookingsScreen() {
   const auth = useAuth();
   const state = useBookItState();
   const { colors } = useThemePalette();
+  const mockMode = usingMocks();
+  const today = mockMode ? DEMO_TODAY : todayInput();
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("all");
   const [notesTarget, setNotesTarget] = useState<Appointment | null>(null);
   const [noteText, setNoteText] = useState("");
   const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
-  const [date, setDate] = useState(addDays(DEMO_TODAY, 1));
+  const [date, setDate] = useState(addDays(today, 1));
   const [time, setTime] = useState("10:00");
+  const [remoteSlots, setRemoteSlots] = useState<string[] | null>(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState("");
   const [checkInCode, setCheckInCode] = useState("");
   const [checkInMsg, setCheckInMsg] = useState<{ err?: boolean; text: string } | null>(null);
   const [modalError, setModalError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const activeBizId = auth.workspace?.businessId ?? "";
+  useEffect(() => {
+    if (!rescheduleTarget || !activeBizId) {
+      setRemoteSlots(null);
+      setSlotsError("");
+      setSlotsLoading(false);
+      return;
+    }
+    if (mockMode) {
+      setRemoteSlots(null);
+      return;
+    }
+    let active = true;
+    setSlotsLoading(true);
+    setSlotsError("");
+    void fetchAvailabilityRemote(activeBizId, rescheduleTarget.serviceId, date, rescheduleTarget.employeeId).then((res) => {
+      if (!active) return;
+      setSlotsLoading(false);
+      if (res.ok) {
+        setRemoteSlots(res.data);
+      } else {
+        setRemoteSlots([]);
+        setSlotsError(res.error);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [rescheduleTarget, activeBizId, date, mockMode]);
 
   if (!auth.workspace || !auth.userId) return null;
   const bizId = auth.workspace.businessId;
@@ -56,8 +92,9 @@ export default function WorkspaceBookingsScreen() {
   });
 
   const rescheduleSvc = rescheduleTarget ? state.services.find((s) => s.id === rescheduleTarget.serviceId) : undefined;
-  const openSlots =
-    rescheduleTarget && rescheduleSvc && biz
+  const openSlots = !mockMode
+    ? remoteSlots ?? []
+    : rescheduleTarget && rescheduleSvc && biz
       ? availableSlots({
           date,
           service: rescheduleSvc,
@@ -126,7 +163,7 @@ export default function WorkspaceBookingsScreen() {
                   return;
                 }
                 setCheckInMsg({
-                  text: `Checked in ${res.data.ticketPass ? res.data.ticketPass.passCode : res.data.booking.checkInCode ?? res.data.booking.id} (${res.data.booking.title}).`,
+                  text: `Checked in ${res.data.kind === "ticket_pass" ? "pass" : "booking"} ${res.data.code} (${res.data.title}).`,
                 });
                 setCheckInCode("");
               } finally {
@@ -329,7 +366,11 @@ export default function WorkspaceBookingsScreen() {
             <Card style={{ gap: 12 }}>
               <Text style={{ color: colors.text, fontSize: 17, fontWeight: "800" }}>Reschedule Booking</Text>
               <InputField label="Date (YYYY-MM-DD)" value={date} onChangeText={setDate} />
-              {openSlots.length > 0 ? (
+              {slotsLoading ? (
+                <Text style={{ color: colors.muted, fontSize: 12 }}>Loading open slots...</Text>
+              ) : slotsError ? (
+                <Text style={{ color: colors.danger, fontSize: 12 }}>{slotsError}</Text>
+              ) : openSlots.length > 0 ? (
                 <View style={{ gap: 6 }}>
                   <Text style={{ color: colors.muted, fontSize: 12 }}>Open slots on {date}</Text>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>

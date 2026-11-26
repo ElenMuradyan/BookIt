@@ -14,6 +14,7 @@ from app.models.engagement import Notification
 from app.models.user import User
 from app.schemas.business import InviteMemberIn, MemberRoleUpdateIn, MembershipOut
 from app.schemas.catalog import EmployeeAvailabilityUpdateIn, EmployeeOut
+from app.schemas.common import OkResponse
 from app.services.rbac import require_business_permission
 
 router = APIRouter(prefix="/workspaces/{business_id}", tags=["staff"])
@@ -68,6 +69,57 @@ async def invite_member(
     await db.commit()
     await db.refresh(membership)
     return MembershipOut.model_validate(membership)
+
+
+@router.post("/team/accept", response_model=MembershipOut)
+async def accept_workspace_invite(
+    business_id: str,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    membership = (
+        await db.execute(
+            select(Membership).where(
+                Membership.business_id == business_id,
+                Membership.user_id == user.id,
+                Membership.status == "invited",
+            )
+        )
+    ).scalar_one_or_none()
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending workspace invitation found",
+        )
+    membership.status = "active"
+    await db.commit()
+    await db.refresh(membership)
+    return MembershipOut.model_validate(membership)
+
+
+@router.post("/team/decline", response_model=OkResponse)
+async def decline_workspace_invite(
+    business_id: str,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    membership = (
+        await db.execute(
+            select(Membership).where(
+                Membership.business_id == business_id,
+                Membership.user_id == user.id,
+                Membership.status == "invited",
+            )
+        )
+    ).scalar_one_or_none()
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending workspace invitation found",
+        )
+    await db.delete(membership)
+    await db.commit()
+    return OkResponse(ok=True, message="Workspace invitation declined")
 
 
 @router.patch("/team/{membership_id}/role", response_model=MembershipOut)

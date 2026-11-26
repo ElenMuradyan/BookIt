@@ -127,6 +127,24 @@ async def bootstrap_state(
         )
     visible_biz_ids = {b.id for b in businesses}
 
+    owned_business_ids: set[str] = {b.id for b in businesses if user and b.owner_user_id == user.id}
+    active_memberships = [
+        m for m in memberships if user and m.user_id == user.id and m.status == "active"
+    ]
+    active_user_business_ids: set[str] = owned_business_ids | {m.business_id for m in active_memberships}
+    service_manage_business_ids: set[str] = owned_business_ids | {
+        m.business_id for m in active_memberships if has_permission(m.role, "services.manage")
+    }
+    product_manage_business_ids: set[str] = owned_business_ids | {
+        m.business_id for m in active_memberships if has_permission(m.role, "products.manage")
+    }
+    resource_manage_business_ids: set[str] = owned_business_ids | {
+        m.business_id for m in active_memberships if has_permission(m.role, "resources.manage")
+    }
+    event_manage_business_ids: set[str] = owned_business_ids | {
+        m.business_id for m in active_memberships if has_permission(m.role, "events.manage")
+    }
+
     # Services & Employees for visible businesses
     services = list(
         (
@@ -135,6 +153,8 @@ async def bootstrap_state(
             )
         ).scalars().all()
     ) if visible_biz_ids else []
+    if not is_admin:
+        services = [s for s in services if s.active or s.business_id in service_manage_business_ids]
     employees = list(
         (
             await db.execute(
@@ -151,6 +171,8 @@ async def bootstrap_state(
             )
         ).scalars().all()
     ) if visible_biz_ids else []
+    if not is_admin:
+        products = [p for p in products if p.active or p.business_id in product_manage_business_ids]
 
     plans = list((await db.execute(select(Plan))).scalars().all())
     ads = list(
@@ -174,19 +196,8 @@ async def bootstrap_state(
     ) if visible_biz_ids else []
     if not is_admin:
         booking_configs = [
-            c for c in booking_configs if c.enabled or c.business_id in user_business_ids
+            c for c in booking_configs if c.enabled or c.business_id in active_user_business_ids
         ]
-
-    owned_business_ids: set[str] = {b.id for b in businesses if user and b.owner_user_id == user.id}
-    active_memberships = [
-        m for m in memberships if user and m.user_id == user.id and m.status == "active"
-    ]
-    resource_manage_business_ids: set[str] = owned_business_ids | {
-        m.business_id for m in active_memberships if has_permission(m.role, "resources.manage")
-    }
-    event_manage_business_ids: set[str] = owned_business_ids | {
-        m.business_id for m in active_memberships if has_permission(m.role, "events.manage")
-    }
 
     resources = list(
         (

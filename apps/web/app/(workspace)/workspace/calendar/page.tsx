@@ -29,7 +29,7 @@ import {
 } from "@bookit/api-client";
 import type { Appointment, UniversalBooking, UniversalBookingStatus } from "@bookit/types";
 import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
-import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDate, formatDateTime, formatTime } from "@bookit/utils";
+import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDate, formatDateTime, formatTime, todayInput } from "@bookit/utils";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { Badge, Button, Field, Modal } from "@/components/ui";
@@ -39,8 +39,9 @@ function CalendarContent() {
   const auth = useAuth();
   const state = useBookItState();
   const params = useSearchParams();
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
   const [view, setView] = useState<"day" | "week" | "month">("week");
-  const [anchorDate, setAnchorDate] = useState(DEMO_TODAY);
+  const [anchorDate, setAnchorDate] = useState(today);
   const [staffFilter, setStaffFilter] = useState("all");
   const [q, setQ] = useState("");
   const [showCreate, setShowCreate] = useState(params.get("create") === "1");
@@ -60,14 +61,14 @@ function CalendarContent() {
     customerId: customers[0]?.id ?? "usr_elena",
     serviceId: services[0]?.id ?? "",
     employeeId: employees[0]?.id ?? "",
-    date: DEMO_TODAY,
+    date: today,
     time: "11:00",
   });
-  const [moveDate, setMoveDate] = useState(DEMO_TODAY);
+  const [moveDate, setMoveDate] = useState(today);
   const [moveTime, setMoveTime] = useState("14:00");
-  const [holidayDate, setHolidayDate] = useState(addDays(DEMO_TODAY, 5));
+  const [holidayDate, setHolidayDate] = useState(addDays(today, 5));
   const [holidayName, setHolidayName] = useState("");
-  const [blockDate, setBlockDate] = useState(addDays(DEMO_TODAY, 2));
+  const [blockDate, setBlockDate] = useState(addDays(today, 2));
   const [blockStart, setBlockStart] = useState("12:00");
   const [blockEnd, setBlockEnd] = useState("13:00");
   const [blockReason, setBlockReason] = useState("");
@@ -163,8 +164,8 @@ function CalendarContent() {
           <Button tone="ghost" small onClick={() => setAnchorDate(addDays(anchorDate, -1))}>
             ←
           </Button>
-          <Button tone="soft" small onClick={() => setAnchorDate(DEMO_TODAY)}>
-            Today ({formatDate(`${DEMO_TODAY}T12:00:00`, { month: "short", day: "numeric" })})
+          <Button tone="soft" small onClick={() => setAnchorDate(today)}>
+            Today ({formatDate(`${today}T12:00:00`, { month: "short", day: "numeric" })})
           </Button>
           <Button tone="ghost" small onClick={() => setAnchorDate(addDays(anchorDate, 1))}>
             →
@@ -219,7 +220,7 @@ function CalendarContent() {
         <div className="week-grid">
           <div className="week-head">Schedule</div>
           {weekDays.map((day) => (
-            <div key={day} className={`week-head ${day === DEMO_TODAY ? "today" : ""}`}>
+            <div key={day} className={`week-head ${day === today ? "today" : ""}`}>
               {formatDate(`${day}T12:00:00`, { weekday: "short", day: "numeric" })}
             </div>
           ))}
@@ -236,7 +237,7 @@ function CalendarContent() {
             const dayBlocks = resourceBlocks.filter((blk) => blockOccursOnDay(blk.startAt, blk.endAt, day));
             const hasAnything = dayAppts.length > 0 || dayUniversal.length > 0 || dayBlocks.length > 0;
             return (
-              <div key={day} className={`week-col ${day === DEMO_TODAY ? "today" : ""}`}>
+              <div key={day} className={`week-col ${day === today ? "today" : ""}`}>
                 {!hasAnything ? (
                   <span className="tiny">Open slots</span>
                 ) : (

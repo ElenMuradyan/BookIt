@@ -32,7 +32,7 @@ import {
 } from "@bookit/api-client";
 import type { EventOffering, EventSession, PricingUnit, Resource, ResourceType, Service, SessionAttendee } from "@bookit/types";
 import { inventoryNavLabelForBusiness } from "@bookit/ui";
-import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney, initials } from "@bookit/utils";
+import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney, initials, todayInput } from "@bookit/utils";
 import { useEffect, useState } from "react";
 import { Badge, Button, Empty, Field, Modal } from "@/components/ui";
 import { useAuth } from "@/lib/session";
@@ -59,6 +59,7 @@ const PRICING_UNITS: { id: PricingUnit; label: string }[] = [
 export default function WorkspaceServicesPage() {
   const auth = useAuth();
   const state = useBookItState();
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
 
   const bizId = auth.workspace?.businessId ?? "";
   const biz = state.businesses.find((b) => b.id === bizId);
@@ -122,8 +123,8 @@ export default function WorkspaceServicesPage() {
   });
   const [blockTarget, setBlockTarget] = useState<Resource | null>(null);
   const [blockForm, setBlockForm] = useState({
-    startAt: `${addDays(DEMO_TODAY, 1)}T18:00:00`,
-    endAt: `${addDays(DEMO_TODAY, 1)}T21:00:00`,
+    startAt: `${addDays(today, 1)}T18:00:00`,
+    endAt: `${addDays(today, 1)}T21:00:00`,
     unitsBlocked: "1",
     reason: "Private hold / maintenance",
   });
@@ -141,8 +142,8 @@ export default function WorkspaceServicesPage() {
   });
   const [sessionTarget, setSessionTarget] = useState<EventOffering | null>(null);
   const [sesForm, setSesForm] = useState({
-    startAt: `${addDays(DEMO_TODAY, 2)}T18:00:00`,
-    endAt: `${addDays(DEMO_TODAY, 2)}T19:00:00`,
+    startAt: `${addDays(today, 2)}T18:00:00`,
+    endAt: `${addDays(today, 2)}T19:00:00`,
     totalCapacity: "20",
     maxPerBooking: "4",
     tierName: "Standard Entry",
@@ -840,8 +841,8 @@ export default function WorkspaceServicesPage() {
                                 onClick={() => {
                                   setError("");
                                   setBlockForm({
-                                    startAt: `${addDays(DEMO_TODAY, 1)}T18:00:00`,
-                                    endAt: `${addDays(DEMO_TODAY, 1)}T21:00:00`,
+                                    startAt: `${addDays(today, 1)}T18:00:00`,
+                                    endAt: `${addDays(today, 1)}T21:00:00`,
                                     unitsBlocked: "1",
                                     reason: isHotel ? "Room maintenance" : "Private party hold",
                                   });
@@ -945,8 +946,8 @@ export default function WorkspaceServicesPage() {
                         onClick={() => {
                           setError("");
                           setSesForm({
-                            startAt: `${addDays(DEMO_TODAY, 2)}T18:00:00`,
-                            endAt: `${addDays(DEMO_TODAY, 2)}T19:00:00`,
+                            startAt: `${addDays(today, 2)}T18:00:00`,
+                            endAt: `${addDays(today, 2)}T19:00:00`,
                             totalCapacity: "20",
                             maxPerBooking: "4",
                             tierName: off.bookingModel === "ticket" ? "General Admission" : "Drop-in Spot",

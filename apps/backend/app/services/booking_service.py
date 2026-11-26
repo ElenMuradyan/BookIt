@@ -195,7 +195,7 @@ async def create_booking_transactional(
         policy=policy,
         override_deposit=float(service.deposit_amount) if service.deposit_amount is not None else None,
     )
-    is_paid = payment_method == "wallet"
+    is_paid = False
 
     booking = Booking(
         id=booking_id,

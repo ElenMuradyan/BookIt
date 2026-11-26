@@ -27,7 +27,7 @@ import {
   usingMocks,
 } from "@bookit/api-client";
 import type { EventOffering, PricingUnit, Resource, ResourceType, Service, SessionAttendee } from "@bookit/types";
-import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
+import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney, todayInput } from "@bookit/utils";
 import React, { useState } from "react";
 import { Modal, ScrollView, Switch, Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, Chip, EmptyState, InputField, Screen, SearchBar } from "@/components/Ui";
@@ -41,6 +41,7 @@ export default function WorkspaceServicesScreen() {
   const auth = useAuth();
   const state = useBookItState();
   const { colors } = useThemePalette();
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
 
   const bizId = auth.workspace?.businessId ?? "";
   const biz = state.businesses.find((b) => b.id === bizId);
@@ -80,8 +81,8 @@ export default function WorkspaceServicesScreen() {
   });
   const [blockTarget, setBlockTarget] = useState<Resource | null>(null);
   const [blockForm, setBlockForm] = useState({
-    startAt: `${addDays(DEMO_TODAY, 1)}T09:00:00`,
-    endAt: `${addDays(DEMO_TODAY, 1)}T18:00:00`,
+    startAt: `${addDays(today, 1)}T09:00:00`,
+    endAt: `${addDays(today, 1)}T18:00:00`,
     unitsBlocked: "1",
     reason: "Maintenance",
   });
@@ -96,8 +97,8 @@ export default function WorkspaceServicesScreen() {
   });
   const [sesTarget, setSesTarget] = useState<EventOffering | null>(null);
   const [sesForm, setSesForm] = useState({
-    startAt: `${addDays(DEMO_TODAY, 2)}T18:00:00`,
-    endAt: `${addDays(DEMO_TODAY, 2)}T19:00:00`,
+    startAt: `${addDays(today, 2)}T18:00:00`,
+    endAt: `${addDays(today, 2)}T19:00:00`,
     totalCapacity: "20",
     maxPerBooking: "4",
     tierName: "Standard Entry",
@@ -363,8 +364,8 @@ export default function WorkspaceServicesScreen() {
                   onPress={() => {
                     setError("");
                     setSesForm({
-                      startAt: `${addDays(DEMO_TODAY, 2)}T18:00:00`,
-                      endAt: `${addDays(DEMO_TODAY, 2)}T19:00:00`,
+                      startAt: `${addDays(today, 2)}T18:00:00`,
+                      endAt: `${addDays(today, 2)}T19:00:00`,
                       totalCapacity: "20",
                       maxPerBooking: "4",
                       tierName: off.bookingModel === "ticket" ? "General Admission" : "Drop-in Spot",

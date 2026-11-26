@@ -294,7 +294,7 @@ async def reserve_session_transactional(
         booking_status = "pending" if policy.approval_mode == "manual" else "confirmed"
         hold_expires_at = None
 
-    is_paid = payment_method == "wallet" and not hold_only
+    is_paid = False
     booking = Booking(
         id=booking_id,
         business_id=business.id,

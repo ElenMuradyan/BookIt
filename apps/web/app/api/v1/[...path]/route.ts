@@ -3,9 +3,19 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const DEFAULT_PROXY_TIMEOUT_MS = 15_000;
+
 function upstreamBaseUrl(): string {
   const raw = process.env.BOOKIT_INTERNAL_API_URL || "http://127.0.0.1:8000";
   return raw.trim().replace(/\/+$/, "");
+}
+
+function proxyTimeoutMs(): number {
+  const raw = Number(process.env.BOOKIT_PROXY_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw >= 50 && raw <= 120_000) {
+    return Math.floor(raw);
+  }
+  return DEFAULT_PROXY_TIMEOUT_MS;
 }
 
 const FORWARDED_REQUEST_HEADERS = [
@@ -19,18 +29,34 @@ const FORWARDED_REQUEST_HEADERS = [
   "user-agent",
   "x-client-type",
   "x-csrf-token",
-  "x-forwarded-for",
-  "x-forwarded-host",
-  "x-forwarded-proto",
   "x-request-id",
 ];
+
+function isValidPathSegment(segment: string): boolean {
+  if (!segment || segment === "." || segment === "..") return false;
+  if (/[\x00-\x1f\x7f/\\]/.test(segment)) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    return false;
+  }
+  if (!decoded || decoded === "." || decoded === "..") return false;
+  if (/[\x00-\x1f\x7f/\\]/.test(decoded)) return false;
+  if (decoded.includes("..")) return false;
+  return true;
+}
+
+function isNullBodyStatus(status: number): boolean {
+  return status === 204 || status === 205 || status === 304 || (status >= 100 && status < 200);
+}
 
 async function proxyRequest(
   request: NextRequest,
   context: { params: Promise<{ path: string[] }> },
 ): Promise<NextResponse> {
   const { path } = await context.params;
-  if (!Array.isArray(path) || path.length === 0 || path.some((segment) => segment === ".." || segment === ".")) {
+  if (!Array.isArray(path) || path.length === 0 || !path.every(isValidPathSegment)) {
     return NextResponse.json({ detail: "Invalid API path" }, { status: 400 });
   }
 
@@ -45,12 +71,13 @@ async function proxyRequest(
       headers.set(name, value);
     }
   }
-  if (!headers.has("x-forwarded-host")) {
-    const host = request.headers.get("host");
-    if (host) headers.set("x-forwarded-host", host);
+  const host = request.headers.get("host");
+  if (host) {
+    headers.set("x-forwarded-host", host);
   }
-  if (!headers.has("x-forwarded-proto")) {
-    headers.set("x-forwarded-proto", request.nextUrl.protocol.replace(":", ""));
+  const proto = request.nextUrl.protocol.replace(":", "");
+  if (proto === "http" || proto === "https") {
+    headers.set("x-forwarded-proto", proto);
   }
 
   const method = request.method.toUpperCase();
@@ -64,8 +91,16 @@ async function proxyRequest(
       headers,
       body: hasBody && bodyBuffer && bodyBuffer.byteLength > 0 ? bodyBuffer : undefined,
       redirect: "manual",
+      signal: AbortSignal.timeout(proxyTimeoutMs()),
     });
-  } catch {
+  } catch (err) {
+    const errName = err instanceof Error ? err.name : "";
+    if (errName === "TimeoutError" || errName === "AbortError") {
+      return NextResponse.json(
+        { detail: "Backend API request timed out" },
+        { status: 504 },
+      );
+    }
     return NextResponse.json(
       { detail: "Backend API is currently unreachable" },
       { status: 502 },
@@ -88,9 +123,10 @@ async function proxyRequest(
     if (single) responseHeaders.append("set-cookie", single);
   }
 
-  const payload = method === "HEAD" ? null : await upstreamResponse.arrayBuffer();
+  const status = upstreamResponse.status;
+  const payload = method === "HEAD" || isNullBodyStatus(status) ? null : await upstreamResponse.arrayBuffer();
   return new NextResponse(payload, {
-    status: upstreamResponse.status,
+    status,
     statusText: upstreamResponse.statusText,
     headers: responseHeaders,
   });

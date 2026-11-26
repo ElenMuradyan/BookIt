@@ -1,5 +1,5 @@
-import { savePromo, useBookItState } from "@bookit/api-client";
-import { addDays, DEMO_TODAY } from "@bookit/utils";
+import { savePromo, useBookItState, usingMocks } from "@bookit/api-client";
+import { addDays, DEMO_TODAY, todayInput } from "@bookit/utils";
 import React, { useState } from "react";
 import { Modal, Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, InputField, Screen } from "@/components/Ui";
@@ -63,7 +63,8 @@ export default function WorkspaceMarketingScreen() {
                 label="Create"
                 style={{ flex: 1 }}
                 onPress={() => {
-                  const res = savePromo(bizId, code, Number(percent) || 15, addDays(DEMO_TODAY, 30));
+                  const today = usingMocks() ? DEMO_TODAY : todayInput();
+                  const res = savePromo(bizId, code, Number(percent) || 15, addDays(today, 30));
                   if (!res.ok) {
                     setError(res.error);
                     return;

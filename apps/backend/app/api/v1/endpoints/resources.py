@@ -146,7 +146,15 @@ async def update_resource(
     if not res or res.business_id != business_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
 
-    for field_name, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    new_min = data.get("min_duration_minutes", res.min_duration_minutes)
+    new_max = data.get("max_duration_minutes", res.max_duration_minutes)
+    if new_max is not None and new_min is not None and new_max < new_min:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="maxDurationMinutes must be >= minDurationMinutes",
+        )
+    for field_name, value in data.items():
         setattr(res, field_name, value)
     await db.commit()
     await db.refresh(res)

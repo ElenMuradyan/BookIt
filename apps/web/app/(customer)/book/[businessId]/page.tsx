@@ -8,6 +8,7 @@ import {
   createUniversalBookingRemote,
   displayUser,
   enabledModelsForBusiness,
+  fetchAvailabilityRemote,
   fetchHotelStaysAvailabilityRemote,
   offeringsForBusiness,
   publicBusinessById,
@@ -34,14 +35,13 @@ import {
   formatDateTime,
   formatMoney,
   initials,
+  todayInput,
 } from "@bookit/utils";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useState } from "react";
 import { Badge, Button, Empty } from "@/components/ui";
 import { useAuth } from "@/lib/session";
-
-const DATES = Array.from({ length: 7 }, (_, i) => addDays(DEMO_TODAY, i));
 
 function diffLocalDays(checkIn: string, checkOut: string): number {
   const [y1, m1, d1] = checkIn.split("-").map(Number);
@@ -79,10 +79,14 @@ function BookingFlow({ businessId }: { businessId: string }) {
       )
     : [];
 
+  const mockMode = usingMocks();
+  const today = useMemo(() => (mockMode ? DEMO_TODAY : todayInput()), [mockMode]);
+  const dates = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(today, i)), [today]);
+
   // Appointment state
   const [serviceId, setServiceId] = useState(params.get("service") || services[0]?.id || "");
   const [employeeId, setEmployeeId] = useState(params.get("employee") || "");
-  const [date, setDate] = useState(DATES[1] ?? DEMO_TODAY);
+  const [date, setDate] = useState(() => addDays(mockMode ? DEMO_TODAY : todayInput(), 1));
   const [time, setTime] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("in_person");
   const [notes, setNotes] = useState("");
@@ -97,10 +101,20 @@ function BookingFlow({ businessId }: { businessId: string }) {
   const [partySize, setPartySize] = useState(2);
   const [preferredTime, setPreferredTime] = useState("19:00");
   const [areaFilter, setAreaFilter] = useState("");
-  const [checkInDate, setCheckInDate] = useState(DATES[1] ?? DEMO_TODAY);
-  const [checkOutDate, setCheckOutDate] = useState(DATES[3] ?? addDays(DEMO_TODAY, 3));
+  const [checkInDate, setCheckInDate] = useState(() => addDays(mockMode ? DEMO_TODAY : todayInput(), 1));
+  const [checkOutDate, setCheckOutDate] = useState(() => addDays(mockMode ? DEMO_TODAY : todayInput(), 3));
   const [remoteSearchItems, setRemoteSearchItems] = useState<ResourceSearchItem[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [searchRetryKey, setSearchRetryKey] = useState(0);
   const [remoteHotelOptions, setRemoteHotelOptions] = useState<HotelStayOption[] | null>(null);
+  const [hotelLoading, setHotelLoading] = useState(false);
+  const [hotelError, setHotelError] = useState("");
+  const [hotelRetryKey, setHotelRetryKey] = useState(0);
+  const [remoteApptSlots, setRemoteApptSlots] = useState<string[] | null>(null);
+  const [apptSlotsLoading, setApptSlotsLoading] = useState(false);
+  const [apptSlotsError, setApptSlotsError] = useState("");
+  const [apptRetryKey, setApptRetryKey] = useState(0);
 
   // Ticket / Capacity state
   const [offeringId, setOfferingId] = useState(params.get("offering") || offerings[0]?.id || "");
@@ -136,47 +150,100 @@ function BookingFlow({ businessId }: { businessId: string }) {
   // Live remote search for Restaurant / Time-slot resources
   useEffect(() => {
     if (selectedModel !== "resource" || !business || isHotel) return;
-    if (usingMocks()) {
+    if (mockMode) {
       setRemoteSearchItems(null);
+      setSearchError("");
+      setSearchLoading(false);
       return;
     }
     let active = true;
+    setSearchLoading(true);
+    setSearchError("");
     void searchResourcesAvailabilityRemote(business.id, {
       date,
       time: preferredTime || undefined,
       guests: partySize,
       area: areaFilter || undefined,
     }).then((res) => {
-      if (active && res.ok) setRemoteSearchItems(res.data);
+      if (!active) return;
+      setSearchLoading(false);
+      if (res.ok) {
+        setRemoteSearchItems(res.data);
+      } else {
+        setRemoteSearchItems([]);
+        setSearchError(res.error);
+      }
     });
     return () => {
       active = false;
     };
-  }, [selectedModel, business, isHotel, date, preferredTime, partySize, areaFilter]);
+  }, [selectedModel, business, isHotel, mockMode, date, preferredTime, partySize, areaFilter, searchRetryKey]);
 
   // Live remote search for Hotel stays
   useEffect(() => {
     if (selectedModel !== "resource" || !business || !isHotel) return;
-    if (usingMocks()) {
+    if (mockMode) {
       setRemoteHotelOptions(null);
+      setHotelError("");
+      setHotelLoading(false);
       return;
     }
     if (diffLocalDays(checkInDate, checkOutDate) <= 0) {
       setRemoteHotelOptions([]);
+      setHotelError("Check-out date must be after check-in date.");
+      setHotelLoading(false);
       return;
     }
     let active = true;
+    setHotelLoading(true);
+    setHotelError("");
     void fetchHotelStaysAvailabilityRemote(business.id, {
       checkIn: checkInDate,
       checkOut: checkOutDate,
       guests: partySize,
     }).then((res) => {
-      if (active && res.ok) setRemoteHotelOptions(res.data.options);
+      if (!active) return;
+      setHotelLoading(false);
+      if (res.ok) {
+        setRemoteHotelOptions(res.data.options);
+      } else {
+        setRemoteHotelOptions([]);
+        setHotelError(res.error);
+      }
     });
     return () => {
       active = false;
     };
-  }, [selectedModel, business, isHotel, checkInDate, checkOutDate, partySize]);
+  }, [selectedModel, business, isHotel, mockMode, checkInDate, checkOutDate, partySize, hotelRetryKey]);
+
+  // Live remote availability for Appointment slots
+  const activeServiceId = activeService?.id;
+  const activeEmployeeId = employeeId || activeEmployee?.id;
+  useEffect(() => {
+    if (selectedModel !== "appointment" || !business || !activeServiceId) return;
+    if (mockMode) {
+      setRemoteApptSlots(null);
+      setApptSlotsError("");
+      setApptSlotsLoading(false);
+      return;
+    }
+    let active = true;
+    setApptSlotsLoading(true);
+    setApptSlotsError("");
+    void fetchAvailabilityRemote(business.id, activeServiceId, date, activeEmployeeId).then((res) => {
+      if (!active) return;
+      setApptSlotsLoading(false);
+      if (res.ok) {
+        setRemoteApptSlots(res.data);
+      } else {
+        setRemoteApptSlots([]);
+        setApptSlotsError(res.error);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [selectedModel, business, activeServiceId, activeEmployeeId, date, mockMode, apptRetryKey]);
 
   // Local mock fallback for resource/restaurant slot search
   const localSearchItems = useMemo<ResourceSearchItem[]>(() => {
@@ -233,10 +300,11 @@ function BookingFlow({ businessId }: { businessId: string }) {
     return out;
   }, [business, isHotel, resources, resourceCfg, quantityUnits, partySize, areaFilter, date, state.bookings, state.resourceBlocks, preferredTime]);
 
-  const searchItems = remoteSearchItems ?? localSearchItems;
+  const searchItems = mockMode ? localSearchItems : (remoteSearchItems ?? []);
   const activeSearchItem =
     searchItems.find((item) => item.resource.id === resourceId) ?? searchItems[0];
-  const activeResource = activeSearchItem?.resource ?? resources.find((r) => r.id === resourceId) ?? resources[0];
+  const activeResource =
+    activeSearchItem?.resource ?? (mockMode ? (resources.find((r) => r.id === resourceId) ?? resources[0]) : undefined);
   const resourceSlots = activeSearchItem?.slots ?? [];
 
   // Local mock fallback for hotel stays
@@ -302,7 +370,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
     return out;
   }, [business, isHotel, checkInDate, checkOutDate, resourceCfg, resources, partySize, state.bookings, state.resourceBlocks]);
 
-  const hotelOptions = remoteHotelOptions ?? localHotelOptions;
+  const hotelOptions = mockMode ? localHotelOptions : (remoteHotelOptions ?? []);
   const activeHotelOption =
     hotelOptions.find((o) => o.resource.id === resourceId) ?? hotelOptions[0];
 
@@ -312,8 +380,8 @@ function BookingFlow({ businessId }: { businessId: string }) {
     activeOffering?.sessions.find((s) => s.status === "on_sale" || s.status === "scheduled") ??
     activeOffering?.sessions[0];
 
-  const slots = useMemo(() => {
-    if (!business || !activeService) return [];
+  const localApptSlots = useMemo(() => {
+    if (!mockMode || !business || !activeService) return [];
     return availableSlots({
       date,
       service: activeService,
@@ -324,7 +392,9 @@ function BookingFlow({ businessId }: { businessId: string }) {
       blocked: rawBusiness?.blocked ?? [],
       employeeId: employeeId || undefined,
     });
-  }, [activeService, business, rawBusiness, date, employeeId, employees, state.appointments]);
+  }, [mockMode, activeService, business, rawBusiness, date, employeeId, employees, state.appointments]);
+
+  const slots = mockMode ? localApptSlots : (remoteApptSlots ?? []);
 
   if (!business) return <Empty title="Business unavailable" body="Only approved businesses accept bookings." />;
 
@@ -571,7 +641,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
                 <section className="panel stack">
                   <h3>3. Select Date &amp; Time</h3>
                   <div className="chips">
-                    {DATES.map((d) => (
+                    {dates.map((d) => (
                       <button
                         key={d}
                         type="button"
@@ -586,7 +656,16 @@ function BookingFlow({ businessId }: { businessId: string }) {
                     ))}
                   </div>
                   <div className="chips" style={{ marginTop: 6 }}>
-                    {slots.length === 0 ? (
+                    {apptSlotsLoading ? (
+                      <p className="muted">Loading available times...</p>
+                    ) : apptSlotsError ? (
+                      <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <p className="error" style={{ margin: 0 }}>{apptSlotsError}</p>
+                        <Button tone="soft" small onClick={() => setApptRetryKey((k) => k + 1)}>
+                          Retry
+                        </Button>
+                      </div>
+                    ) : slots.length === 0 ? (
                       <p className="muted">No open times on this day. Pick another date.</p>
                     ) : (
                       slots.map((slot) => (
@@ -612,7 +691,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
                     {(
                       [
                         ["in_person", "Pay at venue"],
-                        ["wallet", "BookIt demo wallet"],
+                        ["wallet", mockMode ? "BookIt demo wallet" : "Wallet (pending verification)"],
                         ["card_token_pending", "Card (API pending)"],
                       ] as const
                     ).map(([method, label]) => (
@@ -678,10 +757,22 @@ function BookingFlow({ businessId }: { businessId: string }) {
                       </strong>
                     </div>
                     {error ? <p className="error">{error}</p> : null}
+                    {!auth.userId ? (
+                      <Link href={`/login?next=${encodeURIComponent(`/book/${business.id}?model=appointment`)}`} className="tiny">
+                        Sign in to complete your booking →
+                      </Link>
+                    ) : null}
                     <Button
                       disabled={submitting}
                       onClick={async () => {
-                        if (!auth.userId || !activeEmployee) return;
+                        if (!auth.userId) {
+                          setError("Please sign in to complete your booking.");
+                          return;
+                        }
+                        if (!activeEmployee) {
+                          setError("Select an available specialist first.");
+                          return;
+                        }
                         if (!time) {
                           setError("Choose an available time slot first.");
                           return;
@@ -764,7 +855,16 @@ function BookingFlow({ businessId }: { businessId: string }) {
 
               <section className="panel stack">
                 <h3>2. Select Available Room</h3>
-                {hotelOptions.length === 0 ? (
+                {hotelLoading ? (
+                  <p className="muted">Checking live room availability...</p>
+                ) : hotelError ? (
+                  <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <p className="error" style={{ margin: 0 }}>{hotelError}</p>
+                    <Button tone="soft" small onClick={() => setHotelRetryKey((k) => k + 1)}>
+                      Retry
+                    </Button>
+                  </div>
+                ) : hotelOptions.length === 0 ? (
                   <p className="muted">No rooms available for those dates and guest count. Adjust your dates.</p>
                 ) : (
                   <div className="grid-2">
@@ -816,7 +916,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
                     <span>Payment method</span>
                     <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}>
                       <option value="in_person">Pay at hotel</option>
-                      <option value="wallet">BookIt demo wallet</option>
+                      <option value="wallet">{mockMode ? "BookIt demo wallet" : "Wallet (pending verification)"}</option>
                       <option value="card_token_pending">Card (API pending)</option>
                     </select>
                   </label>
@@ -862,10 +962,19 @@ function BookingFlow({ businessId }: { businessId: string }) {
                 <p className="muted">Select valid dates and an available room.</p>
               )}
               {error ? <p className="error">{error}</p> : null}
+              {!auth.userId ? (
+                <Link href={`/login?next=${encodeURIComponent(`/book/${business.id}?model=resource`)}`} className="tiny">
+                  Sign in to complete your booking →
+                </Link>
+              ) : null}
               <Button
                 disabled={submitting || !activeHotelOption}
                 onClick={async () => {
-                  if (!auth.userId || !activeHotelOption) return;
+                  if (!auth.userId) {
+                    setError("Please sign in to complete your booking.");
+                    return;
+                  }
+                  if (!activeHotelOption) return;
                   setError("");
                   setSubmitting(true);
                   try {
@@ -964,7 +1073,16 @@ function BookingFlow({ businessId }: { businessId: string }) {
 
               <section className="panel stack">
                 <h3>2. Select {isRestaurant ? "Table" : "Space or Resource"}</h3>
-                {searchItems.length === 0 ? (
+                {searchLoading ? (
+                  <p className="muted">Checking live availability...</p>
+                ) : searchError ? (
+                  <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <p className="error" style={{ margin: 0 }}>{searchError}</p>
+                    <Button tone="soft" small onClick={() => setSearchRetryKey((k) => k + 1)}>
+                      Retry
+                    </Button>
+                  </div>
+                ) : searchItems.length === 0 ? (
                   <p className="muted">No matching tables or spaces for {partySize} guests. Adjust party size or area.</p>
                 ) : (
                   <div className="grid-2">
@@ -1030,7 +1148,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
                   {(
                     [
                       ["in_person", "Pay at venue"],
-                      ["wallet", "BookIt demo wallet"],
+                      ["wallet", mockMode ? "BookIt demo wallet" : "Wallet (pending verification)"],
                       ["card_token_pending", "Card (API pending)"],
                     ] as const
                   ).map(([method, label]) => (
@@ -1080,10 +1198,19 @@ function BookingFlow({ businessId }: { businessId: string }) {
                 </>
               ) : null}
               {error ? <p className="error">{error}</p> : null}
+              {!auth.userId ? (
+                <Link href={`/login?next=${encodeURIComponent(`/book/${business.id}?model=resource`)}`} className="tiny">
+                  Sign in to complete your booking →
+                </Link>
+              ) : null}
               <Button
                 disabled={submitting || !activeResource}
                 onClick={async () => {
-                  if (!auth.userId || !activeResource) return;
+                  if (!auth.userId) {
+                    setError("Please sign in to complete your booking.");
+                    return;
+                  }
+                  if (!activeResource) return;
                   const chosen = resourceSlots.find((s) => s.time === time);
                   if (!chosen) {
                     setError("Pick an open time slot first.");
@@ -1227,7 +1354,7 @@ function BookingFlow({ businessId }: { businessId: string }) {
                   {(
                     [
                       ["in_person", "Pay at venue"],
-                      ["wallet", "BookIt demo wallet"],
+                      ["wallet", mockMode ? "BookIt demo wallet" : "Wallet (pending verification)"],
                       ["card_token_pending", "Card (API pending)"],
                     ] as const
                   ).map(([method, label]) => (
@@ -1265,10 +1392,19 @@ function BookingFlow({ businessId }: { businessId: string }) {
                     </strong>
                   </div>
                   {error ? <p className="error">{error}</p> : null}
+                  {!auth.userId ? (
+                    <Link href={`/login?next=${encodeURIComponent(`/book/${business.id}?model=${selectedModel}`)}`} className="tiny">
+                      Sign in to complete your booking →
+                    </Link>
+                  ) : null}
                   <Button
                     disabled={submitting || totalQty === 0}
                     onClick={async () => {
-                      if (!auth.userId || items.length === 0) return;
+                      if (!auth.userId) {
+                        setError("Please sign in to complete your booking.");
+                        return;
+                      }
+                      if (items.length === 0) return;
                       setError("");
                       setSubmitting(true);
                       try {

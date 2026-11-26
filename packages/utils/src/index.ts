@@ -88,6 +88,14 @@ export function demoNow(): Date {
   return new Date(`${DEMO_TODAY}T15:00:00`);
 }
 
+export function todayInput(): string {
+  return toDateInput(new Date());
+}
+
+export function liveNow(): Date {
+  return new Date();
+}
+
 export function addDays(dateInput: string, days: number): string {
   const date = new Date(`${dateInput}T12:00:00`);
   date.setDate(date.getDate() + days);

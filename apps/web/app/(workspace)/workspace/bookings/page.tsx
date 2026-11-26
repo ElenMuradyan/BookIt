@@ -6,6 +6,7 @@ import {
   checkInUniversalQr,
   checkInUniversalQrRemote,
   displayUser,
+  fetchAvailabilityRemote,
   rescheduleAppointment,
   rescheduleAppointmentRemote,
   resourcesForBusiness,
@@ -20,8 +21,17 @@ import {
 } from "@bookit/api-client";
 import type { Appointment, AppointmentStatus, UniversalBookingStatus } from "@bookit/types";
 import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
-import { addDays, availableSlots, bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
-import { useState } from "react";
+import {
+  addDays,
+  availableSlots,
+  bookingModelLabel,
+  can,
+  DEMO_TODAY,
+  formatDateTime,
+  formatMoney,
+  todayInput,
+} from "@bookit/utils";
+import { useEffect, useState } from "react";
 import { Badge, Button, Empty, Field, Modal } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
@@ -30,19 +40,47 @@ const TABS = ["all", "pending", "confirmed", "completed", "cancelled", "rejected
 export default function WorkspaceBookingsPage() {
   const auth = useAuth();
   const state = useBookItState();
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
   const [tab, setTab] = useState<(typeof TABS)[number]>("all");
   const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
   const [notesTarget, setNotesTarget] = useState<Appointment | null>(null);
   const [noteText, setNoteText] = useState("");
-  const [date, setDate] = useState(addDays(DEMO_TODAY, 1));
+  const [date, setDate] = useState(addDays(today, 1));
   const [time, setTime] = useState("10:00");
   const [checkInCode, setCheckInCode] = useState("");
   const [checkInFeedback, setCheckInFeedback] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const [modalError, setModalError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [remoteSlots, setRemoteSlots] = useState<string[] | null>(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState("");
+
+  const bizId = auth.workspace?.businessId ?? "";
+  useEffect(() => {
+    if (!rescheduleTarget || !bizId || usingMocks()) {
+      setRemoteSlots(null);
+      setSlotsError("");
+      return;
+    }
+    let active = true;
+    setSlotsLoading(true);
+    setSlotsError("");
+    void fetchAvailabilityRemote(bizId, rescheduleTarget.serviceId, date, rescheduleTarget.employeeId).then((res) => {
+      if (!active) return;
+      setSlotsLoading(false);
+      if (res.ok) {
+        setRemoteSlots(res.data);
+      } else {
+        setRemoteSlots([]);
+        setSlotsError(res.error);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [rescheduleTarget, bizId, date]);
 
   if (!auth.workspace || !auth.userId) return null;
-  const bizId = auth.workspace.businessId;
   const actorId = auth.userId;
   const biz = state.businesses.find((b) => b.id === bizId);
   const resources = resourcesForBusiness(state, bizId, true);
@@ -64,8 +102,8 @@ export default function WorkspaceBookingsPage() {
           : "Bookings Management";
 
   const rescheduleSvc = rescheduleTarget ? state.services.find((s) => s.id === rescheduleTarget.serviceId) : undefined;
-  const openSlots =
-    rescheduleTarget && rescheduleSvc && biz
+  const openSlots = usingMocks()
+    ? rescheduleTarget && rescheduleSvc && biz
       ? availableSlots({
           date,
           service: rescheduleSvc,
@@ -76,7 +114,8 @@ export default function WorkspaceBookingsPage() {
           blocked: biz.blocked,
           employeeId: rescheduleTarget.employeeId,
         })
-      : [];
+      : []
+    : (remoteSlots ?? []);
 
   async function handleAppointmentStatus(appointmentId: string, status: AppointmentStatus) {
     setCheckInFeedback(null);
@@ -142,7 +181,7 @@ export default function WorkspaceBookingsPage() {
               }
               setCheckInFeedback({
                 tone: "ok",
-                text: `Checked in ${res.data.ticketPass ? `${res.data.ticketPass.passCode} (${res.data.booking.title})` : `${res.data.booking.checkInCode ?? res.data.booking.id} (${res.data.booking.title})`}.`,
+                text: `Checked in ${res.data.kind === "ticket_pass" ? "pass" : "booking"} ${res.data.code} (${res.data.title}).`,
               });
               setCheckInCode("");
             } finally {
@@ -427,7 +466,11 @@ export default function WorkspaceBookingsPage() {
             <Field label="Date">
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             </Field>
-            {openSlots.length > 0 ? (
+            {slotsLoading ? (
+              <p className="tiny">Checking live availability...</p>
+            ) : slotsError ? (
+              <p className="error">{slotsError}</p>
+            ) : openSlots.length > 0 ? (
               <div className="stack" style={{ gap: 6 }}>
                 <span className="tiny">Open slots for {date}</span>
                 <div className="chips">

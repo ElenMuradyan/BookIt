@@ -2,6 +2,7 @@
 
 import {
   addReview,
+  addReviewRemote,
   addToCart,
   bookingConfigsForBusiness,
   displayUser,
@@ -12,6 +13,7 @@ import {
   servicesForBusiness,
   toggleFavorite,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { categoryLabels, primaryCtaLabelForBusiness } from "@bookit/ui";
 import { formatDate, formatDateTime, formatMoney, initials } from "@bookit/utils";
@@ -41,6 +43,7 @@ export function BusinessProfileView({ id }: { id: string }) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [reviewError, setReviewError] = useState("");
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   if (!business) {
     return (
@@ -126,7 +129,10 @@ export function BusinessProfileView({ id }: { id: string }) {
               <Button
                 tone={isFav ? "soft" : "ghost"}
                 onClick={() => {
-                  if (!auth.userId) return;
+                  if (!auth.userId) {
+                    setNotice("Please sign in first.");
+                    return;
+                  }
                   toggleFavorite(auth.userId, "business", business.id, "Weekends");
                   setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
                 }}
@@ -334,7 +340,10 @@ export function BusinessProfileView({ id }: { id: string }) {
                           tone="soft"
                           small
                           onClick={() => {
-                            if (!auth.userId) return;
+                            if (!auth.userId) {
+                              setNotice("Please sign in first.");
+                              return;
+                            }
                             const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
                             setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
                           }}
@@ -405,7 +414,18 @@ export function BusinessProfileView({ id }: { id: string }) {
           <section className="panel stack">
             <div className="row" style={{ justifyContent: "space-between" }}>
               <h3>Client Reviews</h3>
-              <Button tone="soft" small onClick={() => setShowReview(true)}>
+              <Button
+                tone="soft"
+                small
+                onClick={() => {
+                  if (!auth.userId) {
+                    setNotice("Please sign in to write a review.");
+                    return;
+                  }
+                  setReviewError("");
+                  setShowReview(true);
+                }}
+              >
                 Write review
               </Button>
             </div>
@@ -448,18 +468,38 @@ export function BusinessProfileView({ id }: { id: string }) {
         <Modal title={`Review ${business.name}`} onClose={() => setShowReview(false)}>
           <form
             className="stack"
-            onSubmit={(event) => {
+            onSubmit={async (event) => {
               event.preventDefault();
-              if (!auth.userId) return;
-              const res = addReview({ authorId: auth.userId, businessId: business.id, rating, title, body });
-              if (!res.ok) {
-                setReviewError(res.error);
+              if (!auth.userId) {
+                setReviewError("Please sign in to publish a review.");
                 return;
               }
-              setShowReview(false);
-              setTitle("");
-              setBody("");
               setReviewError("");
+              if (usingMocks()) {
+                const res = addReview({ authorId: auth.userId, businessId: business.id, rating, title, body });
+                if (!res.ok) {
+                  setReviewError(res.error);
+                  return;
+                }
+                setShowReview(false);
+                setTitle("");
+                setBody("");
+                return;
+              }
+              setReviewBusy(true);
+              try {
+                const res = await addReviewRemote({ businessId: business.id, rating, title, body });
+                if (!res.ok) {
+                  setReviewError(res.error);
+                  return;
+                }
+                setShowReview(false);
+                setTitle("");
+                setBody("");
+                setNotice("Review published.");
+              } finally {
+                setReviewBusy(false);
+              }
             }}
           >
             <Field label="Rating">
@@ -478,7 +518,9 @@ export function BusinessProfileView({ id }: { id: string }) {
               <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Share how your visit went" />
             </Field>
             {reviewError ? <p className="error">{reviewError}</p> : null}
-            <Button type="submit">Publish review</Button>
+            <Button type="submit" disabled={reviewBusy}>
+              {reviewBusy ? "Publishing…" : "Publish review"}
+            </Button>
           </form>
         </Modal>
       ) : null}

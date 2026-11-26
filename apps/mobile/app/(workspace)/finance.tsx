@@ -1,5 +1,5 @@
-import { addExpense, useBookItState } from "@bookit/api-client";
-import { can, DEMO_TODAY, formatMoney } from "@bookit/utils";
+import { addExpense, useBookItState, usingMocks } from "@bookit/api-client";
+import { can, DEMO_TODAY, formatMoney, todayInput } from "@bookit/utils";
 import React, { useState } from "react";
 import { Modal, Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, InputField, MiniBarChart, Screen, StatCard } from "@/components/Ui";
@@ -10,8 +10,9 @@ export default function WorkspaceFinanceScreen() {
   const auth = useAuth();
   const state = useBookItState();
   const { colors } = useThemePalette();
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ category: "Supplies", amount: "120", note: "Salon inventory", incurredOn: DEMO_TODAY });
+  const [form, setForm] = useState({ category: "Supplies", amount: "120", note: "Salon inventory", incurredOn: today });
   const [error, setError] = useState("");
 
   if (!auth.workspace) return null;

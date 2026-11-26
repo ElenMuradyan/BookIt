@@ -9,9 +9,10 @@ import {
   resourcesForBusiness,
   sellerOrders,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { categoryLabels, inventoryNavLabelForBusiness, universalBookingStatus } from "@bookit/ui";
-import { bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney, initials } from "@bookit/utils";
+import { bookingModelLabel, can, DEMO_TODAY, formatDateTime, formatMoney, initials, todayInput } from "@bookit/utils";
 import Link from "next/link";
 import { AreaChart, Sparkline } from "@/components/Charts";
 import { Badge, Bars, Empty } from "@/components/ui";
@@ -78,9 +79,10 @@ export default function WorkspaceOverviewPage() {
     ...orders.map((o) => o.userId),
   ]);
 
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
   const inactiveStatuses = new Set(["cancelled", "rejected", "expired", "no_show"]);
   const todayRevenue = combinedBookings
-    .filter((b) => b.start.startsWith(DEMO_TODAY) && !inactiveStatuses.has(b.status))
+    .filter((b) => b.start.startsWith(today) && !inactiveStatuses.has(b.status))
     .reduce((sum, b) => sum + b.price, 0);
   const bookingRevenue = combinedBookings
     .filter((b) => !inactiveStatuses.has(b.status))

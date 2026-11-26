@@ -587,6 +587,8 @@ export interface UniversalBookingCreateInput {
   quantityUnits?: number;
   partySize?: number;
   sessionId?: ID;
+  tickets?: { tierId: ID; quantity: number; attendeeNames?: string[] }[];
+  attendeeNames?: string[];
   ticketItems?: { tierId: ID; quantity: number }[];
   attendeeName?: string;
   attendeeEmail?: string;
@@ -596,9 +598,16 @@ export interface UniversalBookingCreateInput {
 }
 
 export interface UniversalCheckInResult {
-  matchedType: "booking" | "ticket_pass";
-  booking: UniversalBooking;
-  ticketPass?: TicketPass;
+  kind: "appointment" | "booking" | "ticket_pass";
+  bookingId: ID;
+  businessId: ID;
+  code: string;
+  status: string;
+  checkedInAt: ISODateTime;
+  title: string;
+  customerId: ID;
+  legacyAppointmentId?: ID | null;
+  ticketPassId?: ID | null;
 }
 
 export interface Review {

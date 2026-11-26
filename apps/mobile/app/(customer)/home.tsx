@@ -8,9 +8,10 @@ import {
   personalizedBusinesses,
   searchProducts,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { categoryLabels } from "@bookit/ui";
-import { demoNow, formatDateTime, formatMoney } from "@bookit/utils";
+import { demoNow, formatDateTime, formatMoney, liveNow } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React from "react";
 import { Image, Pressable, ScrollView, Text, View } from "react-native";
@@ -30,7 +31,7 @@ export default function CustomerHomeScreen() {
 
   if (!auth.user) return null;
   const user = auth.user;
-  const now = demoNow().getTime();
+  const now = (usingMocks() ? demoNow() : liveNow()).getTime();
   const appts = customerAppointments(state, user.id);
   const upcoming = appts.find(
     (a) => (a.status === "confirmed" || a.status === "pending") && new Date(a.start).getTime() >= now,

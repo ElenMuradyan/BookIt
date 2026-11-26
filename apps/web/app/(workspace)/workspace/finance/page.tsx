@@ -5,8 +5,9 @@ import {
   businessAppointments,
   sellerOrders,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
-import { can, DEMO_TODAY, formatDate, formatMoney } from "@bookit/utils";
+import { can, DEMO_TODAY, formatDate, formatMoney, todayInput } from "@bookit/utils";
 import { useState } from "react";
 import { AreaChart } from "@/components/Charts";
 import { Badge, Button, Field, Modal } from "@/components/ui";
@@ -15,9 +16,10 @@ import { useAuth } from "@/lib/session";
 export default function WorkspaceFinancePage() {
   const auth = useAuth();
   const state = useBookItState();
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
   const [period, setPeriod] = useState<"daily" | "monthly" | "yearly">("monthly");
   const [showExpense, setShowExpense] = useState(false);
-  const [form, setForm] = useState({ category: "Supplies", amount: "120", note: "", incurredOn: DEMO_TODAY });
+  const [form, setForm] = useState({ category: "Supplies", amount: "120", note: "", incurredOn: today });
   const [error, setError] = useState("");
 
   if (!auth.workspace) return null;
@@ -140,7 +142,7 @@ export default function WorkspaceFinancePage() {
                 setError(res.error);
                 return;
               }
-              setForm({ category: "Supplies", amount: "120", note: "", incurredOn: DEMO_TODAY });
+              setForm({ category: "Supplies", amount: "120", note: "", incurredOn: today });
               setError("");
               setShowExpense(false);
             }}

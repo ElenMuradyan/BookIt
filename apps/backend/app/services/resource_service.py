@@ -417,7 +417,7 @@ async def reserve_resource_transactional(
     confirmation_mode = "manual" if policy.approval_mode == "manual" else "automatic"
     booking_id = new_id("bk")
     check_in_code = f"BK-{secrets.token_hex(3).upper()}"
-    is_paid = payment_method == "wallet" and not hold_only
+    is_paid = False
 
     booking = Booking(
         id=booking_id,

@@ -27,7 +27,7 @@ import {
 import { brand } from "@bookit/design-system";
 import type { Appointment, AppointmentStatus, UniversalBooking, UniversalBookingStatus } from "@bookit/types";
 import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
-import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDate, formatDateTime, formatMoney, formatTime } from "@bookit/utils";
+import { addDays, bookingModelLabel, can, DEMO_TODAY, formatDate, formatDateTime, formatMoney, formatTime, todayInput } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -49,16 +49,19 @@ export default function WorkspaceScheduleScreen() {
   const resourceBlocks = resourceBlocksForBusiness(state, bizId);
   const customers = state.users.filter((u) => !u.isPlatformAdmin);
 
-  const [selectedDate, setSelectedDate] = useState(DEMO_TODAY);
+  const mockMode = usingMocks();
+  const today = mockMode ? DEMO_TODAY : todayInput();
+
+  const [selectedDate, setSelectedDate] = useState(today);
   const [staffId, setStaffId] = useState("all");
   const [selectedApt, setSelectedApt] = useState<Appointment | null>(null);
   const [selectedUb, setSelectedUb] = useState<UniversalBooking | null>(null);
   const [aptNote, setAptNote] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showBlocks, setShowBlocks] = useState(false);
-  const [holidayDate, setHolidayDate] = useState(addDays(DEMO_TODAY, 5));
+  const [holidayDate, setHolidayDate] = useState(addDays(today, 5));
   const [holidayName, setHolidayName] = useState("");
-  const [blockDate, setBlockDate] = useState(addDays(DEMO_TODAY, 2));
+  const [blockDate, setBlockDate] = useState(addDays(today, 2));
   const [blockStart, setBlockStart] = useState("12:00");
   const [blockEnd, setBlockEnd] = useState("13:00");
   const [blockReason, setBlockReason] = useState("");
@@ -70,7 +73,7 @@ export default function WorkspaceScheduleScreen() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(DEMO_TODAY, i)), []);
+  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(today, i)), [today]);
 
   if (!auth.workspace || !auth.userId || !biz) return null;
   const actorId = auth.userId;

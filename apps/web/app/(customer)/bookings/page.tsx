@@ -2,12 +2,15 @@
 
 import {
   addReview,
+  addReviewRemote,
   customerAppointments,
   customerUniversalBookings,
   displayUser,
+  fetchAvailabilityRemote,
   rescheduleAppointment,
   rescheduleAppointmentRemote,
   sendBusinessMessage,
+  sendBusinessMessageRemote,
   setAppointmentStatus,
   setAppointmentStatusRemote,
   setUniversalBookingStatus,
@@ -17,9 +20,17 @@ import {
 } from "@bookit/api-client";
 import type { Appointment } from "@bookit/types";
 import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
-import { addDays, availableSlots, bookingModelLabel, DEMO_TODAY, formatDateTime, formatMoney } from "@bookit/utils";
+import {
+  addDays,
+  availableSlots,
+  bookingModelLabel,
+  DEMO_TODAY,
+  formatDateTime,
+  formatMoney,
+  todayInput,
+} from "@bookit/utils";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge, Button, Empty, Field, Modal } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
@@ -28,10 +39,15 @@ const TABS = ["upcoming", "pending", "confirmed", "completed", "cancelled"] as c
 export default function CustomerBookingsPage() {
   const auth = useAuth();
   const state = useBookItState();
+  const today = usingMocks() ? DEMO_TODAY : todayInput();
   const [tab, setTab] = useState<(typeof TABS)[number]>("upcoming");
   const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
-  const [newDate, setNewDate] = useState(addDays(DEMO_TODAY, 2));
+  const [newDate, setNewDate] = useState(addDays(today, 2));
   const [newTime, setNewTime] = useState("11:00");
+  const [remoteRescheduleSlots, setRemoteRescheduleSlots] = useState<string[] | null>(null);
+  const [rescheduleLoading, setRescheduleLoading] = useState(false);
+  const [rescheduleError, setRescheduleError] = useState("");
+  const [rescheduleRetryKey, setRescheduleRetryKey] = useState(0);
   const [messageTarget, setMessageTarget] = useState<Appointment | null>(null);
   const [messageBody, setMessageBody] = useState("");
   const [reviewTarget, setReviewTarget] = useState<Appointment | null>(null);
@@ -40,10 +56,41 @@ export default function CustomerBookingsPage() {
   const [body, setBody] = useState("");
   const [notice, setNotice] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [modalError, setModalError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const rescheduleSlots = useMemo(() => {
-    if (!rescheduleTarget) return [];
+  useEffect(() => {
+    if (!rescheduleTarget || usingMocks()) {
+      setRemoteRescheduleSlots(null);
+      setRescheduleError("");
+      setRescheduleLoading(false);
+      return;
+    }
+    let active = true;
+    setRescheduleLoading(true);
+    setRescheduleError("");
+    void fetchAvailabilityRemote(
+      rescheduleTarget.businessId,
+      rescheduleTarget.serviceId,
+      newDate,
+      rescheduleTarget.employeeId,
+    ).then((res) => {
+      if (!active) return;
+      setRescheduleLoading(false);
+      if (res.ok) {
+        setRemoteRescheduleSlots(res.data);
+      } else {
+        setRemoteRescheduleSlots([]);
+        setRescheduleError(res.error);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [rescheduleTarget, newDate, rescheduleRetryKey]);
+
+  const localRescheduleSlots = useMemo(() => {
+    if (!rescheduleTarget || !usingMocks()) return [];
     const biz = state.businesses.find((b) => b.id === rescheduleTarget.businessId);
     const svc = state.services.find((s) => s.id === rescheduleTarget.serviceId);
     if (!biz || !svc) return [];
@@ -58,6 +105,8 @@ export default function CustomerBookingsPage() {
       employeeId: rescheduleTarget.employeeId,
     });
   }, [rescheduleTarget, newDate, state.businesses, state.services, state.employees, state.appointments]);
+
+  const rescheduleSlots = usingMocks() ? localRescheduleSlots : (remoteRescheduleSlots ?? []);
 
   if (!auth.userId) return null;
   const userId = auth.userId;
@@ -201,6 +250,9 @@ export default function CustomerBookingsPage() {
                         small
                         onClick={() => {
                           setErrorMsg("");
+                          setModalError("");
+                          setNewDate(apt.start.slice(0, 10) || addDays(today, 1));
+                          setNewTime("");
                           setRescheduleTarget(apt);
                         }}
                       >
@@ -233,11 +285,25 @@ export default function CustomerBookingsPage() {
                     </>
                   ) : null}
                   {apt.status === "completed" ? (
-                    <Button tone="soft" small onClick={() => setReviewTarget(apt)}>
+                    <Button
+                      tone="soft"
+                      small
+                      onClick={() => {
+                        setModalError("");
+                        setReviewTarget(apt);
+                      }}
+                    >
                       Leave review
                     </Button>
                   ) : null}
-                  <Button tone="ghost" small onClick={() => setMessageTarget(apt)}>
+                  <Button
+                    tone="ghost"
+                    small
+                    onClick={() => {
+                      setModalError("");
+                      setMessageTarget(apt);
+                    }}
+                  >
                     Contact
                   </Button>
                 </div>
@@ -284,7 +350,16 @@ export default function CustomerBookingsPage() {
             </Field>
             <div className="stack" style={{ gap: 6 }}>
               <span className="tiny">Available slots</span>
-              {rescheduleSlots.length === 0 ? (
+              {rescheduleLoading ? (
+                <p className="muted">Loading available slots...</p>
+              ) : rescheduleError ? (
+                <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <p className="error" style={{ margin: 0 }}>{rescheduleError}</p>
+                  <Button tone="soft" small onClick={() => setRescheduleRetryKey((k) => k + 1)}>
+                    Retry
+                  </Button>
+                </div>
+              ) : rescheduleSlots.length === 0 ? (
                 <p className="muted">Closed or booked out on this date. Pick another day.</p>
               ) : (
                 <div className="chips">
@@ -305,7 +380,7 @@ export default function CustomerBookingsPage() {
               )}
             </div>
             {errorMsg ? <p className="error">{errorMsg}</p> : null}
-            <Button type="submit" disabled={busy || rescheduleSlots.length === 0}>
+            <Button type="submit" disabled={busy || rescheduleLoading || rescheduleSlots.length === 0}>
               {busy ? "Saving..." : "Save new time"}
             </Button>
           </form>
@@ -316,20 +391,33 @@ export default function CustomerBookingsPage() {
         <Modal title="Message business" onClose={() => setMessageTarget(null)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              const res = sendBusinessMessage(userId, messageTarget.businessId, messageBody);
-              if (res.ok) {
+              setModalError("");
+              setBusy(true);
+              try {
+                const res = usingMocks()
+                  ? sendBusinessMessage(userId, messageTarget.businessId, messageBody)
+                  : await sendBusinessMessageRemote(messageTarget.businessId, messageBody);
+                if (!res.ok) {
+                  setModalError(res.error);
+                  return;
+                }
                 setNotice("Message sent");
                 setMessageBody("");
                 setMessageTarget(null);
+              } finally {
+                setBusy(false);
               }
             }}
           >
             <Field label="Message">
               <textarea value={messageBody} onChange={(e) => setMessageBody(e.target.value)} placeholder="Running 10 minutes late..." />
             </Field>
-            <Button type="submit">Send message</Button>
+            {modalError ? <p className="error">{modalError}</p> : null}
+            <Button type="submit" disabled={busy}>
+              {busy ? "Sending..." : "Send message"}
+            </Button>
           </form>
         </Modal>
       ) : null}
@@ -338,21 +426,37 @@ export default function CustomerBookingsPage() {
         <Modal title="Leave a review" onClose={() => setReviewTarget(null)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              const res = addReview({
-                authorId: userId,
-                businessId: reviewTarget.businessId,
-                appointmentId: reviewTarget.id,
-                rating,
-                title,
-                body,
-              });
-              if (res.ok) {
+              setModalError("");
+              setBusy(true);
+              try {
+                const res = usingMocks()
+                  ? addReview({
+                      authorId: userId,
+                      businessId: reviewTarget.businessId,
+                      appointmentId: reviewTarget.id,
+                      rating,
+                      title,
+                      body,
+                    })
+                  : await addReviewRemote({
+                      businessId: reviewTarget.businessId,
+                      appointmentId: reviewTarget.id,
+                      rating,
+                      title,
+                      body,
+                    });
+                if (!res.ok) {
+                  setModalError(res.error);
+                  return;
+                }
                 setNotice("Review published");
                 setTitle("");
                 setBody("");
                 setReviewTarget(null);
+              } finally {
+                setBusy(false);
               }
             }}
           >
@@ -371,7 +475,10 @@ export default function CustomerBookingsPage() {
             <Field label="Details">
               <textarea value={body} onChange={(e) => setBody(e.target.value)} />
             </Field>
-            <Button type="submit">Submit review</Button>
+            {modalError ? <p className="error">{modalError}</p> : null}
+            <Button type="submit" disabled={busy}>
+              {busy ? "Publishing..." : "Submit review"}
+            </Button>
           </form>
         </Modal>
       ) : null}

@@ -10,7 +10,7 @@ import {
   usingMocks,
 } from "@bookit/api-client";
 import { appointmentStatus, universalBookingStatus } from "@bookit/ui";
-import { bookingModelLabel, demoNow, formatDateTime, formatMoney } from "@bookit/utils";
+import { bookingModelLabel, demoNow, formatDateTime, formatMoney, liveNow } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Text, View } from "react-native";
@@ -29,7 +29,7 @@ export default function CustomerBookingsScreen() {
 
   if (!auth.userId) return null;
   const userId = auth.userId;
-  const now = demoNow().getTime();
+  const now = (usingMocks() ? demoNow() : liveNow()).getTime();
   const rows = customerAppointments(state, userId).filter((a) => {
     const isPast = a.status === "completed" || a.status === "cancelled" || a.status === "rejected" || new Date(a.start).getTime() < now;
     return tab === "upcoming" ? !isPast : isPast;

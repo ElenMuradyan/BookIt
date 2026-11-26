@@ -6,6 +6,7 @@ import {
   createUniversalBookingRemote,
   displayUser,
   enabledModelsForBusiness,
+  fetchAvailabilityRemote,
   fetchHotelStaysAvailabilityRemote,
   offeringsForBusiness,
   publicBusinessById,
@@ -32,6 +33,7 @@ import {
   formatDate,
   formatDateTime,
   formatMoney,
+  todayInput,
 } from "@bookit/utils";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
@@ -40,11 +42,13 @@ import { Avatar, Badge, BrandHeader, Button, Card, Chip, EmptyState, InputField,
 import { useThemePalette } from "@/hooks/useThemePalette";
 import { useAuth } from "@/services/session";
 
-const PAYMENT_OPTIONS: Array<{ id: PaymentMethod; label: string }> = [
-  { id: "in_person", label: "Pay at venue" },
-  { id: "wallet", label: "BookIt demo wallet" },
-  { id: "card_token_pending", label: "Card (API pending)" },
-];
+function paymentOptionsFor(mockMode: boolean): Array<{ id: PaymentMethod; label: string }> {
+  return [
+    { id: "in_person", label: "Pay at venue" },
+    { id: "wallet", label: mockMode ? "BookIt demo wallet" : "Wallet (pending verification)" },
+    { id: "card_token_pending", label: "Card (API pending)" },
+  ];
+}
 
 function diffLocalDays(checkIn: string, checkOut: string): number {
   const [y1, m1, d1] = checkIn.split("-").map(Number);
@@ -92,10 +96,14 @@ export default function BookAppointmentScreen() {
       )
     : [];
 
+  const mockMode = usingMocks();
+  const today = useMemo(() => (mockMode ? DEMO_TODAY : todayInput()), [mockMode]);
+  const paymentOptions = useMemo(() => paymentOptionsFor(mockMode), [mockMode]);
+
   const [step, setStep] = useState<1 | 2 | 3 | 4>(initialSvc ? (initialEmp ? 3 : 2) : 1);
   const [serviceId, setServiceId] = useState(initialSvc || services[0]?.id || "");
   const [employeeId, setEmployeeId] = useState(initialEmp || employees[0]?.id || "");
-  const [date, setDate] = useState(addDays(DEMO_TODAY, 1));
+  const [date, setDate] = useState(() => addDays(today, 1));
   const [selectedTime, setSelectedTime] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("in_person");
   const [notes, setNotes] = useState("");
@@ -109,10 +117,20 @@ export default function BookAppointmentScreen() {
   const [partySize, setPartySize] = useState("2");
   const [preferredTime, setPreferredTime] = useState("19:00");
   const [areaFilter, setAreaFilter] = useState("");
-  const [checkInDate, setCheckInDate] = useState(addDays(DEMO_TODAY, 1));
-  const [checkOutDate, setCheckOutDate] = useState(addDays(DEMO_TODAY, 3));
+  const [checkInDate, setCheckInDate] = useState(() => addDays(today, 1));
+  const [checkOutDate, setCheckOutDate] = useState(() => addDays(today, 3));
   const [remoteSearchItems, setRemoteSearchItems] = useState<ResourceSearchItem[] | null>(null);
+  const [resourceSearchLoading, setResourceSearchLoading] = useState(false);
+  const [resourceSearchError, setResourceSearchError] = useState("");
+  const [resourceRetry, setResourceRetry] = useState(0);
   const [remoteHotelOptions, setRemoteHotelOptions] = useState<HotelStayOption[] | null>(null);
+  const [hotelLoading, setHotelLoading] = useState(false);
+  const [hotelError, setHotelError] = useState("");
+  const [hotelRetry, setHotelRetry] = useState(0);
+  const [remoteApptSlots, setRemoteApptSlots] = useState<string[] | null>(null);
+  const [apptSlotsLoading, setApptSlotsLoading] = useState(false);
+  const [apptSlotsError, setApptSlotsError] = useState("");
+  const [apptRetry, setApptRetry] = useState(0);
 
   // Ticket / Capacity state
   const [offeringId, setOfferingId] = useState(initialOffering || offerings[0]?.id || "");
@@ -127,7 +145,7 @@ export default function BookAppointmentScreen() {
     ? employees.filter((e) => activeService.employeeIds.includes(e.id) || activeService.employeeIds.length === 0)
     : employees;
   const activeEmployee = eligibleEmployees.find((e) => e.id === employeeId) ?? eligibleEmployees[0];
-  const dateDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(DEMO_TODAY, i)), []);
+  const dateDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(today, i)), [today]);
 
   const isHotel = Boolean(
     business?.category === "hotel" || resources.some((r) => r.pricingUnit === "per_night" || r.resourceType === "hotel_room"),
@@ -149,47 +167,97 @@ export default function BookAppointmentScreen() {
   const unitsNum = Math.max(1, Number(quantityUnits) || 1);
 
   useEffect(() => {
-    if (selectedModel !== "resource" || !business || isHotel) return;
-    if (usingMocks()) {
-      setRemoteSearchItems(null);
+    if (selectedModel !== "appointment" || !business || !activeService) return;
+    if (mockMode) {
+      setRemoteApptSlots(null);
+      setApptSlotsError("");
+      setApptSlotsLoading(false);
       return;
     }
     let active = true;
+    setApptSlotsLoading(true);
+    setApptSlotsError("");
+    void fetchAvailabilityRemote(business.id, activeService.id, date, activeEmployee?.id).then((res) => {
+      if (!active) return;
+      setApptSlotsLoading(false);
+      if (res.ok) {
+        setRemoteApptSlots(res.data);
+      } else {
+        setRemoteApptSlots([]);
+        setApptSlotsError(res.error);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [selectedModel, business, activeService, activeEmployee?.id, date, mockMode, apptRetry]);
+
+  useEffect(() => {
+    if (selectedModel !== "resource" || !business || isHotel) return;
+    if (mockMode) {
+      setRemoteSearchItems(null);
+      setResourceSearchError("");
+      setResourceSearchLoading(false);
+      return;
+    }
+    let active = true;
+    setResourceSearchLoading(true);
+    setResourceSearchError("");
     void searchResourcesAvailabilityRemote(business.id, {
       date,
       time: preferredTime || undefined,
       guests: guestsNum,
       area: areaFilter || undefined,
     }).then((res) => {
-      if (active && res.ok) setRemoteSearchItems(res.data);
+      if (!active) return;
+      setResourceSearchLoading(false);
+      if (res.ok) {
+        setRemoteSearchItems(res.data);
+      } else {
+        setRemoteSearchItems([]);
+        setResourceSearchError(res.error);
+      }
     });
     return () => {
       active = false;
     };
-  }, [selectedModel, business, isHotel, date, preferredTime, guestsNum, areaFilter]);
+  }, [selectedModel, business, isHotel, date, preferredTime, guestsNum, areaFilter, mockMode, resourceRetry]);
 
   useEffect(() => {
     if (selectedModel !== "resource" || !business || !isHotel) return;
-    if (usingMocks()) {
+    if (mockMode) {
       setRemoteHotelOptions(null);
+      setHotelError("");
+      setHotelLoading(false);
       return;
     }
     if (diffLocalDays(checkInDate, checkOutDate) <= 0) {
       setRemoteHotelOptions([]);
+      setHotelError("Check-out must be after check-in.");
+      setHotelLoading(false);
       return;
     }
     let active = true;
+    setHotelLoading(true);
+    setHotelError("");
     void fetchHotelStaysAvailabilityRemote(business.id, {
       checkIn: checkInDate,
       checkOut: checkOutDate,
       guests: guestsNum,
     }).then((res) => {
-      if (active && res.ok) setRemoteHotelOptions(res.data.options);
+      if (!active) return;
+      setHotelLoading(false);
+      if (res.ok) {
+        setRemoteHotelOptions(res.data.options);
+      } else {
+        setRemoteHotelOptions([]);
+        setHotelError(res.error);
+      }
     });
     return () => {
       active = false;
     };
-  }, [selectedModel, business, isHotel, checkInDate, checkOutDate, guestsNum]);
+  }, [selectedModel, business, isHotel, checkInDate, checkOutDate, guestsNum, mockMode, hotelRetry]);
 
   const localSearchItems = useMemo<ResourceSearchItem[]>(() => {
     if (!business || isHotel) return [];
@@ -244,7 +312,7 @@ export default function BookAppointmentScreen() {
     return out;
   }, [business, isHotel, resources, resourceCfg, unitsNum, guestsNum, areaFilter, date, state.bookings, state.resourceBlocks, preferredTime]);
 
-  const searchItems = remoteSearchItems ?? localSearchItems;
+  const searchItems = mockMode ? localSearchItems : remoteSearchItems ?? [];
   const activeSearchItem = searchItems.find((i) => i.resource.id === resourceId) ?? searchItems[0];
   const activeResource = activeSearchItem?.resource ?? resources.find((r) => r.id === resourceId) ?? resources[0];
   const resourceSlots = activeSearchItem?.slots ?? [];
@@ -309,7 +377,7 @@ export default function BookAppointmentScreen() {
     return out;
   }, [business, isHotel, checkInDate, checkOutDate, resourceCfg, resources, guestsNum, state.bookings, state.resourceBlocks]);
 
-  const hotelOptions = remoteHotelOptions ?? localHotelOptions;
+  const hotelOptions = mockMode ? localHotelOptions : remoteHotelOptions ?? [];
   const activeHotelOption = hotelOptions.find((o) => o.resource.id === resourceId) ?? hotelOptions[0];
 
   const activeOffering = offerings.find((o) => o.id === offeringId) ?? offerings[0];
@@ -319,6 +387,7 @@ export default function BookAppointmentScreen() {
     activeOffering?.sessions[0];
 
   const slots = useMemo(() => {
+    if (!mockMode) return remoteApptSlots ?? [];
     if (!rawBiz || !activeService) return [];
     return availableSlots({
       date,
@@ -330,7 +399,7 @@ export default function BookAppointmentScreen() {
       blocked: rawBiz.blocked,
       employeeId: activeEmployee?.id,
     });
-  }, [rawBiz, activeService, employees, state.appointments, date, activeEmployee]);
+  }, [mockMode, remoteApptSlots, rawBiz, activeService, employees, state.appointments, date, activeEmployee]);
 
   if (!business || !rawBiz) {
     return (
@@ -421,7 +490,11 @@ export default function BookAppointmentScreen() {
   }
 
   const confirmBooking = async () => {
-    if (!auth.userId || !activeService || !activeEmployee || !chosenTime) {
+    if (!auth.userId) {
+      setError("Please sign in to complete your booking.");
+      return;
+    }
+    if (!activeService || !activeEmployee || !chosenTime) {
       setError("Please select an available time slot.");
       return;
     }
@@ -437,7 +510,7 @@ export default function BookAppointmentScreen() {
         paymentMethod,
         notes,
       };
-      const res = usingMocks() ? createAppointment(payload) : await createAppointmentRemote(payload);
+      const res = mockMode ? createAppointment(payload) : await createAppointmentRemote(payload);
       if (!res.ok) {
         setError(res.error);
         return;
@@ -449,7 +522,11 @@ export default function BookAppointmentScreen() {
   };
 
   const confirmHotelBooking = async () => {
-    if (!auth.userId || !activeHotelOption) return;
+    if (!auth.userId) {
+      setError("Please sign in to complete your booking.");
+      return;
+    }
+    if (!activeHotelOption) return;
     setError("");
     setSubmitting(true);
     try {
@@ -464,7 +541,7 @@ export default function BookAppointmentScreen() {
         paymentMethod,
         notes,
       };
-      const res = usingMocks()
+      const res = mockMode
         ? createUniversalBooking(auth.userId, payload)
         : await createUniversalBookingRemote(payload);
       if (!res.ok) {
@@ -478,7 +555,11 @@ export default function BookAppointmentScreen() {
   };
 
   const confirmResourceBooking = async () => {
-    if (!auth.userId || !activeResource) return;
+    if (!auth.userId) {
+      setError("Please sign in to complete your booking.");
+      return;
+    }
+    if (!activeResource) return;
     const chosenSlot = resourceSlots.find((s) => s.time === selectedTime) ?? resourceSlots[0];
     if (!chosenSlot) {
       setError("Select an open time slot first.");
@@ -498,7 +579,7 @@ export default function BookAppointmentScreen() {
         paymentMethod,
         notes,
       };
-      const res = usingMocks()
+      const res = mockMode
         ? createUniversalBooking(auth.userId, payload)
         : await createUniversalBookingRemote(payload);
       if (!res.ok) {
@@ -512,7 +593,11 @@ export default function BookAppointmentScreen() {
   };
 
   const confirmEventBooking = async () => {
-    if (!auth.userId || !activeSession) return;
+    if (!auth.userId) {
+      setError("Please sign in to complete your booking.");
+      return;
+    }
+    if (!activeSession) return;
     const items = activeSession.tiers
       .map((t) => ({ tierId: t.id, quantity: tierQty[t.id] ?? 0 }))
       .filter((x) => x.quantity > 0);
@@ -713,7 +798,14 @@ export default function BookAppointmentScreen() {
                   })}
                 </ScrollView>
 
-                {slots.length === 0 ? (
+                {apptSlotsLoading ? (
+                  <Text style={{ color: colors.muted, fontSize: 13 }}>Loading available times...</Text>
+                ) : apptSlotsError ? (
+                  <View style={{ gap: 8 }}>
+                    <Text style={{ color: colors.danger, fontSize: 13 }}>{apptSlotsError}</Text>
+                    <Button label="Retry" tone="soft" small onPress={() => setApptRetry((n) => n + 1)} />
+                  </View>
+                ) : slots.length === 0 ? (
                   <Text style={{ color: colors.muted, fontSize: 13 }}>Closed or fully booked on this date. Try another day.</Text>
                 ) : (
                   <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -750,7 +842,7 @@ export default function BookAppointmentScreen() {
               <Card style={{ gap: 10 }}>
                 <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>4. Payment &amp; Review</Text>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                  {PAYMENT_OPTIONS.map((opt) => (
+                  {paymentOptions.map((opt) => (
                     <Chip
                       key={opt.id}
                       label={opt.label}
@@ -807,7 +899,14 @@ export default function BookAppointmentScreen() {
 
               <Card style={{ gap: 8 }}>
                 <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>2. Available Rooms</Text>
-                {hotelOptions.length === 0 ? (
+                {hotelLoading ? (
+                  <Text style={{ color: colors.muted, fontSize: 13 }}>Checking available rooms...</Text>
+                ) : hotelError ? (
+                  <View style={{ gap: 8 }}>
+                    <Text style={{ color: colors.danger, fontSize: 13 }}>{hotelError}</Text>
+                    <Button label="Retry" tone="soft" small onPress={() => setHotelRetry((n) => n + 1)} />
+                  </View>
+                ) : hotelOptions.length === 0 ? (
                   <Text style={{ color: colors.muted, fontSize: 13 }}>No rooms available for those dates and guest count.</Text>
                 ) : (
                   hotelOptions.map((opt) => (
@@ -842,7 +941,7 @@ export default function BookAppointmentScreen() {
               <Card style={{ gap: 10 }}>
                 <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>3. Payment &amp; Requests</Text>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                  {PAYMENT_OPTIONS.map((opt) => (
+                  {paymentOptions.map((opt) => (
                     <Chip key={opt.id} label={opt.label} active={paymentMethod === opt.id} onPress={() => setPaymentMethod(opt.id)} />
                   ))}
                 </View>
@@ -896,7 +995,14 @@ export default function BookAppointmentScreen() {
                 <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>
                   2. Select {isRestaurant ? "Table" : "Space or Resource"}
                 </Text>
-                {searchItems.length === 0 ? (
+                {resourceSearchLoading ? (
+                  <Text style={{ color: colors.muted, fontSize: 13 }}>Checking availability...</Text>
+                ) : resourceSearchError ? (
+                  <View style={{ gap: 8 }}>
+                    <Text style={{ color: colors.danger, fontSize: 13 }}>{resourceSearchError}</Text>
+                    <Button label="Retry" tone="soft" small onPress={() => setResourceRetry((n) => n + 1)} />
+                  </View>
+                ) : searchItems.length === 0 ? (
                   <Text style={{ color: colors.muted, fontSize: 13 }}>No matching spaces for {guestsNum} guests.</Text>
                 ) : (
                   searchItems.map((item) => {
@@ -951,7 +1057,7 @@ export default function BookAppointmentScreen() {
                     })}
                   </View>
                   <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                    {PAYMENT_OPTIONS.map((opt) => (
+                    {paymentOptions.map((opt) => (
                       <Chip key={opt.id} label={opt.label} active={paymentMethod === opt.id} onPress={() => setPaymentMethod(opt.id)} />
                     ))}
                   </View>
@@ -1041,7 +1147,7 @@ export default function BookAppointmentScreen() {
                 <InputField label="Attendee name" value={attendeeName} onChangeText={setAttendeeName} placeholder="Name on pass" />
                 <InputField label="Attendee email" value={attendeeEmail} onChangeText={setAttendeeEmail} placeholder="Pass email" autoCapitalize="none" />
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                  {PAYMENT_OPTIONS.map((opt) => (
+                  {paymentOptions.map((opt) => (
                     <Chip key={opt.id} label={opt.label} active={paymentMethod === opt.id} onPress={() => setPaymentMethod(opt.id)} />
                   ))}
                 </View>
@@ -1050,7 +1156,14 @@ export default function BookAppointmentScreen() {
           )
         ) : null}
 
-        {error ? <Text style={{ color: colors.danger, fontSize: 13 }}>{error}</Text> : null}
+        {error ? (
+          <View style={{ gap: 8 }}>
+            <Text style={{ color: colors.danger, fontSize: 13 }}>{error}</Text>
+            {!auth.userId ? (
+              <Button label="Sign In" tone="soft" small onPress={() => router.push("/(auth)/login")} />
+            ) : null}
+          </View>
+        ) : null}
       </ScrollView>
 
       {selectedModel === "appointment" && activeService ? (

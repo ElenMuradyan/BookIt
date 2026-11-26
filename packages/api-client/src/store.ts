@@ -23,7 +23,7 @@ import type {
   User,
   WeeklyHours,
 } from "@bookit/types";
-import { addDays, createSessionToken, sessionFlags } from "@bookit/utils";
+import { addDays, createSessionToken, sessionFlags, todayInput } from "@bookit/utils";
 import {
   addressSchema,
   bookingConfigSchema,
@@ -1303,8 +1303,8 @@ export function changePlan(businessId: string, planId: AppState["plans"][number]
         businessId,
         planId,
         status: "trialing",
-        trialEndsAt: `${addDays("2026-11-19", 30)}T00:00:00`,
-        renewsAt: `${addDays("2026-11-19", 30)}T00:00:00`,
+        trialEndsAt: `${addDays(todayInput(), 30)}T00:00:00`,
+        renewsAt: `${addDays(todayInput(), 30)}T00:00:00`,
         startedAt: now,
       });
     }
@@ -1376,8 +1376,8 @@ export function reviewApplication(applicationId: string, action: "approve" | "re
         businessId: application.businessId,
         planId: "professional",
         status: "trialing",
-        trialEndsAt: `${addDays("2026-11-19", 30)}T00:00:00`,
-        renewsAt: `${addDays("2026-11-19", 30)}T00:00:00`,
+        trialEndsAt: `${addDays(todayInput(), 30)}T00:00:00`,
+        renewsAt: `${addDays(todayInput(), 30)}T00:00:00`,
         startedAt: new Date().toISOString(),
       });
     }
@@ -1798,7 +1798,8 @@ export function createUniversalBooking(
   const off = offerings.find((o) => o.sessions.some((s) => s.id === input.sessionId));
   const session = off?.sessions.find((s) => s.id === input.sessionId);
   if (!off || !session) return fail("Session not found");
-  const items = input.ticketItems ?? [];
+  const items =
+    input.tickets?.map((t) => ({ tierId: t.tierId, quantity: t.quantity })) ?? input.ticketItems ?? [];
   const totalQty = items.reduce((sum, i) => sum + i.quantity, 0);
   if (totalQty < 1) return fail("Select at least 1 ticket or spot");
   if (totalQty > session.maxPerBooking) return fail(`Maximum ${session.maxPerBooking} per booking`);
@@ -1968,6 +1969,7 @@ export function checkInUniversalQr(
   if (!clean) return fail("Enter or scan a valid check-in code");
   let result: UniversalCheckInResult | null = null;
   let error: string | null = null;
+  const checkedInAt = new Date().toISOString();
   draft((next) => {
     const bookings = next.bookings ?? [];
     for (const bk of bookings) {
@@ -1983,8 +1985,19 @@ export function checkInUniversalQr(
           return;
         }
         pass.status = "checked_in";
-        pass.checkedInAt = new Date().toISOString();
-        result = { matchedType: "ticket_pass", booking: bk, ticketPass: pass };
+        pass.checkedInAt = checkedInAt;
+        result = {
+          kind: "ticket_pass",
+          bookingId: bk.id,
+          businessId: bk.businessId,
+          code: pass.passCode,
+          status: pass.status,
+          checkedInAt,
+          title: bk.title,
+          customerId: bk.customerId,
+          legacyAppointmentId: bk.legacyAppointmentId ?? null,
+          ticketPassId: pass.id,
+        };
         return;
       }
       if (bk.checkInCode === clean) {
@@ -1992,8 +2005,19 @@ export function checkInUniversalQr(
           error = "This booking cannot be checked in";
           return;
         }
-        bk.checkedInAt = new Date().toISOString();
-        result = { matchedType: "booking", booking: bk };
+        bk.checkedInAt = checkedInAt;
+        result = {
+          kind: bk.legacyAppointmentId ? "appointment" : "booking",
+          bookingId: bk.id,
+          businessId: bk.businessId,
+          code: bk.checkInCode,
+          status: bk.status,
+          checkedInAt,
+          title: bk.title,
+          customerId: bk.customerId,
+          legacyAppointmentId: bk.legacyAppointmentId ?? null,
+          ticketPassId: null,
+        };
         return;
       }
     }

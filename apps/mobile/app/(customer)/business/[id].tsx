@@ -1,5 +1,6 @@
 import {
   addReview,
+  addReviewRemote,
   addToCart,
   bookingConfigsForBusiness,
   displayUser,
@@ -10,6 +11,7 @@ import {
   servicesForBusiness,
   toggleFavorite,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { brand } from "@bookit/design-system";
 import { categoryLabels, primaryCtaLabelForBusiness } from "@bookit/ui";
@@ -44,6 +46,8 @@ export default function BusinessProfileScreen() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [rating, setRating] = useState(5);
+  const [reviewError, setReviewError] = useState("");
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const business = id ? publicBusinessById(state, id) : undefined;
 
@@ -110,7 +114,10 @@ export default function BusinessProfileScreen() {
               tone={isFav ? "soft" : "ghost"}
               icon={isFav ? "heart" : "heart-outline"}
               onPress={() => {
-                if (!auth.userId) return;
+                if (!auth.userId) {
+                  setNotice("Please sign in first.");
+                  return;
+                }
                 toggleFavorite(auth.userId, "business", business.id, "Weekends");
                 setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
               }}
@@ -294,7 +301,10 @@ export default function BusinessProfileScreen() {
                 tone="soft"
                 small
                 onPress={() => {
-                  if (!auth.userId) return;
+                  if (!auth.userId) {
+                    setNotice("Please sign in first.");
+                    return;
+                  }
                   addToCart(auth.userId, prd.id, 1, prd.variants[0]?.id);
                   setNotice(`Added ${prd.name} to cart`);
                 }}
@@ -323,7 +333,19 @@ export default function BusinessProfileScreen() {
       <Card style={{ gap: 10 }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
           <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>Reviews ({reviews.length})</Text>
-          <Button label="Write review" tone="soft" small onPress={() => setShowReview(true)} />
+          <Button
+            label="Write review"
+            tone="soft"
+            small
+            onPress={() => {
+              if (!auth.userId) {
+                setNotice("Please sign in to write a review.");
+                return;
+              }
+              setReviewError("");
+              setShowReview(true);
+            }}
+          />
         </View>
         {reviews.map((rev) => (
           <View key={rev.id} style={{ borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 8, gap: 2 }}>
@@ -348,18 +370,44 @@ export default function BusinessProfileScreen() {
             </View>
             <InputField label="Headline" value={title} onChangeText={setTitle} />
             <InputField label="Details" value={body} onChangeText={setBody} multiline />
+            {reviewError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{reviewError}</Text> : null}
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button label="Cancel" tone="ghost" style={{ flex: 1 }} onPress={() => setShowReview(false)} />
               <Button
-                label="Publish"
+                label={reviewBusy ? "Publishing..." : "Publish"}
+                disabled={reviewBusy}
                 style={{ flex: 1 }}
-                onPress={() => {
-                  if (!auth.userId) return;
-                  const res = addReview({ authorId: auth.userId, businessId: business.id, rating, title, body });
-                  if (res.ok) {
+                onPress={async () => {
+                  if (!auth.userId) {
+                    setReviewError("Please sign in to publish a review.");
+                    return;
+                  }
+                  setReviewError("");
+                  if (usingMocks()) {
+                    const res = addReview({ authorId: auth.userId, businessId: business.id, rating, title, body });
+                    if (!res.ok) {
+                      setReviewError(res.error);
+                      return;
+                    }
                     setShowReview(false);
                     setTitle("");
                     setBody("");
+                    setNotice("Review published.");
+                    return;
+                  }
+                  setReviewBusy(true);
+                  try {
+                    const res = await addReviewRemote({ businessId: business.id, rating, title, body });
+                    if (!res.ok) {
+                      setReviewError(res.error);
+                      return;
+                    }
+                    setShowReview(false);
+                    setTitle("");
+                    setBody("");
+                    setNotice("Review published.");
+                  } finally {
+                    setReviewBusy(false);
                   }
                 }}
               />

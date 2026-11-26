@@ -286,3 +286,131 @@ async def test_employee_cannot_view_inactive_inventory(client: AsyncClient):
         headers=owner_headers,
     )
     assert offering_id in [item["id"] for item in response.json()]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_inactive_services_products_session_details_invite_accept_and_wallet_guard(
+    client: AsyncClient,
+    session_factory,
+):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from app.models.booking import EventOffering, EventSession
+    from app.models.catalog import Product, Service
+
+    factory: async_sessionmaker[AsyncSession] = session_factory
+    start_dt = datetime.now(UTC) + timedelta(days=7)
+    end_dt = start_dt + timedelta(hours=2)
+
+    async with factory() as session:
+        session.add_all([
+            Service(
+                id="svc_aura_inactive",
+                business_id="biz_aura",
+                name="Archived Hair Gloss",
+                description="Inactive service",
+                category="Hair",
+                price=80,
+                duration_minutes=45,
+                cancellation_policy="24h notice",
+                active=False,
+            ),
+            Product(
+                id="prd_aura_inactive",
+                business_id="biz_aura",
+                category_id="cat_beauty",
+                name="Archived Hair Oil",
+                description="Inactive product",
+                price=34,
+                image_url="https://example.com/oil.jpg",
+                stock=5,
+                active=False,
+            ),
+            EventOffering(
+                id="evt_aura_hidden_ses",
+                business_id="biz_aura",
+                booking_model="ticket",
+                category="workshop",
+                title="Hidden Event Session",
+                active=False,
+            ),
+            EventSession(
+                id="ses_aura_hidden_details",
+                offering_id="evt_aura_hidden_ses",
+                business_id="biz_aura",
+                start_at=start_dt,
+                end_at=end_dt,
+                timezone="America/Los_Angeles",
+                total_capacity=20,
+                reserved_count=0,
+                max_per_booking=4,
+                status="on_sale",
+            ),
+        ])
+        await session.commit()
+
+    owner = await login_as(client, "business@bookit.demo")
+    owner_h = {"Authorization": f"Bearer {owner['accessToken']}"}
+    employee = await login_as(client, "employee@bookit.demo")
+    emp_h = {"Authorization": f"Bearer {employee['accessToken']}"}
+    cust = await login_as(client, "customer@bookit.demo")
+    cust_h = {"Authorization": f"Bearer {cust['accessToken']}"}
+    liam = await login_as(client, "liam.patel@bookit.demo")
+    liam_h = {"Authorization": f"Bearer {liam['accessToken']}"}
+
+    # Public and employee users do not receive inactive services/products in bootstrap
+    for hdrs in ({}, emp_h, cust_h):
+        boot = await client.get("/api/v1/bootstrap", headers=hdrs)
+        assert boot.status_code == 200
+        data = boot.json()
+        assert "svc_aura_inactive" not in {s["id"] for s in data["services"]}
+        assert "prd_aura_inactive" not in {p["id"] for p in data["products"]}
+
+    # Owner of biz_aura DOES receive inactive service/product for biz_aura
+    owner_boot = await client.get("/api/v1/bootstrap", headers=owner_h)
+    assert owner_boot.status_code == 200
+    owner_data = owner_boot.json()
+    assert "svc_aura_inactive" in {s["id"] for s in owner_data["services"]}
+    assert "prd_aura_inactive" in {p["id"] for p in owner_data["products"]}
+
+    # get_session_details hides sessions belonging to inactive offerings from public & employees
+    assert (
+        await client.get("/api/v1/businesses/biz_aura/sessions/ses_aura_hidden_details")
+    ).status_code == 404
+    assert (
+        await client.get("/api/v1/businesses/biz_aura/sessions/ses_aura_hidden_details", headers=emp_h)
+    ).status_code == 404
+    assert (
+        await client.get("/api/v1/businesses/biz_aura/sessions/ses_aura_hidden_details", headers=owner_h)
+    ).status_code == 200
+
+    # Staff invite acceptance flow
+    invite = await client.post(
+        "/api/v1/workspaces/biz_aura/team/invite",
+        headers=owner_h,
+        json={"email": "liam.patel@bookit.demo", "role": "manager", "title": "Guest Manager"},
+    )
+    assert invite.status_code == 201, invite.text
+    assert invite.json()["status"] == "invited"
+
+    accepted = await client.post("/api/v1/workspaces/biz_aura/team/accept", headers=liam_h)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "active"
+
+    # Wallet payment method on universal booking does not bypass payment settlement
+    wallet_bk = await client.post(
+        "/api/v1/bookings/universal",
+        headers=cust_h,
+        json={
+            "bookingModel": "ticket",
+            "businessId": "biz_aura",
+            "sessionId": "ses_aura_live_1",
+            "tickets": [{"tierId": "tier_aura_ga", "quantity": 1}],
+            "paymentMethod": "wallet",
+        },
+    )
+    assert wallet_bk.status_code == 201, wallet_bk.text
+    assert wallet_bk.json()["paymentStatus"] == "unpaid"
+    assert wallet_bk.json()["amountPaid"] == 0.0
