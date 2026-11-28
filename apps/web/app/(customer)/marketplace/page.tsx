@@ -5,6 +5,7 @@ import {
   addToCartRemote,
   searchProducts,
   toggleFavorite,
+  toggleFavoriteRemote,
   useBookItState,
   usingMocks,
 } from "@bookit/api-client";
@@ -24,6 +25,7 @@ export default function MarketplacePage() {
   const [inStock, setInStock] = useState(false);
   const [notice, setNotice] = useState("");
   const [busyProductId, setBusyProductId] = useState("");
+  const [busyFavId, setBusyFavId] = useState("");
 
   const sponsoredAd = state.advertisements.find((ad) => ad.placement === "marketplace" && ad.status === "active");
   const sponsoredBiz = sponsoredAd ? state.businesses.find((b) => b.id === sponsoredAd.businessId) : undefined;
@@ -169,8 +171,27 @@ export default function MarketplacePage() {
                     >
                       {busyProductId === product.id ? "Adding…" : product.stock > 0 ? "Add to cart" : "Out of stock"}
                     </Button>
-                    <Button tone="ghost" small onClick={() => auth.userId && toggleFavorite(auth.userId, "product", product.id, "Gifts")}>
-                      {isFav ? "Saved" : "Save"}
+                    <Button
+                      tone="ghost"
+                      small
+                      disabled={busyFavId === product.id}
+                      onClick={async () => {
+                        if (!auth.userId) return;
+                        if (usingMocks()) {
+                          toggleFavorite(auth.userId, "product", product.id, "Gifts");
+                          setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
+                          return;
+                        }
+                        setBusyFavId(product.id);
+                        try {
+                          const res = await toggleFavoriteRemote("product", product.id, "Gifts");
+                          setNotice(res.ok ? (isFav ? "Removed from favorites" : "Saved to favorites") : res.error);
+                        } finally {
+                          setBusyFavId("");
+                        }
+                      }}
+                    >
+                      {busyFavId === product.id ? "Saving…" : isFav ? "Saved" : "Save"}
                     </Button>
                   </div>
                 </div>

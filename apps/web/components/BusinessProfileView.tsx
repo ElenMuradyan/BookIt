@@ -13,6 +13,7 @@ import {
   resourcesForBusiness,
   servicesForBusiness,
   toggleFavorite,
+  toggleFavoriteRemote,
   useBookItState,
   usingMocks,
 } from "@bookit/api-client";
@@ -46,6 +47,7 @@ export function BusinessProfileView({ id }: { id: string }) {
   const [reviewError, setReviewError] = useState("");
   const [reviewBusy, setReviewBusy] = useState(false);
   const [cartBusyId, setCartBusyId] = useState("");
+  const [favBusy, setFavBusy] = useState(false);
 
   if (!business) {
     return (
@@ -130,16 +132,27 @@ export function BusinessProfileView({ id }: { id: string }) {
               </Link>
               <Button
                 tone={isFav ? "soft" : "ghost"}
-                onClick={() => {
+                disabled={favBusy}
+                onClick={async () => {
                   if (!auth.userId) {
                     setNotice("Please sign in first.");
                     return;
                   }
-                  toggleFavorite(auth.userId, "business", business.id, "Weekends");
-                  setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
+                  if (usingMocks()) {
+                    toggleFavorite(auth.userId, "business", business.id, "Weekends");
+                    setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
+                    return;
+                  }
+                  setFavBusy(true);
+                  try {
+                    const res = await toggleFavoriteRemote("business", business.id, "Weekends");
+                    setNotice(res.ok ? (isFav ? "Removed from favorites" : "Saved to favorites") : res.error);
+                  } finally {
+                    setFavBusy(false);
+                  }
                 }}
               >
-                {isFav ? "Saved" : "Save"}
+                {favBusy ? "Saving…" : isFav ? "Saved" : "Save"}
               </Button>
               <Button
                 tone="ghost"

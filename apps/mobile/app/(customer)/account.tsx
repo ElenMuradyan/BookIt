@@ -1,9 +1,13 @@
 import {
   acceptWorkspaceInviteRemote,
+  changePasswordRemote,
+  deactivateAccountRemote,
   declineWorkspaceInviteRemote,
   resetDemoState,
   setPersonalizationConsent,
+  setPersonalizationConsentRemote,
   updateProfile,
+  updateProfileRemote,
   useBookItState,
   usingMocks,
 } from "@bookit/api-client";
@@ -52,8 +56,18 @@ function AccountBody({
   const [gender, setGender] = useState(user.gender ?? "");
   const [dateOfBirth, setDateOfBirth] = useState(user.dateOfBirth ?? "");
   const [notice, setNotice] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
   const [inviteError, setInviteError] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [consentBusy, setConsentBusy] = useState(false);
+  const [securityBusy, setSecurityBusy] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [securityError, setSecurityError] = useState("");
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false);
+  const mockMode = usingMocks();
   const profile = state.customerProfiles.find((p) => p.userId === user.id);
   const addresses = state.addresses.filter((a) => a.userId === user.id);
 
@@ -203,18 +217,35 @@ function AccountBody({
           Date of birth verifies minimum-age eligibility where needed; gender is optional and shared only with providers when relevant.
         </Text>
         {notice ? <Text style={{ color: colors.lavender, fontSize: 12 }}>{notice}</Text> : null}
+        {errorMsg ? <Text style={{ color: colors.danger, fontSize: 12 }}>{errorMsg}</Text> : null}
         <Button
-          label="Save Profile"
-          onPress={() => {
-            updateProfile(user.id, {
+          label={profileBusy ? "Saving…" : "Save Profile"}
+          disabled={profileBusy}
+          onPress={async () => {
+            setNotice("");
+            setErrorMsg("");
+            const patch = {
               firstName,
               lastName,
               phone,
               location,
               gender: gender || undefined,
               dateOfBirth: dateOfBirth || undefined,
-            });
-            setNotice("Profile updated.");
+            };
+            if (mockMode) {
+              const res = updateProfile(user.id, patch);
+              if (!res.ok) setErrorMsg(res.error);
+              else setNotice("Profile updated.");
+              return;
+            }
+            setProfileBusy(true);
+            try {
+              const res = await updateProfileRemote(patch);
+              if (!res.ok) setErrorMsg(res.error);
+              else setNotice("Profile updated.");
+            } finally {
+              setProfileBusy(false);
+            }
           }}
         />
       </Card>
@@ -229,10 +260,25 @@ function AccountBody({
             Personalized recommendations
           </Text>
           <Switch
+            disabled={consentBusy}
             value={Boolean(profile?.personalizationConsent)}
-            onValueChange={(val) => {
-              setPersonalizationConsent(user.id, val);
-              setNotice(val ? "Personalized recommendations enabled." : "Personalized recommendations paused.");
+            onValueChange={async (val) => {
+              setNotice("");
+              setErrorMsg("");
+              if (mockMode) {
+                const res = setPersonalizationConsent(user.id, val);
+                if (!res.ok) setErrorMsg(res.error);
+                else setNotice(val ? "Personalized recommendations enabled." : "Personalized recommendations paused.");
+                return;
+              }
+              setConsentBusy(true);
+              try {
+                const res = await setPersonalizationConsentRemote(val);
+                if (!res.ok) setErrorMsg(res.error);
+                else setNotice(val ? "Personalized recommendations enabled." : "Personalized recommendations paused.");
+              } finally {
+                setConsentBusy(false);
+              }
             }}
           />
         </View>
@@ -248,17 +294,102 @@ function AccountBody({
         ))}
       </Card>
 
+      {!mockMode ? (
+        <Card style={{ gap: 10 }}>
+          <Text style={{ color: colors.text, fontWeight: "700", fontSize: 15 }}>Security</Text>
+          <InputField label="Current password" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry />
+          <InputField label="New password" value={newPassword} onChangeText={setNewPassword} secureTextEntry />
+          <InputField label="Confirm new password" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
+          {securityError ? <Text style={{ color: colors.danger, fontSize: 12 }}>{securityError}</Text> : null}
+          <Button
+            label={securityBusy ? "Updating…" : "Update Password"}
+            tone="soft"
+            disabled={securityBusy}
+            onPress={async () => {
+              setSecurityError("");
+              setSecurityBusy(true);
+              try {
+                const res = await changePasswordRemote(currentPassword, newPassword, confirmPassword);
+                if (!res.ok) {
+                  setSecurityError(res.error);
+                  return;
+                }
+                setCurrentPassword("");
+                setNewPassword("");
+                setConfirmPassword("");
+                await auth.signOut();
+                router.replace("/(auth)/login");
+              } finally {
+                setSecurityBusy(false);
+              }
+            }}
+          />
+          {!confirmDeactivate ? (
+            <Button
+              label="Deactivate Account"
+              tone="ghost"
+              small
+              disabled={securityBusy}
+              onPress={() => {
+                setSecurityError("");
+                setConfirmDeactivate(true);
+              }}
+            />
+          ) : (
+            <View style={{ gap: 8 }}>
+              <Text style={{ color: colors.muted, fontSize: 12 }}>
+                Deactivating disables login access and revokes active sessions for this account.
+              </Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <Button
+                  label={securityBusy ? "Deactivating…" : "Confirm Deactivate"}
+                  tone="danger"
+                  small
+                  disabled={securityBusy}
+                  style={{ flex: 1 }}
+                  onPress={async () => {
+                    setSecurityError("");
+                    setSecurityBusy(true);
+                    try {
+                      const res = await deactivateAccountRemote();
+                      if (!res.ok) {
+                        setSecurityError(res.error);
+                        return;
+                      }
+                      await auth.signOut();
+                      router.replace("/");
+                    } finally {
+                      setSecurityBusy(false);
+                    }
+                  }}
+                />
+                <Button
+                  label="Cancel"
+                  tone="ghost"
+                  small
+                  disabled={securityBusy}
+                  style={{ flex: 1 }}
+                  onPress={() => setConfirmDeactivate(false)}
+                />
+              </View>
+            </View>
+          )}
+        </Card>
+      ) : null}
+
       <View style={{ flexDirection: "row", gap: 10 }}>
-        <Button
-          label="Reset Demo"
-          tone="ghost"
-          small
-          style={{ flex: 1 }}
-          onPress={() => {
-            resetDemoState();
-            setNotice("Demo state reset.");
-          }}
-        />
+        {mockMode ? (
+          <Button
+            label="Reset Demo"
+            tone="ghost"
+            small
+            style={{ flex: 1 }}
+            onPress={() => {
+              resetDemoState();
+              setNotice("Demo state reset.");
+            }}
+          />
+        ) : null}
         <Button
           label="Sign Out"
           tone="danger"

@@ -6,6 +6,7 @@ import {
   logoutRemote,
   type RemoteAuthSession,
   setTheme as setStoreTheme,
+  setThemeRemote,
   useBookItState,
   userById,
   usingMocks,
@@ -218,8 +219,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const switchTheme = async (next: "dark" | "light") => {
     setLocalTheme(next);
     await AsyncStorage.setItem(THEME_KEY, next);
-    if (userId) {
+    if (!userId) return;
+    if (mockMode) {
       setStoreTheme(userId, next);
+    } else {
+      await setThemeRemote(next);
     }
   };
 

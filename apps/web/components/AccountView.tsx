@@ -4,6 +4,8 @@ import {
   acceptWorkspaceInviteRemote,
   addAddress,
   addAddressRemote,
+  changePasswordRemote,
+  deactivateAccountRemote,
   declineWorkspaceInviteRemote,
   resetDemoState,
   setPersonalizationConsent,
@@ -52,6 +54,10 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
   const [gender, setGender] = useState(user.gender ?? "");
   const [dateOfBirth, setDateOfBirth] = useState(user.dateOfBirth ?? "");
   const [addr, setAddr] = useState({ label: "Home", line1: "", city: "Seattle", region: "WA", postalCode: "98101", country: "United States" });
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false);
 
   return (
     <div className="stack" style={{ gap: 18 }}>
@@ -554,12 +560,139 @@ function AccountInner({ user, initialSection }: { user: NonNullable<ReturnType<t
           ) : null}
 
           {section === "security" || section === "connected" || section === "payments" || section === "help" ? (
-            <div className="stack">
+            <div className="stack" style={{ gap: 16 }}>
               <h2 style={{ margin: 0 }}>{customerSettingSections.find((s) => s.id === section)?.label}</h2>
-              <p className="muted">
-                This frontend stage uses token-based demo sessions and does not store passwords or payment card numbers in the browser.
-                OAuth providers (Google, Apple) and FastAPI billing tokens connect in the backend phase.
-              </p>
+              {usingMocks() ? (
+                <p className="muted">
+                  This preview session runs against local demo data and does not store passwords or payment card numbers in the browser.
+                </p>
+              ) : (
+                <p className="muted">
+                  Sessions use HttpOnly authentication cookies and Argon2id password verification on the BookIt API. Payment cards and deposits are handled through authorized settlement workflows.
+                </p>
+              )}
+
+              {section === "security" && !usingMocks() ? (
+                <div className="stack" style={{ gap: 16 }}>
+                  <form
+                    className="select-card stack"
+                    style={{ gap: 10 }}
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      setErrorMsg("");
+                      setNotice("");
+                      setBusy(true);
+                      try {
+                        const res = await changePasswordRemote(currentPassword, newPassword, confirmPassword);
+                        if (!res.ok) {
+                          setErrorMsg(res.error);
+                          return;
+                        }
+                        setCurrentPassword("");
+                        setNewPassword("");
+                        setConfirmPassword("");
+                        await auth.signOut();
+                        router.push("/login");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    <strong>Change password</strong>
+                    <span className="tiny">
+                      Requires your current password and at least 8 characters with uppercase, lowercase, number, and symbol. Updating your password signs you out.
+                    </span>
+                    <div className="grid-3">
+                      <Field label="Current password">
+                        <input
+                          type="password"
+                          autoComplete="current-password"
+                          value={currentPassword}
+                          onChange={(e) => setCurrentPassword(e.target.value)}
+                        />
+                      </Field>
+                      <Field label="New password">
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                        />
+                      </Field>
+                      <Field label="Confirm new password">
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                        />
+                      </Field>
+                    </div>
+                    <div>
+                      <Button type="submit" disabled={busy}>
+                        {busy ? "Updating…" : "Update password"}
+                      </Button>
+                    </div>
+                  </form>
+
+                  <div className="select-card stack" style={{ gap: 8 }}>
+                    <strong>Deactivate account</strong>
+                    <span className="tiny">
+                      Deactivating disables login access and revokes active sessions for this account.
+                    </span>
+                    {!confirmDeactivate ? (
+                      <div>
+                        <Button
+                          tone="danger"
+                          small
+                          disabled={busy}
+                          onClick={() => {
+                            setErrorMsg("");
+                            setConfirmDeactivate(true);
+                          }}
+                        >
+                          Deactivate my account
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                        <Button
+                          tone="danger"
+                          small
+                          disabled={busy}
+                          onClick={async () => {
+                            setErrorMsg("");
+                            setNotice("");
+                            setBusy(true);
+                            try {
+                              const res = await deactivateAccountRemote();
+                              if (!res.ok) {
+                                setErrorMsg(res.error);
+                                return;
+                              }
+                              await auth.signOut();
+                              router.push("/");
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        >
+                          {busy ? "Deactivating…" : "Confirm account deactivation"}
+                        </Button>
+                        <Button
+                          tone="ghost"
+                          small
+                          disabled={busy}
+                          onClick={() => setConfirmDeactivate(false)}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="row">
                 <Link href="/forgot" className="btn ghost small">
                   Reset password

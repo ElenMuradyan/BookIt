@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies.auth import require_user
 from app.core.database import get_db
 from app.models.base import new_id, utc_now
-from app.models.booking import Appointment, CustomerNote
+from app.models.booking import Appointment, Booking, CustomerNote
 from app.models.business import Business
 from app.models.catalog import Product
 from app.models.commerce import Expense, Invoice, Order, Plan, Subscription
@@ -29,9 +29,18 @@ async def workspace_overview(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     business, _ = await require_business_permission(db, user, business_id, "overview.view")
-    booking_count = (
-        await db.execute(select(func.count(Appointment.id)).where(Appointment.business_id == business_id))
+    universal_booking_count = (
+        await db.execute(select(func.count(Booking.id)).where(Booking.business_id == business_id))
     ).scalar_one()
+    legacy_only_booking_count = (
+        await db.execute(
+            select(func.count(Appointment.id)).where(
+                Appointment.business_id == business_id,
+                Appointment.booking_id.is_(None),
+            )
+        )
+    ).scalar_one()
+    booking_count = int(universal_booking_count) + int(legacy_only_booking_count)
     order_count = (
         await db.execute(select(func.count(Order.id)).where(Order.seller_id == business_id))
     ).scalar_one()
@@ -41,7 +50,7 @@ async def workspace_overview(
     return {
         "businessId": business.id,
         "status": business.status,
-        "bookingCount": int(booking_count),
+        "bookingCount": booking_count,
         "orderCount": int(order_count),
         "expenseTotal": float(expense_total),
     }

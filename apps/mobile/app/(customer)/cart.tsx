@@ -1,7 +1,7 @@
-import { cartFor, setCartQuantity, useBookItState } from "@bookit/api-client";
+import { cartFor, setCartQuantity, setCartQuantityRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import { useRouter } from "expo-router";
-import React from "react";
+import React, { useState } from "react";
 import { Image, Text, View } from "react-native";
 import { BrandHeader, Button, Card, EmptyState, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
@@ -12,6 +12,8 @@ export default function CartScreen() {
   const state = useBookItState();
   const router = useRouter();
   const { colors } = useThemePalette();
+  const [busyItemId, setBusyItemId] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
 
   if (!auth.userId) return null;
   const cart = cartFor(state, auth.userId);
@@ -24,9 +26,27 @@ export default function CartScreen() {
     return sum + unit * item.quantity;
   }, 0);
 
+  const updateQty = async (itemId: string, nextQty: number) => {
+    setErrorMsg("");
+    if (usingMocks()) {
+      const res = setCartQuantity(auth.userId!, itemId, nextQty);
+      if (!res.ok) setErrorMsg(res.error);
+      return;
+    }
+    setBusyItemId(itemId);
+    try {
+      const res = await setCartQuantityRemote(itemId, nextQty);
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusyItemId("");
+    }
+  };
+
   return (
     <Screen>
       <BrandHeader title="Shopping Bag" showBack />
+
+      {errorMsg ? <Text style={{ color: colors.danger, fontSize: 12 }}>{errorMsg}</Text> : null}
 
       {items.length === 0 ? (
         <Card style={{ gap: 12 }}>
@@ -41,6 +61,7 @@ export default function CartScreen() {
             const variant = product?.variants.find((v) => v.id === item.variantId);
             const unit = (product?.price ?? 0) + (variant?.priceDelta ?? 0);
             if (!product) return null;
+            const isBusy = busyItemId === item.id;
             return (
               <Card key={item.id} style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
                 <Image source={{ uri: product.imageUrl }} style={{ width: 64, height: 64, borderRadius: 10 }} />
@@ -54,9 +75,9 @@ export default function CartScreen() {
                   </Text>
                 </View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <Button label="-" tone="ghost" small onPress={() => setCartQuantity(auth.userId!, item.id, item.quantity - 1)} />
+                  <Button label="-" tone="ghost" small disabled={isBusy} onPress={() => updateQty(item.id, item.quantity - 1)} />
                   <Text style={{ color: colors.text, fontWeight: "700", fontVariant: ["tabular-nums"] }}>{item.quantity}</Text>
-                  <Button label="+" tone="soft" small onPress={() => setCartQuantity(auth.userId!, item.id, item.quantity + 1)} />
+                  <Button label="+" tone="soft" small disabled={isBusy} onPress={() => updateQty(item.id, item.quantity + 1)} />
                 </View>
               </Card>
             );

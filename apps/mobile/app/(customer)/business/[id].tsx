@@ -2,6 +2,7 @@ import {
   addReview,
   addReviewRemote,
   addToCart,
+  addToCartRemote,
   bookingConfigsForBusiness,
   displayUser,
   enabledModelsForBusiness,
@@ -10,6 +11,7 @@ import {
   resourcesForBusiness,
   servicesForBusiness,
   toggleFavorite,
+  toggleFavoriteRemote,
   useBookItState,
   usingMocks,
 } from "@bookit/api-client";
@@ -48,6 +50,8 @@ export default function BusinessProfileScreen() {
   const [rating, setRating] = useState(5);
   const [reviewError, setReviewError] = useState("");
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [favBusy, setFavBusy] = useState(false);
+  const [cartBusyId, setCartBusyId] = useState("");
 
   const business = id ? publicBusinessById(state, id) : undefined;
 
@@ -110,16 +114,28 @@ export default function BusinessProfileScreen() {
               onPress={() => router.push(`/(customer)/book/${business.id}?model=${primaryModel}`)}
             />
             <Button
-              label={isFav ? "Saved" : "Save"}
+              label={favBusy ? "Saving…" : isFav ? "Saved" : "Save"}
               tone={isFav ? "soft" : "ghost"}
               icon={isFav ? "heart" : "heart-outline"}
-              onPress={() => {
+              disabled={favBusy}
+              onPress={async () => {
                 if (!auth.userId) {
                   setNotice("Please sign in first.");
                   return;
                 }
-                toggleFavorite(auth.userId, "business", business.id, "Weekends");
-                setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
+                setNotice("");
+                if (usingMocks()) {
+                  toggleFavorite(auth.userId, "business", business.id, "Weekends");
+                  setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
+                  return;
+                }
+                setFavBusy(true);
+                try {
+                  const res = await toggleFavoriteRemote("business", business.id, "Weekends");
+                  setNotice(res.ok ? (isFav ? "Removed from favorites" : "Saved to favorites") : res.error);
+                } finally {
+                  setFavBusy(false);
+                }
               }}
             />
           </View>
@@ -297,16 +313,28 @@ export default function BusinessProfileScreen() {
                 <Text style={{ color: colors.muted, fontSize: 12 }}>{formatMoney(prd.price)}</Text>
               </View>
               <Button
-                label="+ Cart"
+                label={cartBusyId === prd.id ? "Adding…" : "+ Cart"}
                 tone="soft"
                 small
-                onPress={() => {
+                disabled={cartBusyId === prd.id}
+                onPress={async () => {
                   if (!auth.userId) {
                     setNotice("Please sign in first.");
                     return;
                   }
-                  addToCart(auth.userId, prd.id, 1, prd.variants[0]?.id);
-                  setNotice(`Added ${prd.name} to cart`);
+                  setNotice("");
+                  if (usingMocks()) {
+                    const res = addToCart(auth.userId, prd.id, 1, prd.variants[0]?.id);
+                    setNotice(res.ok ? `Added ${prd.name} to cart` : res.error);
+                    return;
+                  }
+                  setCartBusyId(prd.id);
+                  try {
+                    const res = await addToCartRemote(prd.id, 1, prd.variants[0]?.id);
+                    setNotice(res.ok ? `Added ${prd.name} to cart` : res.error);
+                  } finally {
+                    setCartBusyId("");
+                  }
                 }}
               />
             </View>

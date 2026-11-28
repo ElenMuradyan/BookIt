@@ -459,11 +459,23 @@ export function submitBusinessApplication(
         makeCfg("resource", true, "Rooms & Suites", { checkInTime: "15:00", checkOutTime: "11:00" }, 48),
         makeCfg("appointment", false, "Appointments"),
       );
-    } else if (cat === "events" || cat === "travel") {
+    } else if (cat === "events") {
       next.bookingConfigs.push(
         makeCfg("ticket", true, "Tickets & Passes", {}, 48),
         makeCfg("capacity", true, "Tours & Group Experiences", {}, 24),
         makeCfg("appointment", false, "Appointments"),
+      );
+    } else if (cat === "travel") {
+      next.bookingConfigs.push(
+        makeCfg("ticket", true, "Tickets & Passes", {}, 48),
+        makeCfg("capacity", true, "Tours & Group Experiences", {}, 24),
+        makeCfg("resource", true, "Transfers & Vehicles", {}, 12),
+        makeCfg("appointment", false, "Appointments"),
+      );
+    } else if (cat === "auto") {
+      next.bookingConfigs.push(
+        makeCfg("resource", true, "Service Bays & Courtesy Vehicles"),
+        makeCfg("appointment", true, "Detailing & Maintenance"),
       );
     } else if (cat === "sports") {
       next.bookingConfigs.push(

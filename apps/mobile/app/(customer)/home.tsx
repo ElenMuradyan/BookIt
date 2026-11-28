@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { brand } from "@bookit/design-system";
 import {
   addToCart,
+  addToCartRemote,
   cartFor,
   customerAppointments,
   displayUser,
@@ -13,7 +14,7 @@ import {
 import { categoryLabels } from "@bookit/ui";
 import { demoNow, formatDateTime, formatMoney, liveNow } from "@bookit/utils";
 import { useRouter } from "expo-router";
-import React from "react";
+import React, { useState } from "react";
 import { Image, Pressable, ScrollView, Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, Chip, GradientCard, Screen, SectionHeader } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
@@ -28,6 +29,8 @@ export default function CustomerHomeScreen() {
   const router = useRouter();
   const { colors } = useThemePalette();
   const setExploreCategory = useMobileStore((s) => s.setExploreCategory);
+  const [busyProductId, setBusyProductId] = useState("");
+  const [bagNotice, setBagNotice] = useState("");
 
   if (!auth.user) return null;
   const user = auth.user;
@@ -241,21 +244,40 @@ export default function CustomerHomeScreen() {
                   {formatMoney(product.price)}
                 </Text>
                 <Pressable
-                  onPress={() => addToCart(user.id, product.id, 1, product.variants[0]?.id)}
+                  disabled={busyProductId === product.id}
+                  onPress={async () => {
+                    setBagNotice("");
+                    if (usingMocks()) {
+                      const res = addToCart(user.id, product.id, 1, product.variants[0]?.id);
+                      setBagNotice(res.ok ? `Added ${product.name} to bag` : res.error);
+                      return;
+                    }
+                    setBusyProductId(product.id);
+                    try {
+                      const res = await addToCartRemote(product.id, 1, product.variants[0]?.id);
+                      setBagNotice(res.ok ? `Added ${product.name} to bag` : res.error);
+                    } finally {
+                      setBusyProductId("");
+                    }
+                  }}
                   style={{
                     paddingHorizontal: 10,
                     paddingVertical: 5,
                     borderRadius: 8,
                     backgroundColor: "rgba(124,58,237,0.18)",
+                    opacity: busyProductId === product.id ? 0.55 : 1,
                   }}
                 >
-                  <Text style={{ color: brand.lavender, fontSize: 12, fontWeight: "700" }}>+ Bag</Text>
+                  <Text style={{ color: brand.lavender, fontSize: 12, fontWeight: "700" }}>
+                    {busyProductId === product.id ? "Adding…" : "+ Bag"}
+                  </Text>
                 </Pressable>
               </View>
             </View>
           </Card>
         ))}
       </ScrollView>
+      {bagNotice ? <Text style={{ color: colors.lavender, fontSize: 12 }}>{bagNotice}</Text> : null}
 
       {sponsored ? (
         <Card style={{ gap: 6 }}>

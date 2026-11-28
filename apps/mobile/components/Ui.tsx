@@ -237,21 +237,25 @@ export function Button({
 export function Chip({
   label,
   active,
+  disabled,
   onPress,
 }: {
   label: string;
   active?: boolean;
+  disabled?: boolean;
   onPress?: () => void;
 }) {
   const { colors, isDark } = useThemePalette();
   return (
     <Pressable
-      onPress={onPress}
+      disabled={disabled}
+      onPress={disabled ? undefined : onPress}
       style={[
         styles.chip,
         {
           backgroundColor: active ? brand.primary : colors.card,
           borderColor: active ? brand.primary : colors.line,
+          opacity: disabled ? 0.45 : 1,
         },
       ]}
     >

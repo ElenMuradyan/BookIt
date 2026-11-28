@@ -1,6 +1,6 @@
 "use client";
 
-import { addToCart, addToCartRemote, toggleFavorite, useBookItState, usingMocks } from "@bookit/api-client";
+import { addToCart, addToCartRemote, toggleFavorite, toggleFavoriteRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import Link from "next/link";
 import { use, useState } from "react";
@@ -16,6 +16,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
   const [quantity, setQuantity] = useState(1);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [favBusy, setFavBusy] = useState(false);
 
   if (!product) return <Empty title="Product not found" body="Browse the marketplace for available items." />;
   const seller = state.businesses.find((b) => b.id === product.businessId);
@@ -116,8 +117,26 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
             >
               {busy ? "Adding…" : "Add to Cart"}
             </Button>
-            <Button tone="ghost" onClick={() => auth.userId && toggleFavorite(auth.userId, "product", product.id, "Gifts")}>
-              {isFav ? "Saved" : "Save"}
+            <Button
+              tone="ghost"
+              disabled={favBusy}
+              onClick={async () => {
+                if (!auth.userId) return;
+                if (usingMocks()) {
+                  toggleFavorite(auth.userId, "product", product.id, "Gifts");
+                  setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
+                  return;
+                }
+                setFavBusy(true);
+                try {
+                  const res = await toggleFavoriteRemote("product", product.id, "Gifts");
+                  setNotice(res.ok ? (isFav ? "Removed from favorites" : "Saved to favorites") : res.error);
+                } finally {
+                  setFavBusy(false);
+                }
+              }}
+            >
+              {favBusy ? "Saving…" : isFav ? "Saved" : "Save"}
             </Button>
             <Link href="/cart" className="btn soft">
               Go to Cart

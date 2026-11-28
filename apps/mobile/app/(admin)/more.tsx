@@ -1,9 +1,13 @@
 import {
   moderateReview,
+  moderateReviewRemote,
   resetDemoState,
   setAdvertisementStatus,
+  setAdvertisementStatusRemote,
   setReportStatus,
+  setReportStatusRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import { useRouter } from "expo-router";
@@ -19,6 +23,9 @@ export default function AdminMoreScreen() {
   const router = useRouter();
   const { colors, themeName } = useThemePalette();
   const [section, setSection] = useState<"reports" | "ads" | "subs" | "reviews">("reports");
+  const [busyId, setBusyId] = useState("");
+  const [notice, setNotice] = useState("");
+  const mockMode = usingMocks();
 
   return (
     <Screen>
@@ -31,40 +38,79 @@ export default function AdminMoreScreen() {
         <Chip label={`Reviews (${state.reviews.length})`} active={section === "reviews"} onPress={() => setSection("reviews")} />
       </View>
 
+      {notice ? <Text style={{ color: colors.lavender, fontSize: 12 }}>{notice}</Text> : null}
+
       {section === "reports"
-        ? state.reports.map((rep) => (
-            <Card key={rep.id} style={{ gap: 8 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={{ color: colors.text, fontWeight: "700" }}>{rep.reason}</Text>
-                <Badge label={rep.status} tone={rep.status === "resolved" ? "success" : "warning"} />
-              </View>
-              <Text style={{ color: colors.muted, fontSize: 12 }}>{rep.details}</Text>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                <Button label="Resolve" tone="soft" small style={{ flex: 1 }} onPress={() => setReportStatus(rep.id, "resolved")} />
-                <Button label="Dismiss" tone="ghost" small style={{ flex: 1 }} onPress={() => setReportStatus(rep.id, "dismissed")} />
-              </View>
-            </Card>
-          ))
+        ? state.reports.map((rep) => {
+            const isBusy = busyId === rep.id;
+            const handleReport = async (status: "resolved" | "dismissed") => {
+              setNotice("");
+              if (mockMode) {
+                const res = setReportStatus(rep.id, status);
+                setNotice(res.ok ? `Report ${status}.` : res.error);
+                return;
+              }
+              setBusyId(rep.id);
+              try {
+                const res = await setReportStatusRemote(rep.id, status);
+                setNotice(res.ok ? `Report ${status}.` : res.error);
+              } finally {
+                setBusyId("");
+              }
+            };
+            return (
+              <Card key={rep.id} style={{ gap: 8 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ color: colors.text, fontWeight: "700" }}>{rep.reason}</Text>
+                  <Badge label={rep.status} tone={rep.status === "resolved" ? "success" : "warning"} />
+                </View>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>{rep.details}</Text>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <Button label="Resolve" tone="soft" small disabled={isBusy} style={{ flex: 1 }} onPress={() => handleReport("resolved")} />
+                  <Button label="Dismiss" tone="ghost" small disabled={isBusy} style={{ flex: 1 }} onPress={() => handleReport("dismissed")} />
+                </View>
+              </Card>
+            );
+          })
         : null}
 
       {section === "ads"
-        ? state.advertisements.map((ad) => (
-            <Card key={ad.id} style={{ gap: 8 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={{ color: colors.text, fontWeight: "700" }}>{ad.title}</Text>
-                <Badge label={ad.status} tone={ad.status === "active" ? "success" : "neutral"} />
-              </View>
-              <Text style={{ color: colors.muted, fontSize: 12 }}>
-                {ad.placement} · Budget {formatMoney(ad.budget)}
-              </Text>
-              <Button
-                label={ad.status === "active" ? "Pause Ad" : "Activate Ad"}
-                tone="soft"
-                small
-                onPress={() => setAdvertisementStatus(ad.id, ad.status === "active" ? "paused" : "active")}
-              />
-            </Card>
-          ))
+        ? state.advertisements.map((ad) => {
+            const isBusy = busyId === ad.id;
+            const nextStatus = ad.status === "active" ? "paused" : "active";
+            return (
+              <Card key={ad.id} style={{ gap: 8 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ color: colors.text, fontWeight: "700" }}>{ad.title}</Text>
+                  <Badge label={ad.status} tone={ad.status === "active" ? "success" : "neutral"} />
+                </View>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  {ad.placement} · Budget {formatMoney(ad.budget)}
+                </Text>
+                <Button
+                  label={isBusy ? "Updating…" : ad.status === "active" ? "Pause Ad" : "Activate Ad"}
+                  tone="soft"
+                  small
+                  disabled={isBusy}
+                  onPress={async () => {
+                    setNotice("");
+                    if (mockMode) {
+                      const res = setAdvertisementStatus(ad.id, nextStatus);
+                      setNotice(res.ok ? `Ad set to ${nextStatus}.` : res.error);
+                      return;
+                    }
+                    setBusyId(ad.id);
+                    try {
+                      const res = await setAdvertisementStatusRemote(ad.id, nextStatus);
+                      setNotice(res.ok ? `Ad set to ${nextStatus}.` : res.error);
+                    } finally {
+                      setBusyId("");
+                    }
+                  }}
+                />
+              </Card>
+            );
+          })
         : null}
 
       {section === "subs"
@@ -83,21 +129,40 @@ export default function AdminMoreScreen() {
         : null}
 
       {section === "reviews"
-        ? state.reviews.map((rev) => (
-            <Card key={rev.id} style={{ gap: 6 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={{ color: colors.text, fontWeight: "700" }}>{rev.title}</Text>
-                <Badge label={rev.status} tone={rev.status === "published" ? "success" : "danger"} />
-              </View>
-              <Text style={{ color: colors.muted, fontSize: 12 }}>{rev.body}</Text>
-              <Button
-                label={rev.status === "published" ? "Hide Review" : "Publish Review"}
-                tone="ghost"
-                small
-                onPress={() => moderateReview(rev.id, rev.status === "published" ? "hidden" : "published")}
-              />
-            </Card>
-          ))
+        ? state.reviews.map((rev) => {
+            const isBusy = busyId === rev.id;
+            const nextStatus = rev.status === "published" ? "hidden" : "published";
+            return (
+              <Card key={rev.id} style={{ gap: 6 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ color: colors.text, fontWeight: "700" }}>{rev.title}</Text>
+                  <Badge label={rev.status} tone={rev.status === "published" ? "success" : "danger"} />
+                </View>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>{rev.body}</Text>
+                <Button
+                  label={isBusy ? "Updating…" : rev.status === "published" ? "Hide Review" : "Publish Review"}
+                  tone="ghost"
+                  small
+                  disabled={isBusy}
+                  onPress={async () => {
+                    setNotice("");
+                    if (mockMode) {
+                      const res = moderateReview(rev.id, nextStatus);
+                      setNotice(res.ok ? `Review ${nextStatus}.` : res.error);
+                      return;
+                    }
+                    setBusyId(rev.id);
+                    try {
+                      const res = await moderateReviewRemote(rev.id, nextStatus);
+                      setNotice(res.ok ? `Review ${nextStatus}.` : res.error);
+                    } finally {
+                      setBusyId("");
+                    }
+                  }}
+                />
+              </Card>
+            );
+          })
         : null}
 
       <Card style={{ gap: 10 }}>
@@ -107,7 +172,16 @@ export default function AdminMoreScreen() {
           <Chip label="Light Mode" active={themeName === "light"} onPress={() => auth.switchTheme("light")} />
         </View>
         <Button label="Personal Account" tone="soft" onPress={() => router.replace("/(customer)/home")} />
-        <Button label="Reset Demo Data" tone="ghost" onPress={() => resetDemoState()} />
+        {mockMode ? (
+          <Button
+            label="Reset Demo Data"
+            tone="ghost"
+            onPress={() => {
+              resetDemoState();
+              setNotice("Demo state restored.");
+            }}
+          />
+        ) : null}
         <Button
           label="Sign Out"
           tone="danger"

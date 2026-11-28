@@ -3,8 +3,11 @@
 import {
   displayUser,
   moveFavorite,
+  moveFavoriteRemote,
   toggleFavorite,
+  toggleFavoriteRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { categoryLabels } from "@bookit/ui";
 import { formatMoney } from "@bookit/utils";
@@ -20,6 +23,8 @@ export default function FavoritesPage() {
   const state = useBookItState();
   const [type, setType] = useState<(typeof TYPES)[number]>("all");
   const [collection, setCollection] = useState("All");
+  const [busyId, setBusyId] = useState("");
+  const [notice, setNotice] = useState("");
 
   if (!auth.userId) return null;
   const userId = auth.userId;
@@ -52,6 +57,8 @@ export default function FavoritesPage() {
           ))}
         </div>
       </div>
+
+      {notice ? <p className="tiny" style={{ color: "var(--lavender)", margin: 0 }}>{notice}</p> : null}
 
       {filtered.length === 0 ? (
         <Empty title="Nothing saved here yet" body="Save businesses, services, or products while browsing Explore or Marketplace." />
@@ -90,7 +97,21 @@ export default function FavoritesPage() {
                   <select
                     aria-label="Collection"
                     value={fav.collection}
-                    onChange={(e) => moveFavorite(userId, fav.id, e.target.value)}
+                    disabled={busyId === fav.id}
+                    onChange={async (e) => {
+                      const nextCol = e.target.value;
+                      if (usingMocks()) {
+                        moveFavorite(userId, fav.id, nextCol);
+                        return;
+                      }
+                      setBusyId(fav.id);
+                      try {
+                        const res = await moveFavoriteRemote(fav.id, nextCol);
+                        setNotice(res.ok ? `Moved to ${nextCol}` : res.error);
+                      } finally {
+                        setBusyId("");
+                      }
+                    }}
                     style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 8px", fontSize: 12 }}
                   >
                     {["Saved", "Weekends", "Gifts", "Restock"].map((col) => (
@@ -108,8 +129,25 @@ export default function FavoritesPage() {
                   <Link href={href} className="btn soft small">
                     Open
                   </Link>
-                  <Button tone="ghost" small onClick={() => toggleFavorite(userId, fav.targetType, fav.targetId)}>
-                    Remove
+                  <Button
+                    tone="ghost"
+                    small
+                    disabled={busyId === fav.id}
+                    onClick={async () => {
+                      if (usingMocks()) {
+                        toggleFavorite(userId, fav.targetType, fav.targetId);
+                        return;
+                      }
+                      setBusyId(fav.id);
+                      try {
+                        const res = await toggleFavoriteRemote(fav.targetType, fav.targetId, fav.collection);
+                        setNotice(res.ok ? "Removed from favorites" : res.error);
+                      } finally {
+                        setBusyId("");
+                      }
+                    }}
+                  >
+                    {busyId === fav.id ? "Removing…" : "Remove"}
                   </Button>
                 </div>
               </article>

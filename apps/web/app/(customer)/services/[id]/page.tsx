@@ -5,7 +5,9 @@ import {
   publicBusinessById,
   serviceById,
   toggleFavorite,
+  toggleFavoriteRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { categoryLabels } from "@bookit/ui";
 import { bookingTotals, formatMoney, initials } from "@bookit/utils";
@@ -19,6 +21,7 @@ export default function ServiceDetailsPage({ params }: { params: Promise<{ id: s
   const auth = useAuth();
   const state = useBookItState();
   const [notice, setNotice] = useState("");
+  const [favBusy, setFavBusy] = useState(false);
 
   const service = serviceById(state, id);
   const business = service ? publicBusinessById(state, service.businessId) : undefined;
@@ -108,13 +111,24 @@ export default function ServiceDetailsPage({ params }: { params: Promise<{ id: s
             <Button
               tone={isFav ? "soft" : "ghost"}
               small
-              onClick={() => {
+              disabled={favBusy}
+              onClick={async () => {
                 if (!auth.userId) return;
-                toggleFavorite(auth.userId, "service", service.id, "Services");
-                setNotice(isFav ? "Removed from favorites" : "Saved service to favorites");
+                if (usingMocks()) {
+                  toggleFavorite(auth.userId, "service", service.id, "Services");
+                  setNotice(isFav ? "Removed from favorites" : "Saved service to favorites");
+                  return;
+                }
+                setFavBusy(true);
+                try {
+                  const res = await toggleFavoriteRemote("service", service.id, "Services");
+                  setNotice(res.ok ? (isFav ? "Removed from favorites" : "Saved service to favorites") : res.error);
+                } finally {
+                  setFavBusy(false);
+                }
               }}
             >
-              {isFav ? "Saved" : "Save service"}
+              {favBusy ? "Saving…" : isFav ? "Saved" : "Save service"}
             </Button>
           </div>
         </div>

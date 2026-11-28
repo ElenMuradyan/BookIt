@@ -1,6 +1,13 @@
-import { markAllNotificationsRead, markNotificationRead, useBookItState } from "@bookit/api-client";
+import {
+  markAllNotificationsRead,
+  markAllNotificationsReadRemote,
+  markNotificationRead,
+  markNotificationReadRemote,
+  useBookItState,
+  usingMocks,
+} from "@bookit/api-client";
 import { formatDateTime } from "@bookit/utils";
-import React from "react";
+import React, { useState } from "react";
 import { Text, View } from "react-native";
 import { Badge, BrandHeader, Button, Card, EmptyState, Screen } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
@@ -10,6 +17,8 @@ export default function NotificationsScreen() {
   const auth = useAuth();
   const state = useBookItState();
   const { colors } = useThemePalette();
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   if (!auth.userId) return null;
   const rows = state.notifications.filter((n) => n.userId === auth.userId);
@@ -19,8 +28,31 @@ export default function NotificationsScreen() {
       <BrandHeader
         title="Notifications"
         showBack
-        right={<Button label="Mark all read" tone="soft" small onPress={() => markAllNotificationsRead(auth.userId!)} />}
+        right={
+          <Button
+            label={busy ? "Updating…" : "Mark all read"}
+            tone="soft"
+            small
+            disabled={busy}
+            onPress={async () => {
+              setErrorMsg("");
+              if (usingMocks()) {
+                markAllNotificationsRead(auth.userId!);
+                return;
+              }
+              setBusy(true);
+              try {
+                const res = await markAllNotificationsReadRemote();
+                if (!res.ok) setErrorMsg(res.error);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          />
+        }
       />
+
+      {errorMsg ? <Text style={{ color: colors.danger, fontSize: 12 }}>{errorMsg}</Text> : null}
 
       {rows.length === 0 ? (
         <EmptyState title="All caught up" body="Booking updates, order status, and messages appear here." />
@@ -28,7 +60,21 @@ export default function NotificationsScreen() {
         rows.map((n) => (
           <Card
             key={n.id}
-            onPress={() => markNotificationRead(n.id, auth.userId!)}
+            onPress={async () => {
+              if (busy) return;
+              setErrorMsg("");
+              if (usingMocks()) {
+                markNotificationRead(n.id, auth.userId!);
+                return;
+              }
+              setBusy(true);
+              try {
+                const res = await markNotificationReadRemote(n.id);
+                if (!res.ok) setErrorMsg(res.error);
+              } finally {
+                setBusy(false);
+              }
+            }}
             style={{ gap: 6, opacity: n.read ? 0.72 : 1 }}
           >
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>

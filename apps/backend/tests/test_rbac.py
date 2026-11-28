@@ -414,3 +414,103 @@ async def test_bootstrap_inactive_services_products_session_details_invite_accep
     assert wallet_bk.status_code == 201, wallet_bk.text
     assert wallet_bk.json()["paymentStatus"] == "unpaid"
     assert wallet_bk.json()["amountPaid"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_favorite_target_validation_overview_counts_and_transport_defaults(
+    client: AsyncClient,
+    session_factory,
+):
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from app.models.booking import BusinessBookingConfig
+    from app.models.business import Business
+    from app.services.booking_config_service import seed_booking_configs_for_category
+
+    cust = await login_as(client, "customer@bookit.demo")
+    cust_h = {"Authorization": f"Bearer {cust['accessToken']}"}
+    owner = await login_as(client, "business@bookit.demo")
+    owner_h = {"Authorization": f"Bearer {owner['accessToken']}"}
+    admin = await login_as(client, "admin@bookit.demo")
+    admin_h = {"Authorization": f"Bearer {admin['accessToken']}"}
+
+    # 1. Favorites target validation blocks missing or unapproved targets
+    bad_missing = await client.post(
+        "/api/v1/users/me/favorites/toggle",
+        headers=cust_h,
+        json={"targetType": "business", "targetId": "biz_nonexistent", "collection": "Saved"},
+    )
+    assert bad_missing.status_code == 404
+
+    bad_unapproved = await client.post(
+        "/api/v1/users/me/favorites/toggle",
+        headers=cust_h,
+        json={"targetType": "business", "targetId": "biz_luxe", "collection": "Saved"},
+    )
+    assert bad_unapproved.status_code == 404
+
+    good_add = await client.post(
+        "/api/v1/users/me/favorites/toggle",
+        headers=cust_h,
+        json={"targetType": "product", "targetId": "prd_serum", "collection": "Saved"},
+    )
+    assert good_add.status_code == 200
+    assert "saved" in good_add.json()["message"].lower()
+
+    good_remove = await client.post(
+        "/api/v1/users/me/favorites/toggle",
+        headers=cust_h,
+        json={"targetType": "product", "targetId": "prd_serum", "collection": "Saved"},
+    )
+    assert good_remove.status_code == 200
+    assert "removed" in good_remove.json()["message"].lower()
+
+    # 2. Universal bookings are counted accurately in workspace & admin overviews without double-counting dual-written appointments
+    ws_before = (await client.get("/api/v1/workspaces/biz_aura/overview", headers=owner_h)).json()["bookingCount"]
+    adm_before = (await client.get("/api/v1/admin/overview", headers=admin_h)).json()["totalBookings"]
+
+    ticket_bk = await client.post(
+        "/api/v1/bookings/universal",
+        headers=cust_h,
+        json={
+            "bookingModel": "ticket",
+            "businessId": "biz_aura",
+            "sessionId": "ses_aura_live_1",
+            "tickets": [{"tierId": "tier_aura_ga", "quantity": 1}],
+            "paymentMethod": "in_person",
+        },
+    )
+    assert ticket_bk.status_code == 201, ticket_bk.text
+
+    ws_after = (await client.get("/api/v1/workspaces/biz_aura/overview", headers=owner_h)).json()["bookingCount"]
+    adm_after = (await client.get("/api/v1/admin/overview", headers=admin_h)).json()["totalBookings"]
+    assert ws_after == ws_before + 1
+    assert adm_after == adm_before + 1
+
+    # 3. Auto & Travel categories receive enabled resource booking defaults
+    factory: async_sessionmaker[AsyncSession] = session_factory
+    async with factory() as db:
+        auto_biz = await db.get(Business, "biz_volt")
+        travel_biz = await db.get(Business, "biz_passage")
+        assert auto_biz is not None and travel_biz is not None
+        await seed_booking_configs_for_category(db, auto_biz, commit=False)
+        await seed_booking_configs_for_category(db, travel_biz, commit=True)
+
+        auto_models = {
+            c.booking_model: c.enabled
+            for c in (
+                await db.execute(select(BusinessBookingConfig).where(BusinessBookingConfig.business_id == "biz_volt"))
+            ).scalars().all()
+        }
+        travel_models = {
+            c.booking_model: c.enabled
+            for c in (
+                await db.execute(select(BusinessBookingConfig).where(BusinessBookingConfig.business_id == "biz_passage"))
+            ).scalars().all()
+        }
+        assert auto_models.get("resource") is True
+        assert auto_models.get("appointment") is True
+        assert travel_models.get("resource") is True
+        assert travel_models.get("ticket") is True
+

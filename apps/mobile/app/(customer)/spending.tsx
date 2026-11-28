@@ -1,6 +1,6 @@
-import { setSpendingVisibility, useBookItState } from "@bookit/api-client";
+import { setSpendingVisibility, setSpendingVisibilityRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { formatDate, formatMoney, spendingBuckets } from "@bookit/utils";
-import React from "react";
+import React, { useState } from "react";
 import { Text, View } from "react-native";
 import { Badge, BrandHeader, Card, Chip, MiniBarChart, Screen, StatCard } from "@/components/Ui";
 import { useThemePalette } from "@/hooks/useThemePalette";
@@ -10,12 +10,30 @@ export default function SpendingScreen() {
   const auth = useAuth();
   const state = useBookItState();
   const { colors } = useThemePalette();
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   if (!auth.userId) return null;
   const profile = state.customerProfiles.find((p) => p.userId === auth.userId);
   const payments = state.payments.filter((p) => p.payerId === auth.userId);
   const buckets = spendingBuckets(payments);
   const includeEst = profile?.spendingVisibility === "include_estimates";
+
+  const handleVisibility = async (visibility: "recorded_only" | "include_estimates") => {
+    setErrorMsg("");
+    if (usingMocks()) {
+      const res = setSpendingVisibility(auth.userId!, visibility);
+      if (!res.ok) setErrorMsg(res.error);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await setSpendingVisibilityRemote(visibility);
+      if (!res.ok) setErrorMsg(res.error);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <Screen>
@@ -38,14 +56,17 @@ export default function SpendingScreen() {
           <Chip
             label="Recorded Only"
             active={!includeEst}
-            onPress={() => setSpendingVisibility(auth.userId!, "recorded_only")}
+            disabled={busy}
+            onPress={() => handleVisibility("recorded_only")}
           />
           <Chip
             label="Include Estimates"
             active={includeEst}
-            onPress={() => setSpendingVisibility(auth.userId!, "include_estimates")}
+            disabled={busy}
+            onPress={() => handleVisibility("include_estimates")}
           />
         </View>
+        {errorMsg ? <Text style={{ color: colors.danger, fontSize: 12 }}>{errorMsg}</Text> : null}
       </Card>
 
       {buckets.byCategory.length > 0 ? (

@@ -1,5 +1,6 @@
 import {
   addToCart,
+  addToCartRemote,
   businessesSupportingModel,
   enabledModelsForBusiness,
   searchBusinesses,
@@ -7,6 +8,7 @@ import {
   searchServices,
   servicesForBusiness,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import type { BookingModel } from "@bookit/types";
 import { categoryLabels } from "@bookit/ui";
@@ -19,7 +21,7 @@ import { useThemePalette } from "@/hooks/useThemePalette";
 import { useAuth } from "@/services/session";
 import { useMobileStore } from "@/store/useMobileStore";
 
-const CATS = ["all", "beauty", "barber", "healthcare", "fitness", "restaurant", "hotel", "wellness", "auto", "retail"] as const;
+const CATS = ["all", "beauty", "barber", "healthcare", "fitness", "restaurant", "hotel", "sports", "events", "wellness", "auto", "travel", "retail"] as const;
 const MODELS: Array<"all" | BookingModel> = ["all", "appointment", "resource", "ticket", "capacity"];
 
 export default function ExploreScreen() {
@@ -29,12 +31,13 @@ export default function ExploreScreen() {
   const { colors } = useThemePalette();
   const exploreCategory = useMobileStore((s) => s.exploreCategory);
   const setExploreCategory = useMobileStore((s) => s.setExploreCategory);
-  const [tab, setTab] = useState<"businesses" | "services" | "events" | "products">("businesses");
+  const [tab, setTab] = useState<"businesses" | "spaces" | "services" | "events" | "products">("businesses");
   const [modelFilter, setModelFilter] = useState<"all" | BookingModel>("all");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"rating" | "distance">("rating");
   const [maxPrice, setMaxPrice] = useState<number | undefined>(undefined);
   const [notice, setNotice] = useState("");
+  const [busyProductId, setBusyProductId] = useState("");
 
   const modelBizIds =
     modelFilter === "all" ? null : new Set(businessesSupportingModel(state, modelFilter).map((b) => b.id));
@@ -43,6 +46,22 @@ export default function ExploreScreen() {
     category: exploreCategory === "all" ? undefined : exploreCategory,
     sort,
   }).filter((b) => !modelBizIds || modelBizIds.has(b.id));
+  const spaces = (state.resources ?? []).filter((res) => {
+    if (!res.active) return false;
+    const biz = state.businesses.find((b) => b.id === res.businessId && b.isPublic && b.status === "approved");
+    if (!biz) return false;
+    if (exploreCategory !== "all" && biz.category !== exploreCategory) return false;
+    if (maxPrice !== undefined && res.basePrice > maxPrice) return false;
+    if (
+      q.trim() &&
+      !`${res.name} ${res.description} ${res.resourceType} ${biz.name} ${biz.city}`
+        .toLowerCase()
+        .includes(q.trim().toLowerCase())
+    ) {
+      return false;
+    }
+    return true;
+  });
   const services = searchServices(state, {
     q,
     category: exploreCategory === "all" ? undefined : exploreCategory,
@@ -73,6 +92,7 @@ export default function ExploreScreen() {
         {(
           [
             ["businesses", `Venues (${businesses.length})`],
+            ["spaces", `Spaces (${spaces.length})`],
             ["services", `Services (${services.length})`],
             ["events", `Events & Classes (${offerings.length})`],
             ["products", `Products (${products.length})`],
@@ -186,6 +206,47 @@ export default function ExploreScreen() {
         )
       ) : null}
 
+      {tab === "spaces" ? (
+        spaces.length === 0 ? (
+          <EmptyState title="No matching spaces or resources" body="Try clearing your search or category filter." />
+        ) : (
+          spaces.map((res) => {
+            const biz = state.businesses.find((b) => b.id === res.businessId);
+            return (
+              <Card key={res.id} style={{ gap: 8 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <Text style={{ color: colors.text, fontSize: 16, fontWeight: "800", flex: 1 }}>{res.name}</Text>
+                  <Badge label={res.resourceType.replace(/_/g, " ")} tone="brand" />
+                </View>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>
+                  {biz?.name} · Up to {res.capacityPeople} guests · {res.unitsTotal} unit(s)
+                </Text>
+                {res.description ? (
+                  <Text style={{ color: colors.muted, fontSize: 13 }} numberOfLines={2}>
+                    {res.description}
+                  </Text>
+                ) : null}
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ color: colors.text, fontWeight: "800", fontVariant: ["tabular-nums"] }}>
+                    {res.basePrice === 0 ? "Free reservation" : `${formatMoney(res.basePrice)}/${res.pricingUnit.replace("per_", "")}`}
+                  </Text>
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    {biz ? (
+                      <Button label="Venue" tone="ghost" small onPress={() => router.push(`/(customer)/business/${biz.id}`)} />
+                    ) : null}
+                    <Button
+                      label="Reserve"
+                      small
+                      onPress={() => router.push(`/(customer)/book/${res.businessId}?model=resource&resource=${res.id}`)}
+                    />
+                  </View>
+                </View>
+              </Card>
+            );
+          })
+        )
+      ) : null}
+
       {tab === "services" ? (
         services.length === 0 ? (
           <EmptyState title="No matching services" body="Try clearing your search or price filters." />
@@ -277,13 +338,25 @@ export default function ExploreScreen() {
                   </Text>
                 </View>
                 <Button
-                  label="+ Bag"
+                  label={busyProductId === product.id ? "Adding…" : "+ Bag"}
                   tone="soft"
                   small
-                  onPress={() => {
+                  disabled={busyProductId === product.id}
+                  onPress={async () => {
                     if (!auth.userId) return;
-                    const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
-                    setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                    setNotice("");
+                    if (usingMocks()) {
+                      const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
+                      setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                      return;
+                    }
+                    setBusyProductId(product.id);
+                    try {
+                      const res = await addToCartRemote(product.id, 1, product.variants[0]?.id);
+                      setNotice(res.ok ? `Added ${product.name} to cart` : res.error);
+                    } finally {
+                      setBusyProductId("");
+                    }
                   }}
                 />
               </Card>

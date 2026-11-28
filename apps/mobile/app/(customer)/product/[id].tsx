@@ -1,4 +1,11 @@
-import { addToCart, toggleFavorite, useBookItState } from "@bookit/api-client";
+import {
+  addToCart,
+  addToCartRemote,
+  toggleFavorite,
+  toggleFavoriteRemote,
+  useBookItState,
+  usingMocks,
+} from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useState } from "react";
@@ -17,6 +24,8 @@ export default function ProductDetailScreen() {
   const product = state.products.find((p) => p.id === id);
   const [variantId, setVariantId] = useState(product?.variants[0]?.id);
   const [notice, setNotice] = useState("");
+  const [cartBusy, setCartBusy] = useState(false);
+  const [favBusy, setFavBusy] = useState(false);
 
   if (!product) {
     return (
@@ -64,19 +73,47 @@ export default function ProductDetailScreen() {
 
           <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
             <Button
-              label="Add to Bag"
+              label={cartBusy ? "Adding…" : "Add to Bag"}
+              disabled={cartBusy}
               style={{ flex: 1 }}
-              onPress={() => {
+              onPress={async () => {
                 if (!auth.userId) return;
-                const res = addToCart(auth.userId, product.id, 1, variantId);
-                setNotice(res.ok ? "Added to shopping bag" : res.error);
+                setNotice("");
+                if (usingMocks()) {
+                  const res = addToCart(auth.userId, product.id, 1, variantId);
+                  setNotice(res.ok ? "Added to shopping bag" : res.error);
+                  return;
+                }
+                setCartBusy(true);
+                try {
+                  const res = await addToCartRemote(product.id, 1, variantId);
+                  setNotice(res.ok ? "Added to shopping bag" : res.error);
+                } finally {
+                  setCartBusy(false);
+                }
               }}
             />
             <Button
-              label={isFav ? "Saved" : "Save"}
+              label={favBusy ? "Saving…" : isFav ? "Saved" : "Save"}
               tone={isFav ? "soft" : "ghost"}
               icon={isFav ? "heart" : "heart-outline"}
-              onPress={() => auth.userId && toggleFavorite(auth.userId, "product", product.id)}
+              disabled={favBusy}
+              onPress={async () => {
+                if (!auth.userId) return;
+                setNotice("");
+                if (usingMocks()) {
+                  toggleFavorite(auth.userId, "product", product.id, "Gifts");
+                  setNotice(isFav ? "Removed from favorites" : "Saved to favorites");
+                  return;
+                }
+                setFavBusy(true);
+                try {
+                  const res = await toggleFavoriteRemote("product", product.id, "Gifts");
+                  setNotice(res.ok ? (isFav ? "Removed from favorites" : "Saved to favorites") : res.error);
+                } finally {
+                  setFavBusy(false);
+                }
+              }}
             />
           </View>
           {notice ? <Text style={{ color: colors.lavender, fontSize: 12 }}>{notice}</Text> : null}

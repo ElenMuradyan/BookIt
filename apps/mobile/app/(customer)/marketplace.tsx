@@ -1,4 +1,4 @@
-import { addToCart, cartFor, searchProducts, useBookItState } from "@bookit/api-client";
+import { addToCart, addToCartRemote, cartFor, searchProducts, useBookItState, usingMocks } from "@bookit/api-client";
 import { formatMoney } from "@bookit/utils";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
@@ -16,6 +16,7 @@ export default function MarketplaceScreen() {
   const [catId, setCatId] = useState("all");
   const [sort, setSort] = useState<"rating" | "price_asc" | "price_desc">("rating");
   const [notice, setNotice] = useState("");
+  const [busyId, setBusyId] = useState("");
 
   const products = searchProducts(state, {
     q,
@@ -55,6 +56,7 @@ export default function MarketplaceScreen() {
       ) : (
         products.map((product) => {
           const seller = state.businesses.find((b) => b.id === product.businessId);
+          const isBusy = busyId === product.id;
           return (
             <Card
               key={product.id}
@@ -74,13 +76,25 @@ export default function MarketplaceScreen() {
                   {product.discountLabel ? <Badge label={product.discountLabel} tone="brand" /> : null}
                 </View>
                 <Button
-                  label="Add to Bag"
+                  label={isBusy ? "Adding…" : "Add to Bag"}
                   tone="soft"
                   small
-                  onPress={() => {
+                  disabled={isBusy}
+                  onPress={async () => {
                     if (!auth.userId) return;
-                    const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
-                    setNotice(res.ok ? `Added ${product.name}` : res.error);
+                    setNotice("");
+                    if (usingMocks()) {
+                      const res = addToCart(auth.userId, product.id, 1, product.variants[0]?.id);
+                      setNotice(res.ok ? `Added ${product.name}` : res.error);
+                      return;
+                    }
+                    setBusyId(product.id);
+                    try {
+                      const res = await addToCartRemote(product.id, 1, product.variants[0]?.id);
+                      setNotice(res.ok ? `Added ${product.name}` : res.error);
+                    } finally {
+                      setBusyId("");
+                    }
                   }}
                 />
               </View>

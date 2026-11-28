@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies.auth import require_platform_admin
 from app.core.database import get_db
 from app.models.base import new_id, utc_now
-from app.models.booking import Appointment
+from app.models.booking import Appointment, Booking
 from app.models.business import Business, BusinessApplication
 from app.models.commerce import Order, Payment, Subscription
 from app.models.engagement import Advertisement, Report, Review
@@ -54,7 +54,11 @@ async def admin_overview(
     approved_businesses = (
         await db.execute(select(func.count(Business.id)).where(Business.status == "approved"))
     ).scalar_one()
-    total_bookings = (await db.execute(select(func.count(Appointment.id)))).scalar_one()
+    universal_bookings = (await db.execute(select(func.count(Booking.id)))).scalar_one()
+    legacy_only_bookings = (
+        await db.execute(select(func.count(Appointment.id)).where(Appointment.booking_id.is_(None)))
+    ).scalar_one()
+    total_bookings = int(universal_bookings) + int(legacy_only_bookings)
     total_orders = (await db.execute(select(func.count(Order.id)))).scalar_one()
     platform_revenue = (
         await db.execute(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "recorded"))

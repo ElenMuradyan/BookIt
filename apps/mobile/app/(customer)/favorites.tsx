@@ -1,4 +1,4 @@
-import { publicBusinessById, toggleFavorite, useBookItState } from "@bookit/api-client";
+import { publicBusinessById, toggleFavorite, toggleFavoriteRemote, useBookItState, usingMocks } from "@bookit/api-client";
 import { categoryLabels } from "@bookit/ui";
 import { formatMoney } from "@bookit/utils";
 import { useRouter } from "expo-router";
@@ -14,6 +14,8 @@ export default function FavoritesScreen() {
   const router = useRouter();
   const { colors } = useThemePalette();
   const [collection, setCollection] = useState("All");
+  const [busyId, setBusyId] = useState("");
+  const [notice, setNotice] = useState("");
 
   if (!auth.userId) return null;
   const favs = state.favorites.filter((f) => f.userId === auth.userId);
@@ -28,6 +30,8 @@ export default function FavoritesScreen() {
           <Chip key={c} label={c} active={collection === c} onPress={() => setCollection(c)} />
         ))}
       </ScrollView>
+
+      {notice ? <Text style={{ color: colors.lavender, fontSize: 12 }}>{notice}</Text> : null}
 
       {filtered.length === 0 ? (
         <EmptyState title="No saved favorites" body="Tap Save on any venue or product to build collections." />
@@ -44,16 +48,32 @@ export default function FavoritesScreen() {
               : svc
                 ? `${svc.durationMinutes} min · ${formatMoney(svc.price)}`
                 : fav.targetType;
+          const isBusy = busyId === fav.id;
 
           return (
             <Card key={fav.id} style={{ gap: 8 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                 <Badge label={fav.collection} tone="brand" />
                 <Button
-                  label="Remove"
+                  label={isBusy ? "Removing…" : "Remove"}
                   tone="ghost"
                   small
-                  onPress={() => toggleFavorite(auth.userId!, fav.targetType, fav.targetId, fav.collection)}
+                  disabled={isBusy}
+                  onPress={async () => {
+                    setNotice("");
+                    if (usingMocks()) {
+                      toggleFavorite(auth.userId!, fav.targetType, fav.targetId, fav.collection);
+                      setNotice("Removed from favorites");
+                      return;
+                    }
+                    setBusyId(fav.id);
+                    try {
+                      const res = await toggleFavoriteRemote(fav.targetType, fav.targetId, fav.collection);
+                      setNotice(res.ok ? "Removed from favorites" : res.error);
+                    } finally {
+                      setBusyId("");
+                    }
+                  }}
                 />
               </View>
               <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>{title}</Text>

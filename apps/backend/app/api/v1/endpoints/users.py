@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies.auth import require_user
 from app.core.database import get_db
 from app.models.base import new_id, utc_now
+from app.models.business import Business, Membership
+from app.models.catalog import Employee, Product, Service
 from app.models.engagement import Favorite
 from app.models.user import Address, CustomerProfile, User
 from app.schemas.auth import (
@@ -159,6 +161,60 @@ async def list_favorites(
     return [FavoriteOut.model_validate(r) for r in rows]
 
 
+async def _user_can_view_business(db: AsyncSession, user: User, business: Business | None) -> bool:
+    if not business:
+        return False
+    if business.is_public and business.status == "approved":
+        return True
+    if user.is_platform_admin or business.owner_user_id == user.id:
+        return True
+    membership = (
+        await db.execute(
+            select(Membership.id).where(
+                Membership.business_id == business.id,
+                Membership.user_id == user.id,
+                Membership.status == "active",
+            )
+        )
+    ).scalar_one_or_none()
+    return membership is not None
+
+
+async def _validate_favorite_target(
+    db: AsyncSession,
+    user: User,
+    target_type: str,
+    target_id: str,
+) -> None:
+    if target_type == "business":
+        biz = await db.get(Business, target_id)
+        if await _user_can_view_business(db, user, biz):
+            return
+    elif target_type == "service":
+        svc = await db.get(Service, target_id)
+        if svc and svc.active:
+            biz = await db.get(Business, svc.business_id)
+            if await _user_can_view_business(db, user, biz):
+                return
+    elif target_type == "employee":
+        emp = await db.get(Employee, target_id)
+        if emp:
+            biz = await db.get(Business, emp.business_id)
+            if await _user_can_view_business(db, user, biz):
+                return
+    elif target_type == "product":
+        prd = await db.get(Product, target_id)
+        if prd and prd.active:
+            biz = await db.get(Business, prd.business_id)
+            if await _user_can_view_business(db, user, biz):
+                return
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Target not found or unavailable",
+    )
+
+
 @router.post("/me/favorites/toggle", response_model=OkResponse)
 async def toggle_favorite(
     payload: FavoriteToggleIn,
@@ -175,6 +231,8 @@ async def toggle_favorite(
         await db.delete(existing)
         await db.commit()
         return OkResponse(ok=True, message="Removed from favorites")
+
+    await _validate_favorite_target(db, user, payload.target_type, payload.target_id)
 
     db.add(
         Favorite(

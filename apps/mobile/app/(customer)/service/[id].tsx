@@ -3,7 +3,9 @@ import {
   publicBusinessById,
   serviceById,
   toggleFavorite,
+  toggleFavoriteRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { brand } from "@bookit/design-system";
 import { categoryLabels } from "@bookit/ui";
@@ -22,6 +24,7 @@ export default function ServiceDetailScreen() {
   const router = useRouter();
   const { colors } = useThemePalette();
   const [notice, setNotice] = useState("");
+  const [favBusy, setFavBusy] = useState(false);
 
   const service = id ? serviceById(state, id) : undefined;
   const business = service ? publicBusinessById(state, service.businessId) : undefined;
@@ -104,13 +107,25 @@ export default function ServiceDetailScreen() {
             onPress={() => router.push(`/(customer)/book/${business.id}?service=${service.id}`)}
           />
           <Button
-            label={isFav ? "Saved" : "Save"}
+            label={favBusy ? "Saving…" : isFav ? "Saved" : "Save"}
             tone={isFav ? "soft" : "ghost"}
             icon={isFav ? "heart" : "heart-outline"}
-            onPress={() => {
+            disabled={favBusy}
+            onPress={async () => {
               if (!auth.userId) return;
-              toggleFavorite(auth.userId, "service", service.id, "Services");
-              setNotice(isFav ? "Removed from saved services" : "Saved service to favorites");
+              setNotice("");
+              if (usingMocks()) {
+                toggleFavorite(auth.userId, "service", service.id, "Services");
+                setNotice(isFav ? "Removed from saved services" : "Saved service to favorites");
+                return;
+              }
+              setFavBusy(true);
+              try {
+                const res = await toggleFavoriteRemote("service", service.id, "Services");
+                setNotice(res.ok ? (isFav ? "Removed from saved services" : "Saved service to favorites") : res.error);
+              } finally {
+                setFavBusy(false);
+              }
             }}
           />
         </View>

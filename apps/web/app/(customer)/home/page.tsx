@@ -7,7 +7,9 @@ import {
   personalizedBusinesses,
   searchProducts,
   toggleFavorite,
+  toggleFavoriteRemote,
   useBookItState,
+  usingMocks,
 } from "@bookit/api-client";
 import { appointmentStatus, categoryLabels, orderStatus } from "@bookit/ui";
 import { formatDate, formatDateTime, formatMoney, initials } from "@bookit/utils";
@@ -22,6 +24,8 @@ export default function CustomerHomePage() {
   const auth = useAuth();
   const state = useBookItState();
   const [city, setCity] = useState("Seattle");
+  const [favBusyId, setFavBusyId] = useState("");
+  const [notice, setNotice] = useState("");
   if (!auth.user) return null;
 
   const userId = auth.user.id;
@@ -179,13 +183,31 @@ export default function CustomerHomePage() {
                     </div>
                   </div>
                 </Link>
-                <Button tone="ghost" small onClick={() => toggleFavorite(userId, "business", biz.id)}>
-                  {favBizIds.includes(biz.id) ? "Saved" : "Save"}
+                <Button
+                  tone="ghost"
+                  small
+                  disabled={favBusyId === biz.id}
+                  onClick={async () => {
+                    if (usingMocks()) {
+                      toggleFavorite(userId, "business", biz.id);
+                      return;
+                    }
+                    setFavBusyId(biz.id);
+                    try {
+                      const res = await toggleFavoriteRemote("business", biz.id);
+                      setNotice(res.ok ? (favBizIds.includes(biz.id) ? "Removed from favorites" : "Saved to favorites") : res.error);
+                    } finally {
+                      setFavBusyId("");
+                    }
+                  }}
+                >
+                  {favBusyId === biz.id ? "Saving…" : favBizIds.includes(biz.id) ? "Saved" : "Save"}
                 </Button>
               </div>
             </article>
           ))}
         </div>
+        {notice ? <p className="tiny" style={{ color: "var(--lavender)", margin: 0 }}>{notice}</p> : null}
       </section>
 
       <section className="stack">

@@ -16,6 +16,7 @@ import type {
   EventOffering,
   EventSession,
   Expense,
+  Favorite,
   HotelStayAvailability,
   Membership,
   MembershipRole,
@@ -1331,3 +1332,59 @@ export async function setReportStatusRemote(
   await hydrateFromBackend();
   return { ok: true, data: res.data };
 }
+
+export async function toggleFavoriteRemote(
+  targetType: Favorite["targetType"],
+  targetId: string,
+  collection = "Saved",
+): Promise<ActionResult<undefined>> {
+  const res = await apiJson("/api/v1/users/me/favorites/toggle", {
+    method: "POST",
+    body: JSON.stringify({ targetType, targetId, collection }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: undefined };
+}
+
+export async function moveFavoriteRemote(
+  favoriteId: string,
+  collection: string,
+): Promise<ActionResult<Favorite>> {
+  const res = await apiJson<Favorite>(`/api/v1/users/me/favorites/${encodeURIComponent(favoriteId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ collection }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function changePasswordRemote(
+  currentPassword: string,
+  newPassword: string,
+  confirmPassword: string,
+): Promise<ActionResult<undefined>> {
+  if (!currentPassword || currentPassword.length < 8) {
+    return { ok: false, error: "Enter your current password" };
+  }
+  if (!newPassword || newPassword.length < 8) {
+    return { ok: false, error: "New password must be at least 8 characters" };
+  }
+  if (newPassword !== confirmPassword) {
+    return { ok: false, error: "Passwords do not match" };
+  }
+  const res = await apiJson("/api/v1/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: undefined };
+}
+
+export async function deactivateAccountRemote(): Promise<ActionResult<undefined>> {
+  const res = await apiJson("/api/v1/auth/deactivate", { method: "POST" });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: undefined };
+}
+

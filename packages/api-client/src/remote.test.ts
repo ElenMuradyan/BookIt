@@ -4,11 +4,15 @@ import {
   acceptWorkspaceInviteRemote,
   addAddressRemote,
   addReviewRemote,
+  changePasswordRemote,
   checkInUniversalQrRemote,
   createUniversalBookingRemote,
+  deactivateAccountRemote,
   declineWorkspaceInviteRemote,
   fetchAvailabilityRemote,
+  moveFavoriteRemote,
   sendBusinessMessageRemote,
+  toggleFavoriteRemote,
 } from "./remote";
 
 type RecordedRequest = {
@@ -244,5 +248,54 @@ describe("@bookit/api-client remote helpers", () => {
     expect(availReq?.url).toContain("serviceId=svc_1");
     expect(availReq?.url).toContain("date=2026-12-01");
     expect(availReq?.url).toContain("employeeId=emp_1");
+  });
+
+  it("toggleFavoriteRemote, moveFavoriteRemote, changePasswordRemote, and deactivateAccountRemote call expected routes", async () => {
+    const toggleRes = await toggleFavoriteRemote("product", "prd_1", "Gifts");
+    expect(toggleRes.ok).toBe(true);
+    const toggleReq = requests.find((r) => r.url.endsWith("/api/v1/users/me/favorites/toggle"));
+    expect(toggleReq?.method).toBe("POST");
+    expect(toggleReq?.body).toEqual({ targetType: "product", targetId: "prd_1", collection: "Gifts" });
+
+    mockHandler = (url) => {
+      if (url.endsWith("/api/v1/bootstrap")) return jsonResponse(EMPTY_BOOTSTRAP);
+      return jsonResponse({
+        id: "fav_1",
+        userId: "usr_1",
+        targetType: "product",
+        targetId: "prd_1",
+        collection: "Weekends",
+        createdAt: "2026-11-28T10:00:00Z",
+      });
+    };
+    const moveRes = await moveFavoriteRemote("fav_1", "Weekends");
+    expect(moveRes.ok).toBe(true);
+    if (moveRes.ok) expect(moveRes.data.collection).toBe("Weekends");
+    const moveReq = requests.find((r) => r.url.endsWith("/api/v1/users/me/favorites/fav_1"));
+    expect(moveReq?.method).toBe("PATCH");
+    expect(moveReq?.body).toEqual({ collection: "Weekends" });
+
+    const mismatchRes = await changePasswordRemote("OldPass123!", "NewPass123!", "Mismatch123!");
+    expect(mismatchRes.ok).toBe(false);
+
+    mockHandler = () => jsonResponse({ detail: "Incorrect current password" }, 400);
+    const wrongPwRes = await changePasswordRemote("WrongPass123!", "NewPass123!", "NewPass123!");
+    expect(wrongPwRes.ok).toBe(false);
+    if (!wrongPwRes.ok) expect(wrongPwRes.error).toBe("Incorrect current password");
+
+    mockHandler = () => jsonResponse({ ok: true, message: "Password changed" });
+    const pwRes = await changePasswordRemote("OldPass123!", "NewPass123!", "NewPass123!");
+    expect(pwRes.ok).toBe(true);
+    const pwReq = requests.find((r) => r.url.endsWith("/api/v1/auth/change-password") && r.body?.currentPassword === "OldPass123!");
+    expect(pwReq?.method).toBe("POST");
+    expect(pwReq?.body).toEqual({
+      currentPassword: "OldPass123!",
+      newPassword: "NewPass123!",
+      confirmPassword: "NewPass123!",
+    });
+
+    const deactRes = await deactivateAccountRemote();
+    expect(deactRes.ok).toBe(true);
+    expect(requests.some((r) => r.url.endsWith("/api/v1/auth/deactivate") && r.method === "POST")).toBe(true);
   });
 });

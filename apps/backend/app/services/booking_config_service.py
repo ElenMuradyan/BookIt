@@ -90,6 +90,15 @@ CATEGORY_BOOKING_DEFAULTS: dict[str, list[_ModelSeedSpec]] = {
     ],
     "travel": [
         _ModelSeedSpec(
+            booking_model="resource",
+            enabled=True,
+            display_label="Transfers & Vehicles",
+            min_notice_minutes=60,
+            max_advance_days=180,
+            cancellation_cutoff_hours=24,
+            settings={"slotIntervalMinutes": 60},
+        ),
+        _ModelSeedSpec(
             booking_model="ticket",
             enabled=True,
             display_label="Tours & Tickets",
@@ -107,6 +116,18 @@ CATEGORY_BOOKING_DEFAULTS: dict[str, list[_ModelSeedSpec]] = {
             cancellation_cutoff_hours=24,
         ),
         _ModelSeedSpec(booking_model="appointment", enabled=False, display_label="Custom Travel Planning"),
+    ],
+    "auto": [
+        _ModelSeedSpec(
+            booking_model="resource",
+            enabled=True,
+            display_label="Service Bays & Courtesy Vehicles",
+            min_notice_minutes=60,
+            max_advance_days=90,
+            cancellation_cutoff_hours=12,
+            settings={"slotIntervalMinutes": 60},
+        ),
+        _ModelSeedSpec(booking_model="appointment", enabled=True, display_label="Detailing & Maintenance"),
     ],
     "sports": [
         _ModelSeedSpec(
