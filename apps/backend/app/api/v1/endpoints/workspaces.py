@@ -12,14 +12,64 @@ from app.models.booking import Appointment, Booking, CustomerNote
 from app.models.business import Business
 from app.models.catalog import Product
 from app.models.commerce import Expense, Invoice, Order, Plan, Subscription
-from app.models.engagement import Campaign, PromoCode, Review
+from app.core.config import get_settings
+from app.models.engagement import Campaign, Notification, PromoCode, Review
 from app.models.user import User
 from app.schemas.booking import CustomerNoteIn, CustomerNoteOut
-from app.schemas.commerce import ExpenseIn, ExpenseOut, PlanChangeIn, SubscriptionOut
+from app.schemas.commerce import (
+    ExpenseIn,
+    ExpenseOut,
+    InvoiceOut,
+    PaymentIntentOut,
+    PaymentOut,
+    PlanChangeIn,
+    SubscriptionCancelIn,
+    SubscriptionOut,
+    SubscriptionRenewIn,
+    SubscriptionRenewOut,
+)
 from app.schemas.engagement import CampaignIn, CampaignOut, PromoIn, PromoOut, ReviewIn, ReviewOut
+from app.services.notification_service import (
+    build_subscription_lifecycle_email,
+    send_user_transactional_email,
+)
+from app.services.payment_service import create_payment_intent
 from app.services.rbac import require_business_permission
 
 router = APIRouter(tags=["workspaces"])
+
+
+async def _sync_subscription_lifecycle(db: AsyncSession, sub: Subscription) -> Subscription:
+    now = utc_now()
+    changed = False
+    if sub.status == "trialing" and sub.trial_ends_at and sub.trial_ends_at <= now:
+        sub.status = "past_due"
+        changed = True
+    elif sub.status == "active" and sub.renews_at and sub.renews_at <= now:
+        sub.status = "past_due"
+        changed = True
+
+    if changed:
+        plan = await db.get(Plan, sub.plan_id)
+        open_inv = (
+            await db.execute(
+                select(Invoice)
+                .where(Invoice.business_id == sub.business_id, Invoice.status == "open")
+                .order_by(Invoice.issued_at.desc())
+            )
+        ).scalars().first()
+        if not open_inv and plan:
+            db.add(
+                Invoice(
+                    id=new_id("inv"),
+                    business_id=sub.business_id,
+                    amount=float(plan.monthly_price),
+                    status="open",
+                    description=f"Monthly renewal ({plan.name})",
+                )
+            )
+        await db.flush()
+    return sub
 
 
 @router.get("/workspaces/{business_id}/overview")
@@ -165,6 +215,24 @@ async def create_promo(
     return PromoOut.model_validate(promo)
 
 
+@router.get("/workspaces/{business_id}/subscription", response_model=SubscriptionOut)
+async def get_subscription(
+    business_id: str,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await require_business_permission(db, user, business_id, "subscription.manage")
+    sub = (
+        await db.execute(select(Subscription).where(Subscription.business_id == business_id))
+    ).scalar_one_or_none()
+    if not sub:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
+    await _sync_subscription_lifecycle(db, sub)
+    await db.commit()
+    await db.refresh(sub)
+    return SubscriptionOut.model_validate(sub)
+
+
 @router.patch("/workspaces/{business_id}/subscription", response_model=SubscriptionOut)
 async def change_subscription(
     business_id: str,
@@ -172,7 +240,7 @@ async def change_subscription(
     user: Annotated[User, Depends(require_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    await require_business_permission(db, user, business_id, "subscription.manage")
+    business, _ = await require_business_permission(db, user, business_id, "subscription.manage")
     plan = await db.get(Plan, payload.plan_id)
     if not plan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
@@ -181,8 +249,13 @@ async def change_subscription(
     ).scalar_one_or_none()
     now = utc_now()
     if sub:
+        await _sync_subscription_lifecycle(db, sub)
         sub.plan_id = payload.plan_id
-        sub.status = "trialing" if sub.status == "trialing" else "active"
+        if sub.status == "canceled":
+            sub.status = "active"
+            sub.renews_at = now + timedelta(days=30)
+        elif sub.status != "trialing":
+            sub.status = "active"
     else:
         sub = Subscription(
             id=new_id("sub"),
@@ -200,7 +273,7 @@ async def change_subscription(
             id=new_id("inv"),
             business_id=business_id,
             amount=float(plan.monthly_price) if sub.status == "active" else 0.0,
-            status="open",
+            status="open" if sub.status == "active" else "trial",
             description=(
                 f"Plan change to {plan.name} (trial)"
                 if sub.status == "trialing"
@@ -208,9 +281,183 @@ async def change_subscription(
             ),
         )
     )
+    db.add(
+        Notification(
+            id=new_id("ntf"),
+            user_id=business.owner_user_id,
+            business_id=business_id,
+            category="order",
+            title=f"Subscription updated to {plan.name}",
+            body=f"{business.name} plan is now {plan.name} ({sub.status}).",
+            href="/workspace/settings",
+        )
+    )
+    owner = await db.get(User, business.owner_user_id)
+    if owner:
+        subj, body_txt, html_txt = build_subscription_lifecycle_email(
+            recipient_name=f"{owner.first_name} {owner.last_name}".strip() or owner.username,
+            business_name=business.name,
+            event_kind="changed",
+            plan_name=plan.name,
+            status_label=sub.status,
+        )
+        await send_user_transactional_email(
+            db, user_id=owner.id, category="order", subject=subj, body=body_txt, html_body=html_txt
+        )
     await db.commit()
     await db.refresh(sub)
     return SubscriptionOut.model_validate(sub)
+
+
+@router.post("/workspaces/{business_id}/subscription/cancel", response_model=SubscriptionOut)
+async def cancel_subscription(
+    business_id: str,
+    payload: SubscriptionCancelIn,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    business, _ = await require_business_permission(db, user, business_id, "subscription.manage")
+    sub = (
+        await db.execute(select(Subscription).where(Subscription.business_id == business_id).with_for_update())
+    ).scalar_one_or_none()
+    if not sub:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
+    if sub.status == "canceled":
+        return SubscriptionOut.model_validate(sub)
+
+    sub.status = "canceled"
+    if payload.immediate:
+        sub.renews_at = utc_now()
+    plan = await db.get(Plan, sub.plan_id)
+    db.add(
+        Notification(
+            id=new_id("ntf"),
+            user_id=business.owner_user_id,
+            business_id=business_id,
+            category="order",
+            title="Subscription canceled",
+            body=f"{business.name} subscription was canceled. {payload.reason or ''}".strip(),
+            href="/workspace/settings",
+        )
+    )
+    owner = await db.get(User, business.owner_user_id)
+    if owner:
+        subj, body_txt, html_txt = build_subscription_lifecycle_email(
+            recipient_name=f"{owner.first_name} {owner.last_name}".strip() or owner.username,
+            business_name=business.name,
+            event_kind="canceled",
+            plan_name=plan.name if plan else sub.plan_id,
+            status_label="canceled",
+            detail=payload.reason,
+        )
+        await send_user_transactional_email(
+            db, user_id=owner.id, category="order", subject=subj, body=body_txt, html_body=html_txt
+        )
+    await db.commit()
+    await db.refresh(sub)
+    return SubscriptionOut.model_validate(sub)
+
+
+@router.post("/workspaces/{business_id}/subscription/renew", response_model=SubscriptionRenewOut)
+async def renew_subscription(
+    business_id: str,
+    payload: SubscriptionRenewIn,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    business, _ = await require_business_permission(db, user, business_id, "subscription.manage")
+    now = utc_now()
+    sub = (
+        await db.execute(select(Subscription).where(Subscription.business_id == business_id).with_for_update())
+    ).scalar_one_or_none()
+    target_plan_id = payload.plan_id or (sub.plan_id if sub else "professional")
+    plan = await db.get(Plan, target_plan_id)
+    if not plan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+
+    if not sub:
+        sub = Subscription(
+            id=new_id("sub"),
+            business_id=business_id,
+            plan_id=target_plan_id,
+            status="past_due",
+            trial_ends_at=now,
+            renews_at=now,
+            started_at=now,
+        )
+        db.add(sub)
+        await db.flush()
+    else:
+        sub.plan_id = target_plan_id
+        if sub.status == "canceled":
+            sub.status = "past_due"
+
+    open_inv = (
+        await db.execute(
+            select(Invoice)
+            .where(Invoice.business_id == business_id, Invoice.status == "open")
+            .order_by(Invoice.issued_at.desc())
+        )
+    ).scalars().first()
+    if open_inv:
+        open_inv.amount = float(plan.monthly_price)
+        open_inv.description = f"Subscription renewal ({plan.name})"
+    else:
+        open_inv = Invoice(
+            id=new_id("inv"),
+            business_id=business_id,
+            amount=float(plan.monthly_price),
+            status="open",
+            description=f"Subscription renewal ({plan.name})",
+        )
+        db.add(open_inv)
+    await db.commit()
+    await db.refresh(sub)
+    await db.refresh(open_inv)
+
+    payment, intent = await create_payment_intent(
+        db,
+        payer_id=user.id,
+        reference_type="subscription",
+        reference_id=open_inv.id,
+        method=payload.method,
+        idempotency_key=payload.idempotency_key,
+        actor=user,
+    )
+    settings = get_settings()
+    return SubscriptionRenewOut(
+        subscription=SubscriptionOut.model_validate(sub),
+        invoice=InvoiceOut(
+            id=open_inv.id,
+            business_id=open_inv.business_id,
+            amount=float(open_inv.amount),
+            status=open_inv.status,
+            description=open_inv.description,
+            issued_at=open_inv.issued_at,
+        ),
+        payment_intent=PaymentIntentOut(
+            payment=PaymentOut(
+                id=payment.id,
+                payer_id=payment.payer_id,
+                business_id=payment.business_id,
+                amount=float(payment.amount),
+                currency=payment.currency,
+                status=payment.status,
+                method=payment.method,
+                reference_type=payment.reference_type,
+                reference_id=payment.reference_id,
+                provider=payment.provider,
+                provider_reference=payment.provider_reference,
+                note=payment.note,
+                created_at=payment.created_at,
+            ),
+            configured=intent.configured,
+            provider=intent.provider,
+            client_secret=intent.client_secret,
+            publishable_key=settings.stripe_publishable_key if intent.provider == "stripe" else None,
+            status_detail=intent.status_detail,
+        ),
+    )
 
 
 @router.post("/reviews", response_model=ReviewOut, status_code=status.HTTP_201_CREATED)

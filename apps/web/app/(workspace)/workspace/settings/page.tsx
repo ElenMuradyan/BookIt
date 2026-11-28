@@ -2,8 +2,12 @@
 
 import {
   bookingConfigsForBusiness,
+  cancelSubscription,
+  cancelSubscriptionRemote,
   changePlan,
   changePlanRemote,
+  renewSubscription,
+  renewSubscriptionRemote,
   saveBookingConfig,
   updateBusiness,
   updateBusinessHours,
@@ -568,19 +572,83 @@ export default function WorkspaceSettingsPage() {
           {section === "subscription" ? (
             <div className="stack">
               <h2 style={{ margin: 0 }}>Subscription Management</h2>
-              <div className="select-card row" style={{ justifyContent: "space-between" }}>
+              <div className="select-card row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
                 <div>
                   <strong>Current plan: {(sub?.planId ?? "professional").toUpperCase()}</strong>
                   <div className="tiny">
                     Status: {sub?.status ?? "trialing"}{" "}
-                    {sub?.trialEndsAt ? `· 30-day trial ends ${formatDate(sub.trialEndsAt)}` : ""}
+                    {sub?.trialEndsAt ? `· Trial ends ${formatDate(sub.trialEndsAt)}` : ""}
+                    {sub?.renewsAt ? `· Renews ${formatDate(sub.renewsAt)}` : ""}
                   </div>
                 </div>
-                <Badge tone="brand">{sub?.status ?? "trialing"}</Badge>
+                <div className="row" style={{ gap: 8 }}>
+                  <Badge tone={sub?.status === "past_due" || sub?.status === "canceled" ? "warning" : "brand"}>
+                    {sub?.status ?? "trialing"}
+                  </Badge>
+                  {can(role, "subscription.manage") ? (
+                    <>
+                      <Button
+                        small
+                        tone="soft"
+                        disabled={saving}
+                        onClick={async () => {
+                          setNotice("");
+                          setErrorMsg("");
+                          setSaving(true);
+                          try {
+                            const res = usingMocks()
+                              ? renewSubscription(bizId, sub?.planId)
+                              : await renewSubscriptionRemote(bizId, { planId: sub?.planId });
+                            if (!res.ok) {
+                              setErrorMsg(res.error);
+                              return;
+                            }
+                            const detail = res.data.paymentIntent?.statusDetail;
+                            setNotice(
+                              detail
+                                ? `Subscription renewal prepared: ${detail}`
+                                : "Subscription renewal initiated.",
+                            );
+                          } finally {
+                            setSaving(false);
+                          }
+                        }}
+                      >
+                        Renew / Pay Invoice
+                      </Button>
+                      {sub?.status !== "canceled" ? (
+                        <Button
+                          small
+                          tone="ghost"
+                          disabled={saving}
+                          onClick={async () => {
+                            setNotice("");
+                            setErrorMsg("");
+                            setSaving(true);
+                            try {
+                              const res = usingMocks()
+                                ? cancelSubscription(bizId)
+                                : await cancelSubscriptionRemote(bizId, { reason: "Owner requested cancellation" });
+                              if (!res.ok) {
+                                setErrorMsg(res.error);
+                                return;
+                              }
+                              setNotice("Subscription canceled.");
+                            } finally {
+                              setSaving(false);
+                            }
+                          }}
+                        >
+                          Cancel Subscription
+                        </Button>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
               </div>
               <div className="grid-3">
                 {state.plans.map((plan) => {
-                  const active = (sub?.planId ?? "professional") === plan.id;
+                  const active = (sub?.planId ?? "professional") === plan.id && sub?.status !== "canceled";
                   return (
                     <div key={plan.id} className={`select-card stack ${active ? "on" : ""}`} style={{ gap: 8 }}>
                       <strong>{plan.name}</strong>

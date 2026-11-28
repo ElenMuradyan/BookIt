@@ -11,11 +11,15 @@ import type {
   EventOffering,
   MembershipRole,
   OrderStatus,
+  Payment,
   PaymentMethod,
+  PlanId,
   Product,
   Resource,
   Review,
   Service,
+  Subscription,
+  SubscriptionRenewResult,
   UniversalBooking,
   UniversalBookingCreateInput,
   UniversalBookingStatus,
@@ -2078,4 +2082,76 @@ export function checkInUniversalQr(
   if (error) return fail(error);
   if (!result) return fail("No matching pass or booking code found for this business");
   return { ok: true, data: result };
+}
+
+export function cancelSubscription(businessId: string): ActionResult<Subscription> {
+  let updated: Subscription | undefined;
+  draft((next) => {
+    const sub = next.subscriptions.find((s) => s.businessId === businessId);
+    if (!sub) return;
+    sub.status = "canceled";
+    updated = sub;
+  });
+  if (!updated) return fail("Subscription not found");
+  return { ok: true, data: updated };
+}
+
+export function renewSubscription(
+  businessId: string,
+  planId?: PlanId,
+): ActionResult<SubscriptionRenewResult> {
+  const plan = state.plans.find((p) => p.id === (planId ?? state.subscriptions.find((s) => s.businessId === businessId)?.planId ?? "professional"));
+  if (!plan) return fail("Plan not found");
+  let result: SubscriptionRenewResult | undefined;
+  const now = new Date();
+  const nextMonth = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  draft((next) => {
+    const sub = next.subscriptions.find((s) => s.businessId === businessId);
+    if (!sub) return;
+    sub.planId = plan.id;
+    sub.status = "active";
+    sub.renewsAt = nextMonth;
+    const inv = next.invoices.find((i) => i.businessId === businessId && i.status === "open") ?? {
+      id: nid("inv"),
+      businessId,
+      amount: plan.monthlyPrice,
+      status: "paid" as const,
+      description: `BookIt ${plan.name} plan (preview)`,
+      issuedAt: now.toISOString(),
+    };
+    inv.status = "paid";
+    if (!next.invoices.some((i) => i.id === inv.id)) {
+      next.invoices.unshift(inv);
+    }
+    const pay: Payment = {
+      id: nid("pay"),
+      payerId: next.businesses.find((b) => b.id === businessId)?.ownerUserId ?? "",
+      businessId,
+      amount: plan.monthlyPrice,
+      currency: "USD",
+      status: "recorded",
+      method: "card_token_pending",
+      referenceType: "subscription",
+      referenceId: sub.id,
+      provider: "sandbox_unconfigured",
+      createdAt: now.toISOString(),
+      note: "Preview renewal settlement.",
+    };
+    next.payments.unshift(pay);
+    result = { subscription: sub, invoice: inv };
+  });
+  if (!result) return fail("Subscription not found");
+  return { ok: true, data: result };
+}
+
+export function refundPayment(paymentId: string): ActionResult<Payment> {
+  let updated: Payment | undefined;
+  draft((next) => {
+    const pay = next.payments.find((p) => p.id === paymentId);
+    if (!pay) return;
+    pay.status = "refunded";
+    updated = pay;
+  });
+  if (!updated) return fail("Payment not found");
+  return { ok: true, data: updated };
 }

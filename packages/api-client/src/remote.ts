@@ -18,11 +18,14 @@ import type {
   Expense,
   Favorite,
   HotelStayAvailability,
+  Invoice,
   Membership,
   MembershipRole,
   NotificationPreferences,
   Order,
   OrderStatus,
+  Payment,
+  PaymentIntentResult,
   PaymentMethod,
   PlanId,
   Product,
@@ -36,6 +39,7 @@ import type {
   Service,
   SessionAttendee,
   Subscription,
+  SubscriptionRenewResult,
   TicketTier,
   UniversalBooking,
   UniversalBookingCreateInput,
@@ -1122,6 +1126,95 @@ export async function changePlanRemote(
   const res = await apiJson<Subscription>(
     `/api/v1/workspaces/${encodeURIComponent(businessId)}/subscription`,
     { method: "PATCH", body: JSON.stringify({ planId }) },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function cancelSubscriptionRemote(
+  businessId: string,
+  options?: { reason?: string; immediate?: boolean },
+): Promise<ActionResult<Subscription>> {
+  const res = await apiJson<Subscription>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/subscription/cancel`,
+    {
+      method: "POST",
+      body: JSON.stringify({ reason: options?.reason, immediate: Boolean(options?.immediate) }),
+    },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function renewSubscriptionRemote(
+  businessId: string,
+  options?: { planId?: PlanId; method?: "card_token_pending" | "wallet" },
+): Promise<ActionResult<SubscriptionRenewResult>> {
+  const res = await apiJson<SubscriptionRenewResult>(
+    `/api/v1/workspaces/${encodeURIComponent(businessId)}/subscription/renew`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        planId: options?.planId,
+        method: options?.method ?? "card_token_pending",
+        idempotencyKey: makeIdempotencyKey("sub"),
+      }),
+    },
+  );
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function createPaymentIntentRemote(input: {
+  referenceType: "appointment" | "booking" | "order" | "subscription";
+  referenceId: string;
+  method?: PaymentMethod;
+  idempotencyKey?: string;
+}): Promise<ActionResult<PaymentIntentResult>> {
+  const res = await apiJson<PaymentIntentResult>("/api/v1/payments/intents", {
+    method: "POST",
+    body: JSON.stringify({
+      referenceType: input.referenceType,
+      referenceId: input.referenceId,
+      method: input.method ?? "card_token_pending",
+      idempotencyKey: input.idempotencyKey ?? makeIdempotencyKey("pi"),
+    }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function fetchPaymentsRemote(businessId?: string): Promise<ActionResult<Payment[]>> {
+  const qs = businessId ? `?businessId=${encodeURIComponent(businessId)}` : "";
+  const res = await apiJson<Payment[]>(`/api/v1/payments${qs}`, { method: "GET" });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  return { ok: true, data: res.data };
+}
+
+export async function refundPaymentRemote(
+  paymentId: string,
+  options?: { amount?: number; reason?: string },
+): Promise<ActionResult<Payment>> {
+  const res = await apiJson<Payment>(`/api/v1/payments/${encodeURIComponent(paymentId)}/refund`, {
+    method: "POST",
+    body: JSON.stringify({ amount: options?.amount, reason: options?.reason }),
+  });
+  if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
+  await hydrateFromBackend();
+  return { ok: true, data: res.data };
+}
+
+export async function sendUniversalBookingReminderRemote(
+  bookingId: string,
+  message?: string,
+): Promise<ActionResult<{ ok: boolean; bookingId: string; delivered: boolean; deliveryStatus: string }>> {
+  const res = await apiJson<{ ok: boolean; bookingId: string; delivered: boolean; deliveryStatus: string }>(
+    `/api/v1/bookings/universal/${encodeURIComponent(bookingId)}/remind`,
+    { method: "POST", body: JSON.stringify({ message }) },
   );
   if (!res.ok) return { ok: false, error: res.error, fieldErrors: res.fieldErrors };
   await hydrateFromBackend();

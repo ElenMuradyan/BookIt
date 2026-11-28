@@ -559,3 +559,14 @@ class UniversalCheckInOut(CamelModel):
     customer_id: str
     legacy_appointment_id: str | None = None
     ticket_pass_id: str | None = None
+
+
+class UniversalReminderIn(CamelModel):
+    message: str | None = Field(default=None, max_length=500)
+
+
+class UniversalReminderOut(CamelModel):
+    ok: bool
+    booking_id: str
+    delivered: bool
+    delivery_status: str

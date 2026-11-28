@@ -12,7 +12,7 @@ from app.models.base import new_id, utc_now
 from app.models.booking import Appointment, Booking
 from app.models.business import Business, BusinessApplication
 from app.models.commerce import Order, Payment, Subscription
-from app.models.engagement import Advertisement, Report, Review
+from app.models.engagement import Advertisement, Notification, Report, Review
 from app.models.user import RefreshSession, User
 from app.schemas.auth import UserOut
 from app.schemas.business import ApplicationReviewIn, BusinessApplicationOut, BusinessOut
@@ -25,6 +25,7 @@ from app.schemas.engagement import (
     ReviewOut,
 )
 from app.services.auth_service import record_audit
+from app.services.notification_service import build_application_review_email, send_user_transactional_email
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -125,6 +126,35 @@ async def review_application(
                     started_at=now,
                 )
             )
+
+    biz_name = business.name if business else "your business"
+    db.add(
+        Notification(
+            id=new_id("ntf"),
+            user_id=app_row.applicant_user_id,
+            business_id=app_row.business_id,
+            category="message",
+            title=f"Application {next_status.replace('_', ' ')}",
+            body=f"{biz_name}: {app_row.reviewer_note or f'Status updated to {next_status}.'}",
+            href="/workspace/settings",
+        )
+    )
+    applicant = await db.get(User, app_row.applicant_user_id)
+    if applicant:
+        subj, body_txt, html_txt = build_application_review_email(
+            recipient_name=f"{applicant.first_name} {applicant.last_name}".strip() or applicant.username,
+            business_name=biz_name,
+            status_label=next_status,
+            reviewer_note=app_row.reviewer_note,
+        )
+        await send_user_transactional_email(
+            db,
+            user_id=applicant.id,
+            category="message",
+            subject=subj,
+            body=body_txt,
+            html_body=html_txt,
+        )
 
     await record_audit(
         db,

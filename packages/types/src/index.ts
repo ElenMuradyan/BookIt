@@ -105,7 +105,7 @@ export type OrderStatus =
   | "cancelled"
   | "refunded";
 
-export type PaymentStatus = "recorded" | "estimated" | "refunded" | "pending";
+export type PaymentStatus = "recorded" | "estimated" | "refunded" | "pending" | "failed";
 export type PaymentMethod = "card_token_pending" | "wallet" | "in_person" | "pay_on_pickup";
 
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -716,9 +716,20 @@ export interface Payment {
   method: PaymentMethod;
   referenceType: "appointment" | "booking" | "order" | "subscription";
   referenceId: ID;
+  provider?: string;
+  providerReference?: string | null;
   createdAt: ISODateTime;
   /** Present only to explain estimated rows. Never a card number. */
   note?: string;
+}
+
+export interface PaymentIntentResult {
+  payment: Payment;
+  configured: boolean;
+  provider: string;
+  clientSecret?: string | null;
+  publishableKey?: string | null;
+  statusDetail: string;
 }
 
 export type PlanId = "starter" | "professional" | "enterprise";
@@ -750,7 +761,13 @@ export interface Invoice {
   issuedAt: ISODateTime;
 }
 
-export type NotificationCategory = "booking" | "order" | "promotion" | "message" | "security";
+export interface SubscriptionRenewResult {
+  subscription: Subscription;
+  invoice?: Invoice | null;
+  paymentIntent?: PaymentIntentResult | null;
+}
+
+export type NotificationCategory = "booking" | "order" | "promotion" | "message" | "security" | "reminder";
 
 export interface Notification {
   id: ID;

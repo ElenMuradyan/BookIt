@@ -15,7 +15,7 @@ import { useState } from "react";
 import { Badge, Button, Empty } from "@/components/ui";
 import { useAuth } from "@/lib/session";
 
-const CATS: Array<"all" | NotificationCategory> = ["all", "booking", "order", "promotion", "message", "security"];
+const CATS: Array<"all" | NotificationCategory> = ["all", "booking", "reminder", "order", "promotion", "message", "security"];
 
 export default function NotificationsPage() {
   const auth = useAuth();

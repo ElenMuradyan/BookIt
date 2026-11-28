@@ -136,3 +136,43 @@ def verify_hmac_signature(payload: bytes, signature_header: str | None, secret: 
     expected = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     cleaned = signature_header.removeprefix("sha256=").strip()
     return hmac.compare_digest(expected, cleaned)
+
+
+def verify_stripe_signature(
+    payload: bytes,
+    signature_header: str | None,
+    secret: str | None,
+    *,
+    tolerance_seconds: int = 300,
+    now_ts: int | None = None,
+) -> bool:
+    if not signature_header or not secret:
+        return False
+
+    timestamp_str: str | None = None
+    v1_signatures: list[str] = []
+    for part in signature_header.split(","):
+        item = part.strip()
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        if key == "t":
+            timestamp_str = value.strip()
+        elif key == "v1":
+            v1_signatures.append(value.strip())
+
+    if not timestamp_str or not v1_signatures:
+        return False
+    try:
+        timestamp = int(timestamp_str)
+    except ValueError:
+        return False
+
+    ref_ts = now_ts if now_ts is not None else int(datetime.now(UTC).timestamp())
+    if tolerance_seconds > 0 and abs(ref_ts - timestamp) > tolerance_seconds:
+        return False
+
+    signed_payload = timestamp_str.encode("utf-8") + b"." + payload
+    expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    return any(hmac.compare_digest(expected, sig) for sig in v1_signatures)
+

@@ -323,7 +323,10 @@ export function WorkspaceMenu() {
           ))}
         </select>
       </label>
-      <button className="btn ghost small" style={{ width: "100%", marginTop: 8 }} onClick={() => { auth.signOut(); router.push("/"); }}>
+      <Link href="/register/business" className="btn ghost small" style={{ width: "100%", marginTop: 8 }}>
+        + Add business
+      </Link>
+      <button className="btn ghost small" style={{ width: "100%", marginTop: 6 }} onClick={() => { auth.signOut(); router.push("/"); }}>
         Sign out
       </button>
     </div>

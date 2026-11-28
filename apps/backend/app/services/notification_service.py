@@ -312,6 +312,12 @@ async def send_email_notification(
     )
 
 
+import html
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.user import CustomerProfile, User
+
+
 async def _run_scheduled_email(
     dispatcher: NotificationDispatcher,
     *,
@@ -351,3 +357,206 @@ def schedule_email_notification(
         body=body,
         html_body=html_body,
     )
+
+
+def _render_transactional_html(*, heading: str, summary: str, details: list[tuple[str, str]]) -> str:
+    rows = "".join(
+        f"<tr><td style='padding:6px 12px 6px 0;color:#666;font-size:13px'>{html.escape(k)}</td>"
+        f"<td style='padding:6px 0;color:#111;font-size:13px;font-weight:600'>{html.escape(v)}</td></tr>"
+        for k, v in details
+        if v
+    )
+    table_html = f"<table style='margin-top:12px;border-collapse:collapse'>{rows}</table>" if rows else ""
+    return (
+        "<div style='font-family:Arial,sans-serif;max-width:540px;margin:0 auto;padding:20px;color:#111'>"
+        f"<h2 style='margin:0 0 8px;font-size:18px'>{html.escape(heading)}</h2>"
+        f"<p style='margin:0 0 12px;color:#333;font-size:14px;line-height:1.5'>{html.escape(summary)}</p>"
+        f"{table_html}"
+        "<p style='margin-top:20px;color:#777;font-size:12px'>BookIt Marketplace</p>"
+        "</div>"
+    )
+
+
+def build_booking_lifecycle_email(
+    *,
+    event_kind: str,
+    recipient_name: str,
+    business_name: str,
+    title: str,
+    when_label: str,
+    status_label: str,
+    check_in_code: str | None = None,
+    reason: str | None = None,
+) -> tuple[str, str, str]:
+    subject_map = {
+        "created": f"Booking {status_label}: {title} at {business_name}",
+        "confirmed": f"Booking confirmed: {title} at {business_name}",
+        "cancelled": f"Booking cancelled: {title} at {business_name}",
+        "rejected": f"Booking update: {title} at {business_name}",
+        "rescheduled": f"Booking rescheduled: {title} at {business_name}",
+        "reminder": f"Reminder: upcoming {title} at {business_name}",
+    }
+    subject = subject_map.get(event_kind, f"Booking update: {title}")
+    lines = [
+        f"Hi {recipient_name},",
+        "",
+        f"{business_name} update for {title}:",
+        f"When: {when_label}",
+        f"Status: {status_label}",
+    ]
+    if check_in_code:
+        lines.append(f"Check-in code: {check_in_code}")
+    if reason:
+        lines.append(f"Note: {reason}")
+    body = "\n".join(lines)
+    details = [
+        ("Business", business_name),
+        ("Booking", title),
+        ("When", when_label),
+        ("Status", status_label),
+    ]
+    if check_in_code:
+        details.append(("Check-in code", check_in_code))
+    if reason:
+        details.append(("Note", reason))
+    html_body = _render_transactional_html(
+        heading=subject,
+        summary=f"Hi {recipient_name}, here are your latest reservation details.",
+        details=details,
+    )
+    return subject, body, html_body
+
+
+def build_payment_lifecycle_email(
+    *,
+    event_kind: str,
+    recipient_name: str,
+    amount: float,
+    currency: str,
+    reference_type: str,
+    reference_id: str,
+    reason: str | None = None,
+) -> tuple[str, str, str]:
+    amt = f"{currency} {amount:.2f}"
+    if event_kind == "succeeded":
+        subject = f"Payment receipt ({amt})"
+        summary = f"Hi {recipient_name}, your payment of {amt} for {reference_type} {reference_id} succeeded."
+    elif event_kind == "failed":
+        subject = f"Action required: payment failed ({amt})"
+        summary = f"Hi {recipient_name}, your payment of {amt} for {reference_type} {reference_id} did not go through."
+    else:
+        subject = f"Refund processed ({amt})"
+        summary = f"Hi {recipient_name}, a refund of {amt} for {reference_type} {reference_id} was recorded."
+    lines = [summary]
+    if reason:
+        lines.append(f"Details: {reason}")
+    body = "\n".join(lines)
+    details = [
+        ("Amount", amt),
+        ("Reference", f"{reference_type} ({reference_id})"),
+    ]
+    if reason:
+        details.append(("Details", reason))
+    html_body = _render_transactional_html(heading=subject, summary=summary, details=details)
+    return subject, body, html_body
+
+
+def build_application_review_email(
+    *,
+    recipient_name: str,
+    business_name: str,
+    status_label: str,
+    reviewer_note: str | None = None,
+) -> tuple[str, str, str]:
+    subject = f"Business application update for {business_name}: {status_label}"
+    summary = f"Hi {recipient_name}, your BookIt merchant application for {business_name} is now '{status_label}'."
+    lines = [summary]
+    if reviewer_note:
+        lines.append(f"Reviewer note: {reviewer_note}")
+    body = "\n".join(lines)
+    details = [("Business", business_name), ("Status", status_label)]
+    if reviewer_note:
+        details.append(("Reviewer note", reviewer_note))
+    html_body = _render_transactional_html(heading=subject, summary=summary, details=details)
+    return subject, body, html_body
+
+
+def build_subscription_lifecycle_email(
+    *,
+    recipient_name: str,
+    business_name: str,
+    event_kind: str,
+    plan_name: str,
+    status_label: str,
+    detail: str | None = None,
+) -> tuple[str, str, str]:
+    subject_map = {
+        "changed": f"Subscription updated for {business_name}",
+        "renewed": f"Subscription renewed for {business_name}",
+        "canceled": f"Subscription canceled for {business_name}",
+        "past_due": f"Subscription payment past due for {business_name}",
+    }
+    subject = subject_map.get(event_kind, f"Subscription update for {business_name}")
+    summary = f"Hi {recipient_name}, {business_name} ({plan_name}) subscription status is '{status_label}'."
+    lines = [summary]
+    if detail:
+        lines.append(detail)
+    body = "\n".join(lines)
+    details = [("Business", business_name), ("Plan", plan_name), ("Status", status_label)]
+    if detail:
+        details.append(("Detail", detail))
+    html_body = _render_transactional_html(heading=subject, summary=summary, details=details)
+    return subject, body, html_body
+
+
+async def send_user_transactional_email(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    category: str,
+    subject: str,
+    body: str,
+    html_body: str | None = None,
+    idempotency_key: str | None = None,
+) -> tuple[bool, str]:
+    """
+    Dispatch transactional email respecting NotificationPreferences when applicable,
+    and return an explicit (delivered, status) tuple without raising into callers unless raised directly.
+    """
+    user = await db.get(User, user_id)
+    if not user or not user.email:
+        return False, "recipient_missing"
+
+    if category != "security":
+        profile = await db.get(CustomerProfile, user_id)
+        prefs = (profile.notification_preferences or {}) if profile else {}
+        if category in ("booking", "reminder") and prefs.get("booking", True) is False:
+            return False, "skipped_by_preference"
+        if category == "order" and prefs.get("order", True) is False:
+            return False, "skipped_by_preference"
+        if category == "promotion" and prefs.get("promotion", False) is False:
+            return False, "skipped_by_preference"
+        if category == "message" and prefs.get("message", True) is False:
+            return False, "skipped_by_preference"
+
+    try:
+        dispatcher = get_dispatcher()
+        provider_id = await dispatcher.send_email(
+            to_email=user.email,
+            subject=subject,
+            body=body,
+            html_body=html_body,
+            idempotency_key=idempotency_key,
+        )
+    except EmailDeliveryError as exc:
+        logger.error(
+            "Transactional email delivery failed",
+            extra={"user_id": user_id, "method": subject, "status_code": exc.status_code},
+        )
+        return False, "failed"
+
+    settings = get_settings()
+    if settings.email_provider == "log_only":
+        return True, "queued_log_only"
+    return True, f"sent:{provider_id}" if provider_id else "sent"
+

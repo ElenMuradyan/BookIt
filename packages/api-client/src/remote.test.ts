@@ -4,14 +4,20 @@ import {
   acceptWorkspaceInviteRemote,
   addAddressRemote,
   addReviewRemote,
+  cancelSubscriptionRemote,
   changePasswordRemote,
   checkInUniversalQrRemote,
+  createPaymentIntentRemote,
   createUniversalBookingRemote,
   deactivateAccountRemote,
   declineWorkspaceInviteRemote,
   fetchAvailabilityRemote,
+  fetchPaymentsRemote,
   moveFavoriteRemote,
+  refundPaymentRemote,
+  renewSubscriptionRemote,
   sendBusinessMessageRemote,
+  sendUniversalBookingReminderRemote,
   toggleFavoriteRemote,
 } from "./remote";
 
@@ -297,5 +303,166 @@ describe("@bookit/api-client remote helpers", () => {
     const deactRes = await deactivateAccountRemote();
     expect(deactRes.ok).toBe(true);
     expect(requests.some((r) => r.url.endsWith("/api/v1/auth/deactivate") && r.method === "POST")).toBe(true);
+  });
+
+  it("handles Stripe payment intents, business payment queries, refunds, subscription lifecycle, and reminders", async () => {
+    mockHandler = (url) => {
+      if (url.endsWith("/api/v1/bootstrap")) return jsonResponse(EMPTY_BOOTSTRAP);
+      if (url.endsWith("/api/v1/payments/intents")) {
+        return jsonResponse({
+          payment: {
+            id: "pay_1",
+            payerId: "usr_1",
+            businessId: "biz_aura",
+            amount: 95,
+            currency: "USD",
+            status: "pending",
+            method: "card_token_pending",
+            referenceType: "booking",
+            referenceId: "bk_1",
+            provider: "stripe",
+            providerReference: "pi_test_1",
+            createdAt: "2026-11-28T12:00:00Z",
+          },
+          configured: true,
+          provider: "stripe",
+          clientSecret: "pi_test_1_secret_abc",
+          publishableKey: "pk_test_123",
+          statusDetail: "Stripe payment intent created.",
+        });
+      }
+      if (url.includes("/api/v1/payments?businessId=biz_aura")) {
+        return jsonResponse([
+          {
+            id: "pay_1",
+            payerId: "usr_1",
+            businessId: "biz_aura",
+            amount: 95,
+            currency: "USD",
+            status: "recorded",
+            method: "card_token_pending",
+            referenceType: "booking",
+            referenceId: "bk_1",
+            provider: "stripe",
+            providerReference: "pi_test_1",
+            createdAt: "2026-11-28T12:00:00Z",
+          },
+        ]);
+      }
+      if (url.endsWith("/api/v1/payments/pay_1/refund")) {
+        return jsonResponse({
+          id: "pay_1",
+          payerId: "usr_1",
+          businessId: "biz_aura",
+          amount: 95,
+          currency: "USD",
+          status: "refunded",
+          method: "card_token_pending",
+          referenceType: "booking",
+          referenceId: "bk_1",
+          provider: "stripe",
+          providerReference: "pi_test_1",
+          createdAt: "2026-11-28T12:00:00Z",
+        });
+      }
+      if (url.endsWith("/api/v1/workspaces/biz_aura/subscription/renew")) {
+        return jsonResponse({
+          subscription: {
+            id: "sub_1",
+            businessId: "biz_aura",
+            planId: "enterprise",
+            status: "past_due",
+            startedAt: "2026-11-01T00:00:00Z",
+          },
+          invoice: {
+            id: "inv_1",
+            businessId: "biz_aura",
+            amount: 149,
+            status: "open",
+            description: "Subscription renewal (Enterprise)",
+            issuedAt: "2026-11-28T12:00:00Z",
+          },
+          paymentIntent: {
+            payment: {
+              id: "pay_sub_1",
+              payerId: "usr_2",
+              businessId: "biz_aura",
+              amount: 149,
+              currency: "USD",
+              status: "pending",
+              method: "card_token_pending",
+              referenceType: "subscription",
+              referenceId: "inv_1",
+              provider: "stripe",
+              createdAt: "2026-11-28T12:00:00Z",
+            },
+            configured: true,
+            provider: "stripe",
+            clientSecret: "pi_sub_secret",
+            publishableKey: "pk_test_123",
+            statusDetail: "Stripe intent created.",
+          },
+        });
+      }
+      if (url.endsWith("/api/v1/workspaces/biz_aura/subscription/cancel")) {
+        return jsonResponse({
+          id: "sub_1",
+          businessId: "biz_aura",
+          planId: "enterprise",
+          status: "canceled",
+          startedAt: "2026-11-01T00:00:00Z",
+        });
+      }
+      if (url.endsWith("/api/v1/bookings/universal/bk_1/remind")) {
+        return jsonResponse({
+          ok: true,
+          bookingId: "bk_1",
+          delivered: true,
+          deliveryStatus: "sent:re_msg_1",
+        });
+      }
+      return jsonResponse({});
+    };
+
+    const intentRes = await createPaymentIntentRemote({
+      referenceType: "booking",
+      referenceId: "bk_1",
+      method: "card_token_pending",
+    });
+    expect(intentRes.ok).toBe(true);
+    if (intentRes.ok) {
+      expect(intentRes.data.provider).toBe("stripe");
+      expect(intentRes.data.publishableKey).toBe("pk_test_123");
+      expect(intentRes.data.clientSecret).toBe("pi_test_1_secret_abc");
+    }
+
+    const listRes = await fetchPaymentsRemote("biz_aura");
+    expect(listRes.ok).toBe(true);
+    if (listRes.ok) {
+      expect(listRes.data.length).toBe(1);
+      expect(listRes.data[0]?.provider).toBe("stripe");
+    }
+
+    const refundRes = await refundPaymentRemote("pay_1", { amount: 50, reason: "requested_by_customer" });
+    expect(refundRes.ok).toBe(true);
+    if (refundRes.ok) expect(refundRes.data.status).toBe("refunded");
+    const refundReq = requests.find((r) => r.url.endsWith("/api/v1/payments/pay_1/refund"));
+    expect(refundReq?.method).toBe("POST");
+    expect(refundReq?.body).toEqual({ amount: 50, reason: "requested_by_customer" });
+
+    const renewRes = await renewSubscriptionRemote("biz_aura", { planId: "enterprise" });
+    expect(renewRes.ok).toBe(true);
+    if (renewRes.ok) expect(renewRes.data.paymentIntent?.provider).toBe("stripe");
+
+    const cancelRes = await cancelSubscriptionRemote("biz_aura", { reason: "Seasonal break", immediate: true });
+    expect(cancelRes.ok).toBe(true);
+    if (cancelRes.ok) expect(cancelRes.data.status).toBe("canceled");
+
+    const remindRes = await sendUniversalBookingReminderRemote("bk_1", "Arriving 10 mins early recommended");
+    expect(remindRes.ok).toBe(true);
+    if (remindRes.ok) {
+      expect(remindRes.data.delivered).toBe(true);
+      expect(remindRes.data.deliveryStatus).toBe("sent:re_msg_1");
+    }
   });
 });

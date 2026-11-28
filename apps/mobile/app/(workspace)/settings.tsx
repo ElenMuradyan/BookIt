@@ -1,7 +1,11 @@
 import {
   bookingConfigsForBusiness,
+  cancelSubscription,
+  cancelSubscriptionRemote,
   changePlan,
   changePlanRemote,
+  renewSubscription,
+  renewSubscriptionRemote,
   saveBookingConfig,
   updateBusiness,
   updateBusinessHours,
@@ -342,11 +346,60 @@ export default function WorkspaceSettingsScreen() {
 
       <Card style={{ gap: 10 }}>
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-          <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>Subscription Plan</Text>
+          <View>
+            <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700" }}>Subscription Plan</Text>
+            <Text style={{ color: colors.muted, fontSize: 12 }}>Status: {sub?.status ?? "trialing"}</Text>
+          </View>
           <Badge label={(sub?.planId ?? "professional").toUpperCase()} tone="brand" />
         </View>
+        {canSub ? (
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Button
+              label={saving ? "Updating..." : "Renew Plan"}
+              tone="soft"
+              small
+              disabled={saving}
+              onPress={async () => {
+                setNotice(null);
+                setSaving(true);
+                try {
+                  const res = usingMocks()
+                    ? renewSubscription(bizId, sub?.planId)
+                    : await renewSubscriptionRemote(bizId, { planId: sub?.planId });
+                  setNotice(
+                    res.ok
+                      ? { text: res.data.paymentIntent?.statusDetail || "Subscription renewal initiated." }
+                      : { err: true, text: res.error },
+                  );
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+            {sub?.status !== "canceled" ? (
+              <Button
+                label="Cancel Plan"
+                tone="ghost"
+                small
+                disabled={saving}
+                onPress={async () => {
+                  setNotice(null);
+                  setSaving(true);
+                  try {
+                    const res = usingMocks()
+                      ? cancelSubscription(bizId)
+                      : await cancelSubscriptionRemote(bizId, { reason: "Owner requested cancellation" });
+                    setNotice(res.ok ? { text: "Subscription canceled." } : { err: true, text: res.error });
+                  } finally {
+                    setSaving(false);
+                  }
+                }}
+              />
+            ) : null}
+          </View>
+        ) : null}
         {state.plans.map((plan) => {
-          const active = (sub?.planId ?? "professional") === plan.id;
+          const active = (sub?.planId ?? "professional") === plan.id && sub?.status !== "canceled";
           return (
             <View key={plan.id} style={{ borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <View style={{ flex: 1 }}>

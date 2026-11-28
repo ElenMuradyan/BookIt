@@ -28,6 +28,10 @@ from app.services.booking_config_service import (
     compute_deposit_amount,
     get_effective_booking_config,
 )
+from app.services.notification_service import (
+    build_booking_lifecycle_email,
+    send_user_transactional_email,
+)
 from app.services.rbac import get_active_membership
 
 ACTIVE_ALLOCATION_STATUSES = ("held", "pending", "confirmed")
@@ -521,6 +525,50 @@ async def reserve_resource_transactional(
         ) from exc
 
     await db.refresh(booking)
+    if not hold_only:
+        tz = get_zone_info(booking.timezone)
+        when_label = f"{start_at.astimezone(tz).strftime('%Y-%m-%d %H:%M')} - {end_at.astimezone(tz).strftime('%Y-%m-%d %H:%M %Z')}"
+        customer_user = await db.get(User, customer_id)
+        if customer_user:
+            subject, body, html_body = build_booking_lifecycle_email(
+                event_kind="created",
+                recipient_name=customer_user.first_name or customer_user.email,
+                business_name=business.name,
+                title=resource.name,
+                when_label=when_label,
+                status_label=booking_status,
+                check_in_code=check_in_code,
+            )
+            await send_user_transactional_email(
+                db,
+                user_id=customer_id,
+                category="booking",
+                subject=subject,
+                body=body,
+                html_body=html_body,
+                idempotency_key=f"res-create-cust-{booking.id}",
+            )
+        if business.owner_user_id != customer_id:
+            owner_user = await db.get(User, business.owner_user_id)
+            if owner_user:
+                subject, body, html_body = build_booking_lifecycle_email(
+                    event_kind="created",
+                    recipient_name=owner_user.first_name or owner_user.email,
+                    business_name=business.name,
+                    title=resource.name,
+                    when_label=when_label,
+                    status_label=booking_status,
+                    check_in_code=check_in_code,
+                )
+                await send_user_transactional_email(
+                    db,
+                    user_id=business.owner_user_id,
+                    category="booking",
+                    subject=subject,
+                    body=body,
+                    html_body=html_body,
+                    idempotency_key=f"res-create-owner-{booking.id}",
+                )
     return booking
 
 

@@ -4,6 +4,8 @@ import {
   addExpense,
   addExpenseRemote,
   businessAppointments,
+  refundPayment,
+  refundPaymentRemote,
   sellerOrders,
   useBookItState,
   usingMocks,
@@ -34,6 +36,7 @@ export default function WorkspaceFinancePage() {
   const serviceRev = appts.filter((a) => a.status !== "cancelled" && a.status !== "rejected").reduce((s, a) => s + a.price, 0);
   const productRev = orders.filter((o) => o.status !== "cancelled" && o.status !== "refunded").reduce((s, o) => s + o.total, 0);
   const refunds = orders.filter((o) => o.status === "refunded").reduce((s, o) => s + o.total, 0);
+  const bizPayments = state.payments.filter((p) => p.businessId === bizId);
   const expenses = state.expenses.filter((e) => e.businessId === bizId);
   const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
   const gross = serviceRev + productRev;
@@ -62,6 +65,17 @@ export default function WorkspaceFinancePage() {
       </div>
 
       {notice ? <div className="notice">{notice}</div> : null}
+      {error && !showExpense ? (
+        <div
+          className="notice"
+          style={{
+            borderColor: "var(--danger)",
+            background: "color-mix(in srgb, var(--danger) 10%, var(--card))",
+          }}
+        >
+          {error}
+        </div>
+      ) : null}
 
       <div className="grid-4">
         <div className="panel stat">
@@ -135,6 +149,79 @@ export default function WorkspaceFinancePage() {
             ))}
         </section>
       </div>
+
+      <section className="panel stack">
+        <h3 style={{ margin: 0 }}>Payment Ledger &amp; Refunds</h3>
+        {bizPayments.length === 0 ? (
+          <p className="muted" style={{ margin: 0 }}>No recorded or pending payment intents for this business yet.</p>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Reference</th>
+                <th>Method</th>
+                <th>Status</th>
+                <th>Amount</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {bizPayments.map((pay) => (
+                <tr key={pay.id}>
+                  <td className="tiny">{formatDate(pay.createdAt)}</td>
+                  <td className="tiny">
+                    {pay.referenceType} · {pay.referenceId}
+                  </td>
+                  <td className="tiny">{pay.provider ?? pay.method}</td>
+                  <td>
+                    <Badge
+                      tone={
+                        pay.status === "recorded"
+                          ? "success"
+                          : pay.status === "failed" || pay.status === "refunded"
+                            ? "warning"
+                            : "brand"
+                      }
+                    >
+                      {pay.status}
+                    </Badge>
+                  </td>
+                  <td className="tabular">{formatMoney(pay.amount)}</td>
+                  <td style={{ textAlign: "right" }}>
+                    {canManage && pay.status === "recorded" ? (
+                      <Button
+                        small
+                        tone="ghost"
+                        disabled={busy}
+                        onClick={async () => {
+                          setError("");
+                          setNotice("");
+                          setBusy(true);
+                          try {
+                            const res = usingMocks()
+                              ? refundPayment(pay.id)
+                              : await refundPaymentRemote(pay.id, { reason: "Refunded from finance ledger" });
+                            if (!res.ok) {
+                              setError(res.error);
+                              return;
+                            }
+                            setNotice("Payment refunded.");
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        Refund
+                      </Button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       {showExpense ? (
         <Modal title="Add Manual Expense" onClose={() => setShowExpense(false)}>

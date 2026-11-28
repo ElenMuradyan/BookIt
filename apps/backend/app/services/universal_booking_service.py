@@ -15,10 +15,16 @@ from app.models.booking import (
     TicketTier,
 )
 from app.models.business import Business
+from app.models.engagement import Notification
 from app.models.user import User
+from app.services.availability_service import get_zone_info
 from app.services.booking_config_service import get_effective_booking_config
 from app.services.booking_service import ALLOWED_STATUS_TRANSITIONS, create_booking_transactional
 from app.services.event_service import reserve_session_transactional
+from app.services.notification_service import (
+    build_booking_lifecycle_email,
+    send_user_transactional_email,
+)
 from app.services.rbac import get_active_membership, has_permission
 from app.services.resource_service import reserve_resource_transactional
 
@@ -266,8 +272,130 @@ async def transition_universal_booking_status(
                 )
             )
 
+    if business:
+        if is_customer and not is_staff and target_status == "cancelled":
+            db.add(
+                Notification(
+                    user_id=business.owner_user_id,
+                    business_id=business.id,
+                    category="booking",
+                    title="Booking cancelled by customer",
+                    body=f"{booking.title_snapshot} was cancelled.",
+                    href="/workspace/bookings",
+                )
+            )
+        elif target_status in ("confirmed", "cancelled", "rejected"):
+            db.add(
+                Notification(
+                    user_id=booking.customer_id,
+                    business_id=business.id,
+                    category="booking",
+                    title=f"Booking {target_status.replace('_', ' ')}",
+                    body=f"{booking.title_snapshot} at {business.name} is now {target_status.replace('_', ' ')}.",
+                    href=f"/bookings/{booking.id}",
+                )
+            )
+
     await db.commit()
+    if business and target_status in ("confirmed", "cancelled", "rejected"):
+        recipient_user_id = business.owner_user_id if (is_customer and not is_staff) else booking.customer_id
+        recipient_user = await db.get(User, recipient_user_id)
+        if recipient_user:
+            when_label = (
+                booking.start_at.astimezone(get_zone_info(booking.timezone)).strftime("%Y-%m-%d %H:%M %Z")
+                if booking.start_at
+                else "Scheduled booking"
+            )
+            subject, body, html_body = build_booking_lifecycle_email(
+                event_kind=target_status,
+                recipient_name=recipient_user.first_name or recipient_user.email,
+                business_name=business.name,
+                title=booking.title_snapshot,
+                when_label=when_label,
+                status_label=target_status.replace("_", " "),
+                check_in_code=booking.check_in_code if target_status == "confirmed" else None,
+                reason=reason,
+            )
+            await send_user_transactional_email(
+                db,
+                user_id=recipient_user_id,
+                category="booking",
+                subject=subject,
+                body=body,
+                html_body=html_body,
+                idempotency_key=f"bk-status-{booking.id}-{target_status}",
+            )
     return (await load_universal_booking(db, booking.id)) or booking
+
+
+async def send_universal_booking_reminder(
+    db: AsyncSession,
+    *,
+    booking_id: str,
+    actor: User,
+    message: str | None = None,
+) -> tuple[Booking, bool, str]:
+    booking = await load_universal_booking(db, booking_id)
+    if not booking:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+
+    business = await db.get(Business, booking.business_id)
+    membership = await get_active_membership(db, actor.id, booking.business_id)
+    is_staff = bool(
+        actor.is_platform_admin
+        or (business and business.owner_user_id == actor.id)
+        or (membership and has_permission(membership.role, "bookings.manage"))
+    )
+    if not is_staff:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Staff permission required to send reminders")
+    if booking.status not in ("pending", "confirmed"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot send a reminder for a {booking.status} booking",
+        )
+
+    business_name = business.name if business else "BookIt Business"
+    when_label = (
+        booking.start_at.astimezone(get_zone_info(booking.timezone)).strftime("%Y-%m-%d %H:%M %Z")
+        if booking.start_at
+        else "Upcoming booking"
+    )
+    custom_note = message.strip() if message and message.strip() else None
+    db.add(
+        Notification(
+            user_id=booking.customer_id,
+            business_id=booking.business_id,
+            category="reminder",
+            title=f"Reminder: {booking.title_snapshot}",
+            body=custom_note or f"{business_name} · {when_label}",
+            href=f"/bookings/{booking.id}",
+        )
+    )
+    await db.commit()
+
+    customer_user = await db.get(User, booking.customer_id)
+    if not customer_user:
+        return booking, False, "recipient_missing"
+
+    subject, body, html_body = build_booking_lifecycle_email(
+        event_kind="reminder",
+        recipient_name=customer_user.first_name or customer_user.email,
+        business_name=business_name,
+        title=booking.title_snapshot,
+        when_label=when_label,
+        status_label=booking.status,
+        check_in_code=booking.check_in_code,
+        reason=custom_note,
+    )
+    delivered, delivery_status = await send_user_transactional_email(
+        db,
+        user_id=booking.customer_id,
+        category="reminder",
+        subject=subject,
+        body=body,
+        html_body=html_body,
+    )
+    return booking, delivered, delivery_status
 
 
 async def check_in_universal_qr(

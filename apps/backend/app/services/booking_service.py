@@ -23,6 +23,10 @@ from app.services.booking_config_service import (
     compute_deposit_amount,
     get_effective_booking_config,
 )
+from app.services.notification_service import (
+    build_booking_lifecycle_email,
+    send_user_transactional_email,
+)
 from app.services.rbac import get_active_membership, has_permission
 
 ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
@@ -322,6 +326,48 @@ async def create_booking_transactional(
         ) from exc
 
     await db.refresh(appointment)
+    when_label = chosen.start_at.astimezone(get_zone_info(business.timezone)).strftime("%Y-%m-%d %H:%M %Z")
+    customer_user = await db.get(User, customer_id)
+    if customer_user:
+        subject, body, html_body = build_booking_lifecycle_email(
+            event_kind="created",
+            recipient_name=customer_user.first_name or customer_user.email,
+            business_name=business.name,
+            title=service.name,
+            when_label=when_label,
+            status_label=booking_status,
+            check_in_code=check_in_code,
+        )
+        await send_user_transactional_email(
+            db,
+            user_id=customer_id,
+            category="booking",
+            subject=subject,
+            body=body,
+            html_body=html_body,
+            idempotency_key=f"appt-create-cust-{appointment.id}",
+        )
+    if business.owner_user_id != customer_id:
+        owner_user = await db.get(User, business.owner_user_id)
+        if owner_user:
+            subject, body, html_body = build_booking_lifecycle_email(
+                event_kind="created",
+                recipient_name=owner_user.first_name or owner_user.email,
+                business_name=business.name,
+                title=service.name,
+                when_label=when_label,
+                status_label=booking_status,
+                check_in_code=check_in_code,
+            )
+            await send_user_transactional_email(
+                db,
+                user_id=business.owner_user_id,
+                category="booking",
+                subject=subject,
+                body=body,
+                html_body=html_body,
+                idempotency_key=f"appt-create-owner-{appointment.id}",
+            )
     return appointment
 
 
@@ -439,6 +485,30 @@ async def transition_appointment_status(
 
     await db.commit()
     await db.refresh(appointment)
+    if business and target_status in ("confirmed", "cancelled", "rejected"):
+        recipient_user_id = business.owner_user_id if (is_customer and not is_staff) else appointment.customer_id
+        recipient_user = await db.get(User, recipient_user_id)
+        if recipient_user:
+            when_label = appointment.start_at.astimezone(get_zone_info(business.timezone)).strftime("%Y-%m-%d %H:%M %Z")
+            subject, body, html_body = build_booking_lifecycle_email(
+                event_kind=target_status,
+                recipient_name=recipient_user.first_name or recipient_user.email,
+                business_name=business.name,
+                title=service.name if service else "Appointment",
+                when_label=when_label,
+                status_label=target_status.replace("_", " "),
+                check_in_code=appointment.check_in_code if target_status == "confirmed" else None,
+                reason=reason,
+            )
+            await send_user_transactional_email(
+                db,
+                user_id=recipient_user_id,
+                category="booking",
+                subject=subject,
+                body=body,
+                html_body=html_body,
+                idempotency_key=f"appt-status-{appointment.id}-{target_status}",
+            )
     return appointment
 
 
@@ -542,6 +612,26 @@ async def reschedule_appointment_transactional(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Reschedule time conflicts with another booking") from exc
 
     await db.refresh(appointment)
+    recipient_user = await db.get(User, recipient_id)
+    if recipient_user:
+        when_label = chosen.start_at.astimezone(get_zone_info(business.timezone)).strftime("%Y-%m-%d %H:%M %Z")
+        subject, body, html_body = build_booking_lifecycle_email(
+            event_kind="rescheduled",
+            recipient_name=recipient_user.first_name or recipient_user.email,
+            business_name=business.name,
+            title=service.name,
+            when_label=when_label,
+            status_label=new_status,
+            check_in_code=appointment.check_in_code,
+        )
+        await send_user_transactional_email(
+            db,
+            user_id=recipient_id,
+            category="booking",
+            subject=subject,
+            body=body,
+            html_body=html_body,
+        )
     return appointment
 
 

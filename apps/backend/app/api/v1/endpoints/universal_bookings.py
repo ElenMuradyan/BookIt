@@ -20,12 +20,15 @@ from app.schemas.booking import (
     UniversalBookingStatusHistoryOut,
     UniversalBookingStatusIn,
     UniversalCheckInOut,
+    UniversalReminderIn,
+    UniversalReminderOut,
 )
 from app.services.rbac import require_business_permission
 from app.services.universal_booking_service import (
     check_in_universal_qr,
     create_universal_booking_transactional,
     load_universal_booking,
+    send_universal_booking_reminder,
     transition_universal_booking_status,
 )
 
@@ -227,3 +230,24 @@ async def qr_check_in_universal(
         actor=user,
     )
     return UniversalCheckInOut(**res)
+
+
+@router.post("/{booking_id}/remind", response_model=UniversalReminderOut)
+async def remind_universal_booking(
+    booking_id: str,
+    user: Annotated[User, Depends(require_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    payload: UniversalReminderIn | None = None,
+):
+    booking, delivered, delivery_status = await send_universal_booking_reminder(
+        db,
+        booking_id=booking_id,
+        actor=user,
+        message=payload.message if payload else None,
+    )
+    return UniversalReminderOut(
+        ok=True,
+        booking_id=booking.id,
+        delivered=delivered,
+        delivery_status=delivery_status,
+    )

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  cancelSubscription,
   checkInUniversalQr,
   checkout,
   createAppointment,
@@ -9,6 +10,8 @@ import {
   login,
   loginBusiness,
   publicBusinesses,
+  refundPayment,
+  renewSubscription,
   resetDemoState,
   setUniversalBookingStatus,
   submitBusinessApplication,
@@ -139,6 +142,48 @@ if (newOwnerBiz.ok) {
   assert.equal(bizLogin.ok, true, "New business owner should be able to sign in immediately");
 }
 
+// Preview subscription renew / cancel + payment refund smoke check
+const renewSmoke = renewSubscription("biz_aura", "enterprise");
+assert.equal(renewSmoke.ok, true, "Preview subscription renewal should succeed");
+const latestPayment = getState().payments.find((p) => p.businessId === "biz_aura" && p.status === "recorded");
+assert.ok(latestPayment, "Preview renewal should create a recorded payment");
+const refundSmoke = refundPayment(latestPayment.id);
+assert.equal(refundSmoke.ok, true, "Preview refund should succeed");
+if (refundSmoke.ok) assert.equal(refundSmoke.data.status, "refunded");
+const cancelSmoke = cancelSubscription("biz_aura");
+assert.equal(cancelSmoke.ok, true, "Preview subscription cancel should succeed");
+if (cancelSmoke.ok) assert.equal(cancelSmoke.data.status, "canceled");
+
+// Signed-in customer registering two businesses receives multiple owner memberships
+const secondBiz = submitBusinessApplication({
+  businessName: "Puget Sound Shuttles",
+  legalName: "Puget Sound Shuttles LLC",
+  category: "travel",
+  country: "United States",
+  city: "Seattle",
+  address: "901 Alaskan Way",
+  phone: "+1 206 555 0150",
+  email: "dispatch@pugetshuttles.test",
+  website: "",
+  description: "Airport shuttle & charter van operator.",
+  ownerName: "Elena Rostova",
+  ownerEmail: "customer@bookit.demo",
+  ownerPhone: "+1 206 555 0142",
+  applicantUserId: auth.data.userId,
+});
+assert.equal(secondBiz.ok, true, "Signed-in customer should be able to create multiple businesses");
+
+const transportRes = createUniversalBooking(auth.data.userId, {
+  bookingModel: "resource",
+  businessId: "biz_passage",
+  resourceId: "res_passage_van",
+  startAt: "2026-12-22T10:00:00",
+  endAt: "2026-12-22T12:00:00",
+  quantityUnits: 1,
+  partySize: 4,
+});
+assert.equal(transportRes.ok, true, "Transportation vehicle reservation should succeed");
+
 console.log(
-  `BookIt API smoke test passed (${venues.length} public venues, booking ${booked.data.id}, resource ${resBooking.data.id}, ${ticketBooking.data.ticketPasses.length} passes, ${orderResult.data.orderIds.length} orders).`,
+  `BookIt API smoke test passed (${venues.length} public venues, booking ${booked.data.id}, resource ${resBooking.data.id}, ${ticketBooking.data.ticketPasses.length} passes, ${orderResult.data.orderIds.length} orders, transport + multi-business verified).`,
 );

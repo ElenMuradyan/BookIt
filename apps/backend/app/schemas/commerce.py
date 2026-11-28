@@ -114,7 +114,13 @@ class PaymentIntentOut(CamelModel):
     configured: bool
     provider: str
     client_secret: str | None = None
+    publishable_key: str | None = None
     status_detail: str
+
+
+class PaymentRefundIn(CamelModel):
+    amount: float | None = Field(default=None, gt=0)
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class PlanOut(CamelModel):
@@ -139,6 +145,17 @@ class PlanChangeIn(CamelModel):
     plan_id: Literal["starter", "professional", "enterprise"]
 
 
+class SubscriptionCancelIn(CamelModel):
+    reason: str | None = Field(default=None, max_length=255)
+    immediate: bool = False
+
+
+class SubscriptionRenewIn(CamelModel):
+    plan_id: Literal["starter", "professional", "enterprise"] | None = None
+    method: Literal["card_token_pending", "wallet"] = "card_token_pending"
+    idempotency_key: str | None = Field(default=None, max_length=128)
+
+
 class InvoiceOut(CamelModel):
     id: str
     business_id: str
@@ -146,6 +163,12 @@ class InvoiceOut(CamelModel):
     status: str
     description: str
     issued_at: datetime
+
+
+class SubscriptionRenewOut(CamelModel):
+    subscription: SubscriptionOut
+    invoice: InvoiceOut | None = None
+    payment_intent: PaymentIntentOut | None = None
 
 
 class ExpenseIn(CamelModel):

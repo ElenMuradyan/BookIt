@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     payment_provider: Literal["sandbox_unconfigured", "sandbox", "stripe"] = "sandbox_unconfigured"
     payment_webhook_secret: str = "dev-only-webhook-secret-change-in-production"
     stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_publishable_key: str | None = None
+    stripe_api_base_url: str = "https://api.stripe.com"
 
     email_provider: Literal["log_only", "smtp", "resend"] = "log_only"
     email_from: str | None = None
@@ -73,6 +76,9 @@ class Settings(BaseSettings):
     @field_validator(
         "cookie_domain",
         "direct_database_url",
+        "stripe_secret_key",
+        "stripe_webhook_secret",
+        "stripe_publishable_key",
         "email_from",
         "smtp_host",
         "smtp_user",
@@ -107,8 +113,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "PAYMENT_WEBHOOK_SECRET must be a strong 24+ character secret in staging/production"
                 )
-            if self.payment_provider == "stripe" and not self.stripe_secret_key:
-                raise ValueError("STRIPE_SECRET_KEY is required when PAYMENT_PROVIDER=stripe")
+            if self.payment_provider == "stripe":
+                if not self.stripe_secret_key:
+                    raise ValueError("STRIPE_SECRET_KEY is required when PAYMENT_PROVIDER=stripe")
+                if not self.stripe_webhook_secret:
+                    raise ValueError("STRIPE_WEBHOOK_SECRET is required when PAYMENT_PROVIDER=stripe")
             if not self.cookie_secure:
                 raise ValueError("COOKIE_SECURE must be true in staging/production")
             if "*" in self.cors_origins_list:
